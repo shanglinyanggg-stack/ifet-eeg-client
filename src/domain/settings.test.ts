@@ -20,7 +20,9 @@ describe('settings persistence', () => {
       'neuro-dark',
       'clinical-light',
       'graphite',
-      'amber-lab'
+      'amber-lab',
+      'aurora-violet',
+      'porcelain'
     ]);
   });
 

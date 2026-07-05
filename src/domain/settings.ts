@@ -1,5 +1,5 @@
 export type DisplayMode = 'normal' | 'eeg';
-export type ThemeName = 'neuro-dark' | 'clinical-light' | 'graphite' | 'amber-lab';
+export type ThemeName = 'neuro-dark' | 'clinical-light' | 'graphite' | 'amber-lab' | 'aurora-violet' | 'porcelain';
 export type EegChannel = 'eeg1' | 'eeg2' | 'eeg3' | 'eeg4';
 export type AutoNumber = 'auto' | number;
 export type EegBandKey = 'delta' | 'theta' | 'alpha' | 'beta';
@@ -8,7 +8,9 @@ export const themeOptions: Array<{ value: ThemeName; label: string }> = [
   { value: 'neuro-dark', label: 'Neuro Dark' },
   { value: 'clinical-light', label: 'Clinical Light' },
   { value: 'graphite', label: 'Graphite' },
-  { value: 'amber-lab', label: 'Amber Lab' }
+  { value: 'amber-lab', label: 'Amber Lab' },
+  { value: 'aurora-violet', label: 'Aurora Violet' },
+  { value: 'porcelain', label: 'Porcelain' }
 ];
 
 export interface BandRange {
