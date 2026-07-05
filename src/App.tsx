@@ -315,12 +315,14 @@ export default function App() {
     <main className="app-shell" data-theme={settings.theme} data-density={density} style={appStyle}>
       <header className="topbar">
         <div className="brand">
-          <Activity size={24} />
-          <div>
+          <span className="brand-icon">
+            <Activity size={22} />
+          </span>
+          <div className="brand-text">
             <h1>iFET EEG Client</h1>
-            <span>
+            <span className="status-chip">
               {sampleCount} samples
-              {warmupRemaining > 0 && ` · 预热 ${warmupRemaining}s`}
+              {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
             </span>
           </div>
         </div>

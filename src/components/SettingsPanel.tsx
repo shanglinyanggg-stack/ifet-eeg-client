@@ -1,3 +1,4 @@
+import type React from 'react';
 import { themeOptions, type AppSettings, type EegBandKey, type EegChannel, type ThemeName } from '../domain/settings';
 import { createEegBands } from '../domain/dsp';
 import { channelLabels, type ChannelKey } from '../domain/protocol';
@@ -90,7 +91,7 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
       </label>
 
       <div className="setting-group">
-        <h3>原始滤波</h3>
+        <h3><span className="group-dot" />原始滤波</h3>
         <label className="check-row">
           <input type="checkbox" checked={settings.filterEnabled} onChange={(event) => update({ filterEnabled: event.target.checked })} />
           带通滤波
@@ -122,7 +123,7 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
       </div>
 
       <div className="setting-group">
-        <h3>脑电参数</h3>
+        <h3><span className="group-dot" />脑电参数</h3>
         <div className="field-control">
           <span className="field-label">EEG 通道</span>
           <ThemedSelect
@@ -167,8 +168,8 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
         </div>
         <div className="band-editor">
           {createEegBands().map((band) => (
-            <div className="band-row" key={band.key}>
-              <span style={{ color: band.color }}>{band.label}</span>
+            <div className="band-row" key={band.key} style={{ '--band-color': band.color } as React.CSSProperties}>
+              <span>{band.label}</span>
               <input
                 type="number"
                 step="0.1"
@@ -187,7 +188,7 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
       </div>
 
       <div className="setting-group">
-        <h3>通道显示</h3>
+        <h3><span className="group-dot" />通道显示</h3>
         <div className="channel-grid">
           {channels.map((channel) => (
             <label className="check-row" key={channel}>

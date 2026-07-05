@@ -45,49 +45,64 @@ export function DevicePanel({
     }))
   ];
 
+  const stateValue = connected ? 'connected' : scanning ? 'scanning' : 'disconnected';
+
   return (
     <section className="device-strip" aria-label="设备控制">
-      <div className="status-block">
-        <div className={`status-dot ${connected ? 'online' : ''}`} />
+      <div className="status-block" data-state={stateValue}>
+        <div className={`status-dot ${connected ? 'online' : ''} ${scanning ? 'scanning' : ''}`} />
         <div>
-          <strong>{connected ? '已连接' : '未连接'}</strong>
+          <strong>{connected ? '已连接' : scanning ? '扫描中' : '未连接'}</strong>
           <span>{status}</span>
         </div>
       </div>
-      <button className="icon-button" type="button" onClick={onScan} disabled={scanning} title="扫描 BLE">
-        {scanning ? <RefreshCcw size={18} /> : <Bluetooth size={18} />}
-        <span>{scanning ? '扫描中' : '扫描'}</span>
-      </button>
-      <ThemedSelect
-        className="device-select"
-        ariaLabel="选择设备"
-        value={selectedDeviceId}
-        options={deviceOptions}
-        onChange={onSelectedDeviceChange}
-      />
-      <button className="icon-button" type="button" onClick={onConnect} disabled={!selectedDeviceId || connected}>
-        <Radio size={18} />
-        <span>连接</span>
-      </button>
-      <button className="icon-button" type="button" onClick={onDisconnect} disabled={!connected}>
-        <Link2Off size={18} />
-        <span>断开</span>
-      </button>
-      <input
-        className="command-input"
-        value={commandText}
-        onChange={(event) => onCommandTextChange(event.target.value)}
-        aria-label="十六进制命令"
-      />
-      <button className="icon-button" type="button" onClick={onSend} disabled={!connected}>
-        <Send size={18} />
-        <span>发送</span>
-      </button>
-      <button className={recording ? 'icon-button danger' : 'icon-button'} type="button" onClick={onToggleRecording}>
-        {recording ? <CircleStop size={18} /> : <Save size={18} />}
-        <span>{recording ? '停止' : '记录'}</span>
-      </button>
-      {recordPath && <span className="record-path">{recordPath}</span>}
+      <div className="device-group">
+        <button className="icon-button" type="button" onClick={onScan} disabled={scanning} title="扫描 BLE">
+          {scanning ? <RefreshCcw size={18} className="spin" /> : <Bluetooth size={18} />}
+          <span>{scanning ? '扫描中' : '扫描'}</span>
+        </button>
+        <ThemedSelect
+          className="device-select"
+          ariaLabel="选择设备"
+          value={selectedDeviceId}
+          options={deviceOptions}
+          onChange={onSelectedDeviceChange}
+        />
+      </div>
+      <div className="device-group">
+        <button className="icon-button primary" type="button" onClick={onConnect} disabled={!selectedDeviceId || connected}>
+          <Radio size={18} />
+          <span>连接</span>
+        </button>
+        <button className="icon-button" type="button" onClick={onDisconnect} disabled={!connected}>
+          <Link2Off size={18} />
+          <span>断开</span>
+        </button>
+      </div>
+      <div className="device-group">
+        <input
+          className="command-input"
+          value={commandText}
+          onChange={(event) => onCommandTextChange(event.target.value)}
+          aria-label="十六进制命令"
+          placeholder="AA 55 01 01"
+        />
+        <button className="icon-button" type="button" onClick={onSend} disabled={!connected}>
+          <Send size={18} />
+          <span>发送</span>
+        </button>
+      </div>
+      <div className="device-group">
+        <button
+          className={`icon-button ${recording ? 'danger recording-active' : 'primary'}`}
+          type="button"
+          onClick={onToggleRecording}
+        >
+          {recording ? <CircleStop size={18} /> : <Save size={18} />}
+          <span>{recording ? '停止' : '记录'}</span>
+        </button>
+        {recordPath && <span className="record-path" title={recordPath}>{recordPath}</span>}
+      </div>
     </section>
   );
 }
