@@ -1,5 +1,6 @@
 import { Bluetooth, CircleStop, Link2Off, Radio, RefreshCcw, Save, Send } from 'lucide-react';
 import type { DeviceInfo } from '../domain/protocol';
+import { ThemedSelect } from './ThemedSelect';
 
 interface DevicePanelProps {
   devices: DeviceInfo[];
@@ -36,6 +37,14 @@ export function DevicePanel({
   onSend,
   onToggleRecording
 }: DevicePanelProps) {
+  const deviceOptions = [
+    { value: '', label: '选择设备' },
+    ...devices.map((device) => ({
+      value: device.id,
+      label: `${device.name} / ${device.rssi} dBm`
+    }))
+  ];
+
   return (
     <section className="device-strip" aria-label="设备控制">
       <div className="status-block">
@@ -49,14 +58,13 @@ export function DevicePanel({
         {scanning ? <RefreshCcw size={18} /> : <Bluetooth size={18} />}
         <span>{scanning ? '扫描中' : '扫描'}</span>
       </button>
-      <select value={selectedDeviceId} onChange={(event) => onSelectedDeviceChange(event.target.value)}>
-        <option value="">选择设备</option>
-        {devices.map((device) => (
-          <option key={device.id} value={device.id}>
-            {device.name} / {device.rssi} dBm
-          </option>
-        ))}
-      </select>
+      <ThemedSelect
+        className="device-select"
+        ariaLabel="选择设备"
+        value={selectedDeviceId}
+        options={deviceOptions}
+        onChange={onSelectedDeviceChange}
+      />
       <button className="icon-button" type="button" onClick={onConnect} disabled={!selectedDeviceId || connected}>
         <Radio size={18} />
         <span>连接</span>

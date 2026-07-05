@@ -7,33 +7,36 @@ interface BandShareChartProps {
 
 export function BandShareChart({ shares, colors }: BandShareChartProps) {
   let start = 0;
+  const hasEnergy = shares.some((share) => share.percent > 0);
   const segments = shares.map((share) => {
     const angle = (share.percent / 100) * 360;
     const segment = `${colors[share.label] ?? '#64748b'} ${start}deg ${start + angle}deg`;
     start += angle;
     return segment;
   });
-  const background = segments.length > 0 ? `conic-gradient(${segments.join(', ')})` : '#1e293b';
+  const background = hasEnergy ? `conic-gradient(${segments.join(', ')})` : 'var(--surface-elevated)';
 
   return (
     <section className="panel share-panel" aria-label="脑电频带占比">
       <div className="panel-header">
         <h2>频带占比</h2>
       </div>
-      <div className="donut" style={{ background }}>
-        <div className="donut-core">EEG</div>
-      </div>
-      <div className="share-list">
-        {shares.map((share) => (
-          <div className="share-row" key={share.label}>
-            <span className="legend-dot" style={{ backgroundColor: colors[share.label] }} />
-            <span>{share.label}</span>
-            <strong>{share.percent}%</strong>
-            <span className="share-meter" aria-hidden="true">
-              <span style={{ width: `${share.percent}%`, backgroundColor: colors[share.label] }} />
-            </span>
-          </div>
-        ))}
+      <div className="share-body">
+        <div className="donut" style={{ background }}>
+          <div className="donut-core">{hasEnergy ? 'EEG' : '0%'}</div>
+        </div>
+        <ul className="share-list" aria-label="频带占比明细">
+          {shares.map((share) => (
+            <li className="share-row" key={share.label}>
+              <span className="legend-dot" style={{ backgroundColor: colors[share.label] }} />
+              <span>{share.label}</span>
+              <strong>{share.percent}%</strong>
+              <span className="share-meter" aria-hidden="true">
+                <span style={{ width: `${share.percent}%`, backgroundColor: colors[share.label] }} />
+              </span>
+            </li>
+          ))}
+        </ul>
       </div>
     </section>
   );

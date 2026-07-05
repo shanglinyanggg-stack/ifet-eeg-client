@@ -1,6 +1,8 @@
 import { themeOptions, type AppSettings, type EegBandKey, type EegChannel, type ThemeName } from '../domain/settings';
 import { createEegBands } from '../domain/dsp';
 import { channelLabels, type ChannelKey } from '../domain/protocol';
+import { ThemedSelect } from './ThemedSelect';
+import { FolderOpen } from 'lucide-react';
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -8,6 +10,21 @@ interface SettingsPanelProps {
 }
 
 const channels = Object.keys(channelLabels) as ChannelKey[];
+const displayModeOptions = [
+  { value: 'normal', label: '全部波形' },
+  { value: 'eeg', label: '脑电模式' }
+];
+const eegChannelOptions = [
+  { value: 'eeg1', label: 'EEG1' },
+  { value: 'eeg2', label: 'EEG2' },
+  { value: 'eeg3', label: 'EEG3' },
+  { value: 'eeg4', label: 'EEG4' }
+];
+const notchOptions = [
+  { value: 'off', label: '关闭' },
+  { value: '50', label: '50 Hz' },
+  { value: '60', label: '60 Hz' }
+];
 
 export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
   const update = (patch: Partial<AppSettings>) => onChange({ ...settings, ...patch });
@@ -19,23 +36,24 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
       <div className="panel-header">
         <h2>后台设置</h2>
       </div>
-      <label>
-        显示模式
-        <select value={settings.displayMode} onChange={(event) => update({ displayMode: event.target.value as AppSettings['displayMode'] })}>
-          <option value="normal">全部波形</option>
-          <option value="eeg">脑电模式</option>
-        </select>
-      </label>
-      <label>
-        界面主题
-        <select value={settings.theme} onChange={(event) => update({ theme: event.target.value as ThemeName })}>
-          {themeOptions.map((theme) => (
-            <option key={theme.value} value={theme.value}>
-              {theme.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="field-control">
+        <span className="field-label">显示模式</span>
+        <ThemedSelect
+          ariaLabel="显示模式"
+          value={settings.displayMode}
+          options={displayModeOptions}
+          onChange={(displayMode) => update({ displayMode: displayMode as AppSettings['displayMode'] })}
+        />
+      </div>
+      <div className="field-control">
+        <span className="field-label">界面主题</span>
+        <ThemedSelect
+          ariaLabel="界面主题"
+          value={settings.theme}
+          options={themeOptions}
+          onChange={(theme) => update({ theme: theme as ThemeName })}
+        />
+      </div>
       <label className="check-row">
         <input type="checkbox" checked={settings.autoReconnect} onChange={(event) => update({ autoReconnect: event.target.checked })} />
         自动重连
@@ -55,7 +73,20 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
       </label>
       <label>
         保存目录
-        <input value={settings.recordDir} onChange={(event) => update({ recordDir: event.target.value })} />
+        <div className="dir-row">
+          <input value={settings.recordDir} onChange={(event) => update({ recordDir: event.target.value })} placeholder="留空使用默认目录" />
+          <button
+            type="button"
+            className="icon-button"
+            onClick={async () => {
+              const picked = await pickDirectory();
+              if (picked) update({ recordDir: picked });
+            }}
+            title="选择目录"
+          >
+            <FolderOpen size={16} />
+          </button>
+        </div>
       </label>
 
       <div className="setting-group">
@@ -92,15 +123,15 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
 
       <div className="setting-group">
         <h3>脑电参数</h3>
-        <label>
-          EEG 通道
-          <select value={settings.eeg.selectedChannel} onChange={(event) => updateEeg({ selectedChannel: event.target.value as EegChannel })}>
-            <option value="eeg1">EEG1</option>
-            <option value="eeg2">EEG2</option>
-            <option value="eeg3">EEG3</option>
-            <option value="eeg4">EEG4</option>
-          </select>
-        </label>
+        <div className="field-control">
+          <span className="field-label">EEG 通道</span>
+          <ThemedSelect
+            ariaLabel="EEG 通道"
+            value={settings.eeg.selectedChannel}
+            options={eegChannelOptions}
+            onChange={(selectedChannel) => updateEeg({ selectedChannel: selectedChannel as EegChannel })}
+          />
+        </div>
         <div className="two-col">
           <label>
             Scale
@@ -125,14 +156,15 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
             <input type="number" step="0.1" value={settings.eeg.bandpassHigh} onChange={(event) => updateEeg({ bandpassHigh: Number(event.target.value) })} />
           </label>
         </div>
-        <label>
-          陷波
-          <select value={settings.eeg.notch} onChange={(event) => updateEeg({ notch: parseNotch(event.target.value) })}>
-            <option value="off">关闭</option>
-            <option value="50">50 Hz</option>
-            <option value="60">60 Hz</option>
-          </select>
-        </label>
+        <div className="field-control">
+          <span className="field-label">陷波</span>
+          <ThemedSelect
+            ariaLabel="陷波"
+            value={String(settings.eeg.notch)}
+            options={notchOptions}
+            onChange={(notch) => updateEeg({ notch: parseNotch(notch) })}
+          />
+        </div>
         <div className="band-editor">
           {createEegBands().map((band) => (
             <div className="band-row" key={band.key}>
@@ -184,6 +216,17 @@ function parseAutoNumber(value: string) {
   if (value.trim().toLowerCase() === 'auto') return 'auto';
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 'auto';
+}
+
+async function pickDirectory(): Promise<string | null> {
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return null;
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const result = await open({ directory: true, multiple: false });
+    return typeof result === 'string' ? result : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseNotch(value: string): AppSettings['eeg']['notch'] {

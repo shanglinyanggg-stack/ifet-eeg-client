@@ -9,7 +9,7 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -34,9 +34,11 @@ struct BleRuntime {
 }
 
 struct Recorder {
-    path: PathBuf,
     writer: BufWriter<File>,
+    last_flush: Instant,
 }
+
+const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
 impl BleManagerState {
     pub async fn scan_devices(&self) -> Result<Vec<DeviceInfo>> {
@@ -52,7 +54,8 @@ impl BleManagerState {
                 continue;
             };
             let name = props.local_name.unwrap_or_else(|| "(未命名设备)".to_string());
-            let rssi = props.rssi.unwrap_or(0);
+            // 0 dBm 会被误认为信号极强，未上报时用 i16::MIN 占位
+            let rssi = props.rssi.unwrap_or(i16::MIN);
             devices.push(DeviceInfo {
                 id: peripheral.id().to_string(),
                 name,
@@ -64,7 +67,16 @@ impl BleManagerState {
     }
 
     pub async fn connect_device(&self, app: AppHandle, device_id: String) -> Result<()> {
-        self.disconnect_device().await.ok();
+        if let Err(error) = self.disconnect_device().await {
+            // 旧连接清理失败不阻断新连接，但要让用户看到
+            let _ = app.emit(
+                "ble://status",
+                crate::models::StatusEvent {
+                    message: format!("断开旧设备时出错，已忽略: {error}"),
+                    connected: false,
+                },
+            );
+        }
 
         let adapter = self.ensure_adapter().await?;
         let peripheral = self.find_peripheral(&adapter, &device_id).await?;
@@ -103,10 +115,12 @@ impl BleManagerState {
                         let _ = task_app.emit(
                             "ble://status",
                             crate::models::StatusEvent {
-                                message: format!("记录写入失败: {error}"),
+                                message: format!("记录写入失败，已停止录制: {error}"),
                                 connected: true,
                             },
                         );
+                        // 写盘失败后主动停止录制，避免后续样本继续往坏掉的 writer 写
+                        abort_recorder(&recorder).await;
                     }
                 }
             }
@@ -181,8 +195,8 @@ impl BleManagerState {
 
         let mut recorder = self.recorder.lock().await;
         *recorder = Some(Recorder {
-            path: path.clone(),
             writer,
+            last_flush: Instant::now(),
         });
         Ok(path.to_string_lossy().to_string())
     }
@@ -215,33 +229,43 @@ impl BleManagerState {
     }
 
     async fn find_peripheral(&self, adapter: &Adapter, device_id: &str) -> Result<Peripheral> {
-        let peripherals = adapter.peripherals().await?;
-        if let Some(peripheral) = peripherals
+        if let Some(peripheral) = adapter
+            .peripherals()
+            .await?
             .into_iter()
             .find(|peripheral| peripheral.id().to_string() == device_id)
         {
             return Ok(peripheral);
         }
 
+        // 兜底：扫描期间轮询 peripherals()，命中即返回，避免固定 sleep 拖慢连接
         adapter.start_scan(ScanFilter::default()).await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let _ = adapter.stop_scan().await;
-        adapter
-            .peripherals()
-            .await?
-            .into_iter()
-            .find(|peripheral| peripheral.id().to_string() == device_id)
-            .ok_or_else(|| anyhow!("未找到目标设备: {device_id}"))
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(peripheral) = adapter
+                .peripherals()
+                .await?
+                .into_iter()
+                .find(|peripheral| peripheral.id().to_string() == device_id)
+            {
+                let _ = adapter.stop_scan().await;
+                return Ok(peripheral);
+            }
+            if Instant::now() >= deadline {
+                let _ = adapter.stop_scan().await;
+                return Err(anyhow!("未找到目标设备: {device_id}"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 }
 
 fn parse_hex(raw: &str) -> Result<Vec<u8>> {
-    let normalized = raw
-        .chars()
-        .map(|ch| if ch.is_ascii_hexdigit() { ch } else { ' ' })
-        .collect::<String>();
     let mut bytes = Vec::new();
-    for part in normalized.split_whitespace() {
+    for part in raw.split(|ch: char| !ch.is_ascii_hexdigit()) {
+        if part.is_empty() {
+            continue;
+        }
         let value = u8::from_str_radix(part, 16).map_err(|_| anyhow!("命令包含非法十六进制字节"))?;
         bytes.push(value);
     }
@@ -282,7 +306,18 @@ async fn write_record(
         eeg.map(|value| value.eeg4.to_string()).unwrap_or_default(),
         eeg.and_then(|value| value.flag).map(|value| value.to_string()).unwrap_or_default()
     )?;
-    recording.writer.flush()?;
-    let _ = &recording.path;
+    // 定时 flush，避免每个样本都触发系统调用拖垮采集线程
+    if recording.last_flush.elapsed() >= FLUSH_INTERVAL {
+        recording.writer.flush()?;
+        recording.last_flush = Instant::now();
+    }
     Ok(())
+}
+
+async fn abort_recorder(recorder: &Arc<Mutex<Option<Recorder>>>) {
+    let mut recorder = recorder.lock().await;
+    if let Some(recording) = recorder.as_mut() {
+        let _ = recording.writer.flush();
+    }
+    *recorder = None;
 }

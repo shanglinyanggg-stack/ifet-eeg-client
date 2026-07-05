@@ -1,9 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Activity, Palette, Settings2 } from 'lucide-react';
-import { appendSample, type TimedValue } from './domain/dsp';
-import { defaultSettings, loadSettings, saveSettings, themeOptions, type ThemeName } from './domain/settings';
+import { appendSample, Biquad, FilterChain, KalmanRegistry, type TimedValue } from './domain/dsp';
+import {
+  resolveEegShareListColumns,
+  resolveNormalGridColumns,
+  resolveSettingsFormColumns,
+  resolveSettingsPanelWidth,
+  resolveViewportDensity
+} from './domain/layout';
+import {
+  defaultSettings,
+  loadSettings,
+  saveSettings,
+  themeOptions,
+  type AppSettings,
+  type ThemeName
+} from './domain/settings';
 import {
   channelColors,
   channelLabels,
@@ -15,12 +30,19 @@ import {
 import { DevicePanel } from './components/DevicePanel';
 import { EegModeView } from './components/EegModeView';
 import { SettingsPanel } from './components/SettingsPanel';
+import { ThemedSelect } from './components/ThemedSelect';
 import { WaveformCanvas } from './components/WaveformCanvas';
 
 const MAX_POINTS = 1200;
 const allChannels = Object.keys(channelLabels) as ChannelKey[];
 
 type ChannelBuffers = Record<ChannelKey, TimedValue[]>;
+type AppStyle = CSSProperties & {
+  '--normal-columns': number;
+  '--settings-panel-width': string;
+  '--settings-form-columns': number;
+  '--share-list-columns': number;
+};
 
 function createEmptyBuffers(): ChannelBuffers {
   return allChannels.reduce((acc, channel) => {
@@ -31,6 +53,7 @@ function createEmptyBuffers(): ChannelBuffers {
 
 export default function App() {
   const [settings, setSettings] = useState(defaultSettings);
+  const [viewport, setViewport] = useState(() => getViewportSize());
   const [buffers, setBuffers] = useState<ChannelBuffers>(() => createEmptyBuffers());
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
@@ -42,6 +65,9 @@ export default function App() {
   const [commandText, setCommandText] = useState('AA 55 01 01');
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [sampleCount, setSampleCount] = useState(0);
+  const [warmupRemaining, setWarmupRemaining] = useState(0);
+  const lastConnectedDevice = useRef('');
+  const reconnectAttempt = useRef(0);
 
   useEffect(() => {
     setSettings(loadSettings());
@@ -52,27 +78,20 @@ export default function App() {
   }, [settings]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
-    let unlistenSample: (() => void) | undefined;
-    let unlistenStatus: (() => void) | undefined;
+    const handleResize = () => setViewport(getViewportSize());
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
-    listen<SampleEvent>('ble://sample', (event) => {
-      pushSample(event.payload);
-    }).then((unlisten) => {
-      unlistenSample = unlisten;
-    });
-
-    listen<StatusEvent>('ble://status', (event) => {
-      setConnected(event.payload.connected);
-      setStatus(event.payload.message);
-    }).then((unlisten) => {
-      unlistenStatus = unlisten;
-    });
-
-    return () => {
-      unlistenSample?.();
-      unlistenStatus?.();
+  useEffect(() => {
+    const handleKeyDown = async (event: KeyboardEvent) => {
+      if (event.key !== 'F11') return;
+      event.preventDefault();
+      await toggleFullscreen();
     };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   const pushSample = useCallback((event: SampleEvent) => {
@@ -106,18 +125,83 @@ export default function App() {
     setSampleCount((count) => count + 1);
   }, []);
 
+  // 自动重连：仅在开启 autoReconnect 且有上次连接的设备时触发
+  const reconnectTimer = useRef<number | undefined>(undefined);
+  const handleUnexpectedDisconnect = useCallback(() => {
+    if (!settings.autoReconnect) return;
+    const deviceId = lastConnectedDevice.current;
+    if (!deviceId) return;
+    if (reconnectTimer.current) return;
+    const attempt = ++reconnectAttempt.current;
+    const delay = Math.min(30000, 1000 * Math.pow(2, attempt - 1));
+    setStatus(`将在 ${Math.round(delay / 1000)}s 后自动重连 (第 ${attempt} 次)`);
+    reconnectTimer.current = window.setTimeout(async () => {
+      reconnectTimer.current = undefined;
+      try {
+        setStatus('正在自动重连设备');
+        await invokeCommand('connect_device', { deviceId });
+        setConnected(true);
+        reconnectAttempt.current = 0;
+        setStatus('设备已重新连接');
+      } catch (error) {
+        setStatus(`自动重连失败: ${error}`);
+        handleUnexpectedDisconnect();
+      }
+    }, delay);
+  }, [settings.autoReconnect]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    const unlisteners: Array<() => void> = [];
+
+    listen<SampleEvent>('ble://sample', (event) => {
+      if (!cancelled) pushSample(event.payload);
+    }).then((unlisten) => {
+      if (cancelled) {
+        unlisten();
+      } else {
+        unlisteners.push(unlisten);
+      }
+    });
+
+    listen<StatusEvent>('ble://status', (event) => {
+      if (cancelled) return;
+      setConnected(event.payload.connected);
+      setStatus(event.payload.message);
+      if (!event.payload.connected) {
+        handleUnexpectedDisconnect();
+      }
+    }).then((unlisten) => {
+      if (cancelled) {
+        unlisten();
+      } else {
+        unlisteners.push(unlisten);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, [pushSample, handleUnexpectedDisconnect]);
+
   const visibleBuffers = useMemo(() => {
     const result: ChannelBuffers = { ...buffers };
     if (typeof settings.eeg.timeWindowSeconds !== 'number') return result;
-    const selected = buffers[settings.eeg.selectedChannel];
-    const last = selected[selected.length - 1]?.timestamp;
+    // 时间窗基准：取所有通道中最新的时间戳，避免绑定单一 EEG 通道
+    let last = 0;
+    for (const channel of allChannels) {
+      const tail = buffers[channel][buffers[channel].length - 1]?.timestamp;
+      if (tail && tail > last) last = tail;
+    }
     if (!last) return result;
     const minTime = last - settings.eeg.timeWindowSeconds * 1000;
     for (const channel of allChannels) {
       result[channel] = buffers[channel].filter((item) => item.timestamp >= minTime);
     }
     return result;
-  }, [buffers, settings.eeg.selectedChannel, settings.eeg.timeWindowSeconds]);
+  }, [buffers, settings.eeg.timeWindowSeconds]);
 
   const scanDevices = async () => {
     setScanning(true);
@@ -138,8 +222,11 @@ export default function App() {
     try {
       setStatus('正在连接设备');
       await invokeCommand('connect_device', { deviceId: selectedDeviceId });
+      lastConnectedDevice.current = selectedDeviceId;
+      reconnectAttempt.current = 0;
       setConnected(true);
       setStatus('设备已连接');
+      startWarmup();
     } catch (error) {
       setStatus(String(error));
     }
@@ -147,6 +234,12 @@ export default function App() {
 
   const disconnectDevice = async () => {
     try {
+      // 用户主动断开时清除自动重连上下文
+      lastConnectedDevice.current = '';
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = undefined;
+      }
       await invokeCommand('disconnect_device');
       setConnected(false);
       setStatus('已断开连接');
@@ -154,6 +247,19 @@ export default function App() {
       setStatus(String(error));
     }
   };
+
+  // 预热倒计时：连接后等待电极稳定，期间提示用户
+  const startWarmup = useCallback(() => {
+    const seconds = Number(settings.warmupDelaySeconds);
+    if (!Number.isFinite(seconds) || seconds <= 0) return;
+    setWarmupRemaining(seconds);
+  }, [settings.warmupDelaySeconds]);
+
+  useEffect(() => {
+    if (warmupRemaining <= 0) return;
+    const timer = window.setTimeout(() => setWarmupRemaining((value) => value - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [warmupRemaining]);
 
   const sendCommand = async () => {
     try {
@@ -181,46 +287,60 @@ export default function App() {
     }
   };
 
-  const normalWaveforms = allChannels
-    .filter((channel) => settings.visibleChannels[channel])
-    .map((channel) => ({
-      channel,
-      series: [
-        {
-          label: channelLabels[channel],
-          color: channelColors[channel],
-          values: visibleBuffers[channel]
-        }
-      ]
-    }));
+  const normalWaveforms = useMemo(() => {
+    return allChannels
+      .filter((channel) => settings.visibleChannels[channel])
+      .map((channel) => ({
+        channel,
+        series: [
+          {
+            label: channelLabels[channel],
+            color: channelColors[channel],
+            values: applyNormalFilters(visibleBuffers[channel], channel, settings)
+          }
+        ]
+      }));
+  }, [visibleBuffers, settings]);
+
+  const density = resolveViewportDensity(viewport.height);
+  const settingsPanelWidth = resolveSettingsPanelWidth(viewport.width);
+  const appStyle: AppStyle = {
+    '--normal-columns': resolveNormalGridColumns(viewport.width, settingsOpen),
+    '--settings-panel-width': `${settingsPanelWidth}px`,
+    '--settings-form-columns': resolveSettingsFormColumns(settingsPanelWidth),
+    '--share-list-columns': resolveEegShareListColumns(viewport.width, settingsOpen)
+  };
 
   return (
-    <main className="app-shell" data-theme={settings.theme}>
+    <main className="app-shell" data-theme={settings.theme} data-density={density} style={appStyle}>
       <header className="topbar">
         <div className="brand">
           <Activity size={24} />
           <div>
             <h1>iFET EEG Client</h1>
-            <span>{sampleCount} samples</span>
+            <span>
+              {sampleCount} samples
+              {warmupRemaining > 0 && ` · 预热 ${warmupRemaining}s`}
+            </span>
           </div>
         </div>
         <div className="topbar-actions">
-          <label className="theme-switcher">
+          <div className="theme-switcher">
             <Palette size={17} />
             <span>主题</span>
-            <select
-              aria-label="界面主题"
+            <ThemedSelect
+              ariaLabel="界面主题"
               value={settings.theme}
-              onChange={(event) => setSettings((value) => ({ ...value, theme: event.target.value as ThemeName }))}
-            >
-              {themeOptions.map((theme) => (
-                <option key={theme.value} value={theme.value}>
-                  {theme.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button className="icon-button" type="button" onClick={() => setSettingsOpen((value) => !value)}>
+              options={themeOptions}
+              onChange={(theme) => setSettings((value) => ({ ...value, theme: theme as ThemeName }))}
+            />
+          </div>
+          <button
+            className="icon-button"
+            type="button"
+            aria-expanded={settingsOpen}
+            onClick={() => setSettingsOpen((value) => !value)}
+          >
             <Settings2 size={18} />
             <span>设置</span>
           </button>
@@ -258,7 +378,7 @@ export default function App() {
           ) : (
             <div className="normal-grid">
               {normalWaveforms.map((item) => (
-                <WaveformCanvas key={item.channel} title={`${channelLabels[item.channel]} 波形`} series={item.series} />
+                <WaveformCanvas key={item.channel} title={`${channelLabels[item.channel]} 波形`} series={item.series} fill />
               ))}
             </div>
           )}
@@ -267,6 +387,71 @@ export default function App() {
       </div>
     </main>
   );
+}
+
+function getViewportSize() {
+  if (typeof window === 'undefined') {
+    return { width: 1440, height: 920 };
+  }
+  return { width: window.innerWidth, height: window.innerHeight };
+}
+
+// 默认采样率（协议未携带，与 EEG 保持一致）
+const DEFAULT_SAMPLE_RATE = 100;
+
+// 为每个 normal 通道维护一条带通滤波链，跨渲染保持状态。
+// 通过模块级 Registry 缓存，key 由通道+设置组成。
+class FilterChainRegistry {
+  private entries = new Map<string, FilterChain>();
+
+  get(channel: ChannelKey, settings: AppSettings): FilterChain | null {
+    const key = `${channel}|${settings.filterEnabled}|${settings.filterLow}|${settings.filterHigh}`;
+    const existing = this.entries.get(key);
+    if (existing) return existing;
+
+    if (!settings.filterEnabled || settings.filterHigh <= settings.filterLow) {
+      return null;
+    }
+    const chain = new FilterChain([Biquad.bandpass(settings.filterLow, settings.filterHigh, DEFAULT_SAMPLE_RATE)]);
+    this.entries.set(key, chain);
+    return chain;
+  }
+}
+
+const normalFilterRegistry = new FilterChainRegistry();
+const normalKalmanRegistry = new KalmanRegistry();
+
+function applyNormalFilters(
+  values: TimedValue[],
+  channel: ChannelKey,
+  settings: AppSettings
+): TimedValue[] {
+  const chain = normalFilterRegistry.get(channel, settings);
+  const kalman = settings.kalmanEnabled
+    ? normalKalmanRegistry.get(channel, settings.kalmanQ, settings.kalmanR)
+    : null;
+  if (!chain && !kalman) return values;
+  return values.map((point) => {
+    let value = point.value;
+    if (chain) value = chain.process(value);
+    if (kalman) value = kalman.process(value);
+    return { timestamp: point.timestamp, value };
+  });
+}
+
+async function toggleFullscreen(): Promise<void> {
+  if (isTauriRuntime()) {
+    const appWindow = getCurrentWindow();
+    const fullscreen = await appWindow.isFullscreen();
+    await appWindow.setFullscreen(!fullscreen);
+    return;
+  }
+
+  if (document.fullscreenElement) {
+    await document.exitFullscreen?.();
+  } else {
+    await document.documentElement.requestFullscreen?.();
+  }
 }
 
 async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {

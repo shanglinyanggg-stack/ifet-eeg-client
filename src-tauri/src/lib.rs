@@ -1,5 +1,4 @@
 mod ble;
-mod dsp;
 mod models;
 mod protocol;
 
@@ -48,6 +47,7 @@ fn to_user_error(error: anyhow::Error) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(BleManagerState::default())
         .setup(|app| {
             let _ = app.emit(
