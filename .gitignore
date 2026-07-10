@@ -34,3 +34,6 @@ Thumbs.db
 # serena local
 .serena/cache/
 .serena/project.local.yml
+
+# Codex isolated worktrees
+.worktrees/
