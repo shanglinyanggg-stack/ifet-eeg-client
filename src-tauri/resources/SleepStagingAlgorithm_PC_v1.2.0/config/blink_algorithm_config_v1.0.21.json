@@ -1,0 +1,77 @@
+{
+  "schema_version": "ifet-blink-config/v3",
+  "algorithm_version": "1.0.21",
+  "sample_rate_hz": 100,
+  "gesture_mapping": {
+    "3": "volume_down",
+    "5": "volume_up",
+    "five_blink_priority": true
+  },
+  "calibration": {
+    "quiet_open_eye_seconds": 3.0,
+    "continuous_natural_blink_seconds": 10.0,
+    "minimum_template_peaks": 5,
+    "minimum_pair_consensus": 0.65,
+    "minimum_strength_robust_z": 3.0,
+    "post_calibration_guard_seconds": 5.0
+  },
+  "filter": {
+    "type": "causal Butterworth bandpass SOS",
+    "low_hz": 0.7,
+    "high_hz": 15.0,
+    "order": 2
+  },
+  "channel_policy": {
+    "primary_pair": [1, 2],
+    "auxiliary_pair": [3, 4],
+    "minimum_simultaneous_channels": 2,
+    "poor_auxiliary_scale_over_reference": 1.75,
+    "poor_auxiliary_scale_relative_to_primary": 1.5,
+    "poor_signal_behavior": "EEG1+EEG2 primary; EEG3+EEG4 cannot emit a command without simultaneous primary support"
+  },
+  "group_decoder": {
+    "enabled": true,
+    "window_seconds": 8.0,
+    "minimum_window_seconds": 4.0,
+    "update_seconds": 0.25,
+    "peak_height_robust_z": 2.5,
+    "matched_template_extension_peak_height_robust_z": 1.8,
+    "matched_template_extension_support_fraction": 0.8,
+    "peak_prominence_robust_z": 1.0,
+    "minimum_peak_distance_seconds": 0.28,
+    "maximum_interblink_interval_seconds": 0.95,
+    "gesture_end_age_seconds": [1.0, 2.0],
+    "four_as_five_max_span_seconds": 1.2,
+    "weak_fourth_tail_ratio": 0.45,
+    "maximum_peaks": 7
+  },
+  "matched_template_gate": {
+    "enabled": true,
+    "minimum_correlation": 0.65,
+    "support_tolerance_seconds": 0.2,
+    "minimum_supported_peaks": 2,
+    "minimum_supported_fraction": 0.6
+  },
+  "adaptive_baseline": {
+    "enabled": true,
+    "memory_seconds": 30.0,
+    "minimum_seconds": 3.0,
+    "update_seconds": 1.0,
+    "normal_time_constant_seconds": 10.0,
+    "recovery_time_constant_seconds": 8.0,
+    "health_failures_before_pause": 3,
+    "ordinary_recovery_checks": 3,
+    "burst_recovery_checks": 5,
+    "fast_recovery_memory_seconds": 8.0,
+    "fast_recovery_template_peaks": 2,
+    "automatic_reenable": true
+  },
+  "artifact_safety": {
+    "motion_window_seconds": 1.5,
+    "maximum_acceleration_std": 250.0,
+    "invalid_sample_guard_seconds": 0.2,
+    "gap_reset_seconds": 0.35,
+    "burst_rejection_window_seconds": 30.0,
+    "burst_rejections_before_pair_disable": 3
+  }
+}

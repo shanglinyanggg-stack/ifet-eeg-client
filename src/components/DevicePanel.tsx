@@ -44,6 +44,11 @@ export function DevicePanel({
       label: `${device.name} / ${device.rssi} dBm`
     }))
   ];
+  const selectedDevice = devices.find((device) => device.id === selectedDeviceId);
+  const connectedDeviceName = selectedDevice?.name || selectedDeviceId || '当前设备';
+  const connectedDeviceDetail = selectedDevice
+    ? `${selectedDevice.id} · ${status}`
+    : status;
 
   const stateValue = connected ? 'connected' : scanning ? 'scanning' : 'disconnected';
 
@@ -52,8 +57,10 @@ export function DevicePanel({
       <div className="status-block" data-state={stateValue}>
         <div className={`status-dot ${connected ? 'online' : ''} ${scanning ? 'scanning' : ''}`} />
         <div>
-          <strong>{connected ? '已连接' : scanning ? '扫描中' : '未连接'}</strong>
-          <span>{status}</span>
+          <strong>{connected ? `已连接：${connectedDeviceName}` : scanning ? '扫描中' : '未连接'}</strong>
+          <span title={connected ? connectedDeviceDetail : status}>
+            {connected ? connectedDeviceDetail : status}
+          </span>
         </div>
       </div>
       <div className="device-group">

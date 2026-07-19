@@ -1,10 +1,10 @@
-// v1.0.13 四通道配对眨眼算法（本地降级路径，与 PC 服务语义对齐）：
-// - EEG1-EEG4 固定两对 EEG1+EEG2 / EEG3+EEG4，取胜配对的 fused 包络，禁止单通道降级
+// v1.0.21 四通道配对眨眼算法（仅作 PC 服务不可用时的保守降级路径）：
+// - EEG1+EEG2 为主配对；EEG3+EEG4 只在主配对同步响应且自身质量正常时补充
 // - 校准 = 3 秒安静背景 + 10 秒连续自然眨眼；中心/尺度校准后冻结
 // - 因果 3 阶 Butterworth 0.5-8Hz SOS（与 scipy butter(3, bandpass, fs=100) 系数一致）
 // - 丢包：invalid 后 0.20s 保护窗不追溯，连续 0.35s 才清空手势，可按节律补偿 1 次
 // - 手势：3 次降音量 / 5 次升音量，五次优先，冷却 0.60s
-// - 基线健康监测：连续 3 次超限置 stale 并暂停控制，要求显式重测
+// - 基线健康监测：连续 3 次超限置 stale；稳定安静窗连续 3 次通过后自动重建并恢复
 export type BlinkGesture = 'volume-down' | 'volume-up';
 export type LocalBlinkCalibrationStatus = 'idle' | 'running' | 'complete' | 'failed';
 
@@ -19,8 +19,11 @@ export interface BlinkGestureSnapshot {
   calibrationConsensus: number;
   enabledPairs: Array<readonly [number, number]>;
   baselineStale: boolean;
+  baselineRecoveryProgress: number;
+  baselineRecoveries: number;
   baselineHealthChecks: number;
   adaptiveBaselineUpdates: number;
+  runtimeDisabledPairs: Array<readonly [number, number]>;
   singleChannelRejections: number;
   invalidGapRejections: number;
   gapRecoveries: number;
@@ -71,13 +74,19 @@ const MOTION_WINDOW_MS = 1_500;
 const MOTION_STD_FLOOR = 250;
 const MOTION_STD_CEILING = 2_000;
 
-const HEALTH_MEMORY_MS = 90_000;
-const HEALTH_MINIMUM_MS = 15_000;
-const HEALTH_UPDATE_MS = 5_000;
+const HEALTH_MEMORY_MS = 8_000;
+const HEALTH_MINIMUM_MS = 3_000;
+const HEALTH_UPDATE_MS = 1_000;
 const HEALTH_SCALE_RATIO_MIN = 0.1;
 const HEALTH_SCALE_RATIO_MAX = 2.5;
 const HEALTH_CENTER_SHIFT_Z_MAX = 2.5;
 const HEALTH_FAILURES_REQUIRED = 3;
+const HEALTH_RECOVERY_CHECKS_REQUIRED = 3;
+const HEALTH_RECOVERY_SCALE_RATIO_MAX = 1.75;
+const HEALTH_RECOVERY_CENTER_SHIFT_Z_MAX = 1.5;
+const HEALTH_RECOVERY_OUTLIER_FRACTION_MAX = 0.08;
+const AUXILIARY_NOISE_RATIO_MAX = 1.75;
+const AUXILIARY_RELATIVE_NOISE_RATIO = 1.5;
 
 // scipy.signal.butter(3, (0.5, 8.0), btype="bandpass", fs=100, output="sos")
 const BLINK_SOS: ReadonlyArray<readonly [number, number, number, number, number, number]> = [
@@ -152,6 +161,10 @@ export class BlinkGestureDetector {
   private baselineHealthChecks = 0;
   private baselineHealthFailures = 0;
   private baselineStale = false;
+  private baselineRecoveryChecks = 0;
+  private baselineRecoveries = 0;
+  private adaptiveBaselineUpdates = 0;
+  private runtimeDisabledPairs: Array<readonly [number, number]> = [];
   private singleChannelRejections = 0;
   private invalidGapRejections = 0;
   private gapRecoveries = 0;
@@ -171,6 +184,10 @@ export class BlinkGestureDetector {
     this.baselineStale = false;
     this.baselineHealthChecks = 0;
     this.baselineHealthFailures = 0;
+    this.baselineRecoveryChecks = 0;
+    this.baselineRecoveries = 0;
+    this.adaptiveBaselineUpdates = 0;
+    this.runtimeDisabledPairs = [];
     this.scaleRatios.fill(1);
     this.healthHistory.forEach((history) => history.splice(0));
     this.motionHistory.splice(0);
@@ -304,8 +321,13 @@ export class BlinkGestureDetector {
       calibrationConsensus: this.calibrationConsensus,
       enabledPairs: this.enabledPairs.map((pair) => [pair[0], pair[1]] as const),
       baselineStale: this.baselineStale,
+      baselineRecoveryProgress: this.baselineStale
+        ? clamp01(this.baselineRecoveryChecks / HEALTH_RECOVERY_CHECKS_REQUIRED)
+        : 0,
+      baselineRecoveries: this.baselineRecoveries,
       baselineHealthChecks: this.baselineHealthChecks,
-      adaptiveBaselineUpdates: 0,
+      adaptiveBaselineUpdates: this.adaptiveBaselineUpdates,
+      runtimeDisabledPairs: this.runtimeDisabledPairs.map((pair) => [pair[0], pair[1]] as const),
       singleChannelRejections: this.singleChannelRejections,
       invalidGapRejections: this.invalidGapRejections,
       gapRecoveries: this.gapRecoveries
@@ -348,6 +370,10 @@ export class BlinkGestureDetector {
     this.baselineHealthChecks = 0;
     this.baselineHealthFailures = 0;
     this.baselineStale = false;
+    this.baselineRecoveryChecks = 0;
+    this.baselineRecoveries = 0;
+    this.adaptiveBaselineUpdates = 0;
+    this.runtimeDisabledPairs = [];
     this.singleChannelRejections = 0;
     this.invalidGapRejections = 0;
     this.gapRecoveries = 0;
@@ -356,18 +382,32 @@ export class BlinkGestureDetector {
   }
 
   private pairScores(standardized: readonly number[]): { fused: number; secondary: number } {
-    let bestFused = 0;
-    let bestSecondary = 0;
-    for (const [a, b] of this.enabledPairs) {
+    const scorePair = ([a, b]: readonly [number, number]) => {
       const primary = Math.max(standardized[a], standardized[b]);
       const secondary = Math.min(standardized[a], standardized[b]);
-      const fused = Math.sqrt(Math.max(0, primary * secondary));
-      if (fused > bestFused) {
-        bestFused = fused;
-        bestSecondary = secondary;
-      }
-    }
-    return { fused: bestFused, secondary: bestSecondary };
+      return { fused: Math.sqrt(Math.max(0, primary * secondary)), secondary };
+    };
+    const primaryPair = PAIRS[0];
+    const auxiliaryPair = PAIRS[AUXILIARY_PAIR_INDEX];
+    const primaryEnabled = this.enabledPairs.some(([a, b]) => a === primaryPair[0] && b === primaryPair[1]);
+    const auxiliaryEnabled = this.enabledPairs.some(([a, b]) => a === auxiliaryPair[0] && b === auxiliaryPair[1]);
+    if (!primaryEnabled) return auxiliaryEnabled ? scorePair(auxiliaryPair) : { fused: 0, secondary: 0 };
+
+    const primary = scorePair(primaryPair);
+    if (!auxiliaryEnabled || this.auxiliaryPairIsNoisy()) return primary;
+    const auxiliary = scorePair(auxiliaryPair);
+    if (auxiliary.fused <= primary.fused || primary.secondary < PAIR_SECONDARY_FLOOR_Z) return primary;
+    return {
+      fused: auxiliary.fused,
+      secondary: Math.min(auxiliary.secondary, primary.secondary)
+    };
+  }
+
+  private auxiliaryPairIsNoisy(): boolean {
+    const primaryRatio = Math.max(1e-6, (this.scaleRatios[0] + this.scaleRatios[1]) / 2);
+    const auxiliaryRatio = (this.scaleRatios[2] + this.scaleRatios[3]) / 2;
+    return auxiliaryRatio > AUXILIARY_NOISE_RATIO_MAX
+      && auxiliaryRatio > primaryRatio * AUXILIARY_RELATIVE_NOISE_RATIO;
   }
 
   private shiftScores(standardized: readonly number[], valid: boolean): void {
@@ -575,7 +615,7 @@ export class BlinkGestureDetector {
     for (const [a, b] of this.enabledPairs) {
       maxSecondary = Math.max(maxSecondary, Math.min(standardized[a], standardized[b]));
     }
-    if (valid && maxSecondary < dualFloor) {
+    if (valid && (this.baselineStale || maxSecondary < dualFloor)) {
       for (let channel = 0; channel < 4; channel += 1) {
         this.healthHistory[channel].push(filtered[channel]);
         const capacity = Math.round((HEALTH_MEMORY_MS / 1000) * SAMPLE_RATE);
@@ -589,10 +629,14 @@ export class BlinkGestureDetector {
     if (this.healthHistory.some((history) => history.length < minimum)) return;
 
     let healthBad = false;
+    const targetCenters = [0, 0, 0, 0];
+    const targetScales = [1, 1, 1, 1];
     for (let channel = 0; channel < 4; channel += 1) {
       const values = this.healthHistory[channel];
       const center = median(values);
       const targetScale = robustScaleV13(values, center, 1e-3);
+      targetCenters[channel] = center;
+      targetScales[channel] = targetScale;
       const currentScale = Math.max(this.scales[channel], 1e-3);
       const ratio = targetScale / currentScale;
       const shiftZ = Math.abs(center - this.centers[channel]) / currentScale;
@@ -602,6 +646,31 @@ export class BlinkGestureDetector {
       }
     }
     this.baselineHealthChecks += 1;
+    const auxiliaryNoisy = this.auxiliaryPairIsNoisy();
+    this.runtimeDisabledPairs = auxiliaryNoisy ? [PAIRS[AUXILIARY_PAIR_INDEX]] : [];
+
+    if (this.baselineStale) {
+      const recoveryStable = this.recoveryWindowIsStable(targetCenters, targetScales);
+      this.baselineRecoveryChecks = recoveryStable ? this.baselineRecoveryChecks + 1 : 0;
+      if (this.baselineRecoveryChecks >= HEALTH_RECOVERY_CHECKS_REQUIRED) {
+        for (let channel = 0; channel < 4; channel += 1) {
+          this.centers[channel] = targetCenters[channel];
+          this.scales[channel] = Math.max(this.scales[channel], targetScales[channel]);
+          this.scaleRatios[channel] = 1;
+        }
+        this.baselineStale = false;
+        this.baselineHealthFailures = 0;
+        this.baselineRecoveryChecks = 0;
+        this.baselineRecoveries += 1;
+        this.adaptiveBaselineUpdates += 1;
+        this.resumeDetectionMs = timestampMs + POST_CALIBRATION_GUARD_MS;
+        this.clearGesture();
+        this.pendingCandidates.splice(0);
+      }
+      this.lastHealthUpdateMs = timestampMs;
+      return;
+    }
+
     this.baselineHealthFailures = healthBad ? this.baselineHealthFailures + 1 : 0;
     if (this.baselineHealthFailures >= HEALTH_FAILURES_REQUIRED) {
       this.baselineStale = true;
@@ -609,6 +678,36 @@ export class BlinkGestureDetector {
       this.pendingCandidates.splice(0);
     }
     this.lastHealthUpdateMs = timestampMs;
+  }
+
+  private recoveryWindowIsStable(targetCenters: readonly number[], targetScales: readonly number[]): boolean {
+    for (let channel = 0; channel < 4; channel += 1) {
+      const values = this.healthHistory[channel];
+      if (values.length < 4) return false;
+      const split = Math.floor(values.length / 2);
+      const first = values.slice(0, split);
+      const second = values.slice(split);
+      const firstCenter = median(first);
+      const secondCenter = median(second);
+      const firstScale = robustScaleV13(first, firstCenter, 1e-3);
+      const secondScale = robustScaleV13(second, secondCenter, 1e-3);
+      const scaleRatio = Math.max(firstScale, secondScale) / Math.max(1e-3, Math.min(firstScale, secondScale));
+      const centerShiftZ = Math.abs(firstCenter - secondCenter) / Math.max(targetScales[channel], 1e-3);
+      if (scaleRatio > HEALTH_RECOVERY_SCALE_RATIO_MAX || centerShiftZ > HEALTH_RECOVERY_CENTER_SHIFT_Z_MAX) {
+        return false;
+      }
+    }
+    for (const [a, b] of this.enabledPairs) {
+      let outliers = 0;
+      const length = Math.min(this.healthHistory[a].length, this.healthHistory[b].length);
+      for (let index = 0; index < length; index += 1) {
+        const za = Math.abs(this.healthHistory[a][index] - targetCenters[a]) / Math.max(targetScales[a], 1e-3);
+        const zb = Math.abs(this.healthHistory[b][index] - targetCenters[b]) / Math.max(targetScales[b], 1e-3);
+        if (Math.min(za, zb) >= this.thresholdZ * 0.6) outliers += 1;
+      }
+      if (outliers / Math.max(1, length) > HEALTH_RECOVERY_OUTLIER_FRACTION_MAX) return false;
+    }
+    return true;
   }
 
   private motionOk(): boolean {
@@ -691,7 +790,7 @@ function peakWidthSamples(values: number[], peak: number, peakProminence: number
   return right - left;
 }
 
-// v1.0.13 尺度：max(1.4826*MAD, (Q90-Q10)/2.5631, minimum)
+// v1.0.21 保守降级尺度：max(1.4826*MAD, (Q90-Q10)/2.5631, minimum)
 function robustScaleV13(values: number[], center: number, minimum: number): number {
   if (values.length === 0) return minimum;
   const deviations = values.map((value) => Math.abs(value - center));

@@ -128,6 +128,20 @@ impl SleepStagingClientState {
         .await
     }
 
+    pub async fn demo_alpha_calibration(
+        &self,
+        endpoint: &str,
+        session_id: String,
+        kind: String,
+    ) -> Result<Value, String> {
+        let url = local_url(endpoint, "/demo/alpha-calibration")?;
+        self.send(self.client.post(url).json(&json!({
+            "session_id": session_id,
+            "kind": kind,
+        })))
+        .await
+    }
+
     pub async fn demo_config(
         &self,
         endpoint: &str,

@@ -3,7 +3,7 @@
   "app": {
     "windows": [
       {
-        "title": "iFET EEG Client",
+        "title": "iFET EEG Client Sleep 0.2.5",
         "width": 1280,
         "height": 800,
         "minWidth": 1080,
@@ -20,8 +20,10 @@
     "icon": ["icons/icon.icns"],
     "macOS": {
       "minimumSystemVersion": "12.0",
-      "bundleName": "iFET EEG Client",
+      "bundleName": "iFET EEG Client Sleep 0.2.5",
       "hardenedRuntime": true,
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist"
     }
   }

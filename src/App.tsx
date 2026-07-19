@@ -9,7 +9,10 @@ import { mergeAudioTracks, pickAudioTracks, revokeAudioTrack } from './domain/au
 import { createDemoSamples, DEMO_SAMPLE_RATE } from './domain/demo';
 import {
   DEFAULT_ALPHA_CALIBRATION_SECONDS,
+  DEFAULT_CLOSED_EYE_CALIBRATION_SECONDS,
   DEFAULT_BLINK_CALIBRATION_SECONDS,
+  summarizeAlgorithmAction,
+  translateAlgorithmState,
   type SleepDemoSignalResponse
 } from './domain/sleep-demo-signal';
 import {
@@ -32,6 +35,7 @@ import {
   resetSleepDemo,
   resetSleepStaging,
   setSleepDemoBlinkEnabled,
+  startSleepDemoAlphaCalibration,
   startSleepDemoBlinkCalibration,
   startSleepStagingService,
   stopSleepStagingService,
@@ -67,6 +71,12 @@ import {
   type StatusEvent
 } from './domain/protocol';
 import { DevicePanel } from './components/DevicePanel';
+import {
+  DebugModeView,
+  type DebugAlgorithmEvent,
+  type DebugBlinkTrial,
+  type DebugMarkerRecord
+} from './components/DebugModeView';
 import { EegModeView } from './components/EegModeView';
 import { MusicLibraryModal } from './components/MusicLibraryModal';
 import { PureWaveformView } from './components/PureWaveformView';
@@ -102,8 +112,15 @@ interface SleepDemoServiceUiState {
   phase: SleepDemoServicePhase;
   message: string;
   alphaCalibrationSeconds: number;
+  closedEyeCalibrationSeconds: number;
   blinkCalibrationSeconds: number;
   lastResponse: SleepDemoSignalResponse | null;
+}
+
+export interface DeviceFlagRecord {
+  value: number;
+  timestamp: number;
+  sequence: number | null;
 }
 
 function createEmptyBuffers(): ChannelBuffers {
@@ -113,7 +130,7 @@ function createEmptyBuffers(): ChannelBuffers {
   }, {} as ChannelBuffers);
 }
 
-function extractChannelValues(event: SampleEvent): Partial<Record<ChannelKey, number>> {
+export function extractChannelValues(event: SampleEvent): Partial<Record<ChannelKey, number>> {
   const ppg = event.packet.ppg;
   const eeg = event.packet.eeg;
   return {
@@ -126,10 +143,12 @@ function extractChannelValues(event: SampleEvent): Partial<Record<ChannelKey, nu
     accX: ppg.accX,
     accY: ppg.accY,
     accZ: ppg.accZ,
-    eeg1: eeg?.eeg1,
-    eeg2: eeg?.eeg2,
-    eeg3: eeg?.eeg3,
-    eeg4: eeg?.eeg4
+    // 设备协议传输的是 24-bit 二补码。显示缓存必须先转为有符号值；
+    // 否则关闭带通时巨大的 2^24 直流偏置会让真实 EEG 看起来像一条平线。
+    eeg1: eeg ? signedU24(eeg.eeg1) : undefined,
+    eeg2: eeg ? signedU24(eeg.eeg2) : undefined,
+    eeg3: eeg ? signedU24(eeg.eeg3) : undefined,
+    eeg4: eeg ? signedU24(eeg.eeg4) : undefined
   };
 }
 
@@ -154,6 +173,25 @@ function mergeSampleEvents(current: ChannelBuffers, events: SampleEvent[]): Chan
   return next;
 }
 
+function mergeDeviceFlags(current: DeviceFlagRecord[], events: SampleEvent[]): DeviceFlagRecord[] {
+  const next = [...current];
+  for (const event of events) {
+    const value = event.packet.eeg?.flag;
+    if (typeof value !== 'number') continue;
+    const record = {
+      value,
+      timestamp: Date.parse(event.timestamp) || Date.now(),
+      sequence: event.deviceSequence ?? event.packet.sequence ?? null
+    };
+    if (next[next.length - 1]?.value === value) {
+      next[next.length - 1] = record;
+    } else {
+      next.push(record);
+    }
+  }
+  return next.slice(-12);
+}
+
 function blinkSnapshotFromResponse(
   response: SleepDemoSignalResponse,
   previous: BlinkGestureSnapshot
@@ -171,8 +209,13 @@ function blinkSnapshotFromResponse(
     calibrationConsensus: response.telemetry.blink_calibration_consensus_fraction,
     enabledPairs: (response.telemetry.blink_enabled_channel_pairs ?? []).map((pair) => [pair[0], pair[1]] as const),
     baselineStale: response.state.blink_baseline_stale ?? false,
+    baselineRecoveryProgress: response.telemetry.blink_baseline_recovery_progress ?? 0,
+    baselineRecoveries: response.telemetry.blink_baseline_recoveries ?? 0,
     baselineHealthChecks: response.telemetry.blink_baseline_health_checks ?? 0,
     adaptiveBaselineUpdates: response.telemetry.blink_adaptive_baseline_updates,
+    runtimeDisabledPairs: (response.telemetry.blink_runtime_disabled_pairs ?? []).map(
+      (pair) => [pair[0], pair[1]] as const
+    ),
     singleChannelRejections: response.telemetry.blink_single_channel_rejections,
     invalidGapRejections: response.telemetry.blink_invalid_gap_rejections ?? 0,
     gapRecoveries: response.telemetry.blink_gap_recoveries ?? 0
@@ -195,6 +238,14 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [musicLibraryOpen, setMusicLibraryOpen] = useState(false);
   const [sampleCount, setSampleCount] = useState(0);
+  const [invalidSampleCount, setInvalidSampleCount] = useState(0);
+  const [deviceFlags, setDeviceFlags] = useState<DeviceFlagRecord[]>([]);
+  const [debugMarkers, setDebugMarkers] = useState<DebugMarkerRecord[]>([]);
+  const [debugParticipantId, setDebugParticipantId] = useState('');
+  const [debugAlgorithmEvents, setDebugAlgorithmEvents] = useState<DebugAlgorithmEvent[]>([]);
+  const [debugBlinkTrial, setDebugBlinkTrial] = useState<DebugBlinkTrial | null>(null);
+  const [debugMarkerPath, setDebugMarkerPath] = useState('');
+  const [debugMarkerStatus, setDebugMarkerStatus] = useState('请先开始记录，再添加眨眼或伪迹标记');
   const [warmupRemaining, setWarmupRemaining] = useState(0);
   const [sleepMetrics, setSleepMetrics] = useState<SleepMetrics | null>(null);
   const sleepConfig = useMemo(
@@ -204,6 +255,11 @@ export default function App() {
   const [sleepSession, setSleepSession] = useState(() =>
     createSleepSessionState(toSleepSessionConfig(settings))
   );
+  const [sleepGuidanceActive, setSleepGuidanceActive] = useState(false);
+  const [sleepGuidanceMessage, setSleepGuidanceMessage] = useState(
+    '请完成基线测量并选择音乐，然后点击开始助眠'
+  );
+  const [lastAlgorithmAction, setLastAlgorithmAction] = useState<string | null>(null);
   const [blinkSnapshot, setBlinkSnapshot] = useState<BlinkGestureSnapshot>(() =>
     blinkDetector.current.snapshot()
   );
@@ -218,6 +274,7 @@ export default function App() {
     phase: 'local',
     message: '本地 Alpha / 眨眼检测',
     alphaCalibrationSeconds: DEFAULT_ALPHA_CALIBRATION_SECONDS,
+    closedEyeCalibrationSeconds: DEFAULT_CLOSED_EYE_CALIBRATION_SECONDS,
     blinkCalibrationSeconds: DEFAULT_BLINK_CALIBRATION_SECONDS,
     lastResponse: null
   });
@@ -235,6 +292,7 @@ export default function App() {
   const resumeAfterLibraryRef = useRef(false);
   const lastDemoGestureTimestamp = useRef(-1);
   const lastAppliedDemoTimestamp = useRef(-1);
+  const debugAlgorithmEventKeys = useRef(new Set<string>());
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -260,6 +318,7 @@ export default function App() {
         phase: 'local',
         message: '本地 Alpha / 眨眼检测',
         alphaCalibrationSeconds: DEFAULT_ALPHA_CALIBRATION_SECONDS,
+        closedEyeCalibrationSeconds: DEFAULT_CLOSED_EYE_CALIBRATION_SECONDS,
         blinkCalibrationSeconds: DEFAULT_BLINK_CALIBRATION_SECONDS,
         lastResponse: null
       });
@@ -323,6 +382,8 @@ export default function App() {
           message: 'Alpha 20s 校准中 · 眨眼需单独测量 3+10s',
           alphaCalibrationSeconds: health.demo?.calibration_seconds
             ?? DEFAULT_ALPHA_CALIBRATION_SECONDS,
+          closedEyeCalibrationSeconds: health.demo?.closed_eye_calibration_seconds
+            ?? DEFAULT_CLOSED_EYE_CALIBRATION_SECONDS,
           blinkCalibrationSeconds: health.demo?.blink_calibration_seconds
             ?? DEFAULT_BLINK_CALIBRATION_SECONDS,
           lastResponse: demoResponse
@@ -342,6 +403,7 @@ export default function App() {
           phase: 'fallback',
           message: 'v1.2 Demo 算法不可用，已使用本地检测',
           alphaCalibrationSeconds: DEFAULT_ALPHA_CALIBRATION_SECONDS,
+          closedEyeCalibrationSeconds: DEFAULT_CLOSED_EYE_CALIBRATION_SECONDS,
           blinkCalibrationSeconds: DEFAULT_BLINK_CALIBRATION_SECONDS,
           lastResponse: null
         });
@@ -453,7 +515,9 @@ export default function App() {
     enqueueSleepChunks(sleepAssembler.current.pushMany(events));
     enqueueSleepDemoChunks(sleepDemoAssembler.current.pushMany(events));
     setBuffers((current) => mergeSampleEvents(current, events));
+    setDeviceFlags((current) => mergeDeviceFlags(current, events));
     setSampleCount((count) => count + events.length);
+    setInvalidSampleCount((count) => count + events.filter((event) => event.valid === false).length);
   }, [enqueueSleepChunks, enqueueSleepDemoChunks]);
 
   useEffect(() => {
@@ -567,7 +631,8 @@ export default function App() {
 
   const visibleBuffers = useMemo(() => {
     const result: ChannelBuffers = { ...buffers };
-    if (typeof settings.eeg.timeWindowSeconds !== 'number') return result;
+    const delayMs = clamp(settings.displayDelayMs, 0, 5_000);
+    if (typeof settings.eeg.timeWindowSeconds !== 'number' && delayMs === 0) return result;
     // 时间窗基准：取所有通道中最新的时间戳，避免绑定单一 EEG 通道
     let last = 0;
     for (const channel of allChannels) {
@@ -575,12 +640,17 @@ export default function App() {
       if (tail && tail > last) last = tail;
     }
     if (!last) return result;
-    const minTime = last - settings.eeg.timeWindowSeconds * 1000;
+    const displayAnchor = last - delayMs;
+    const minTime = typeof settings.eeg.timeWindowSeconds === 'number'
+      ? displayAnchor - settings.eeg.timeWindowSeconds * 1000
+      : Number.NEGATIVE_INFINITY;
     for (const channel of allChannels) {
-      result[channel] = buffers[channel].filter((item) => item.timestamp >= minTime);
+      result[channel] = buffers[channel].filter(
+        (item) => item.timestamp >= minTime && item.timestamp <= displayAnchor
+      );
     }
     return result;
-  }, [buffers, settings.eeg.timeWindowSeconds]);
+  }, [buffers, settings.displayDelayMs, settings.eeg.timeWindowSeconds]);
 
   const scanDevices = async () => {
     setScanning(true);
@@ -642,16 +712,85 @@ export default function App() {
         await invokeCommand('stop_recording');
         setRecording(false);
         setStatus('记录已停止');
+        setDebugMarkerStatus('记录已停止，数据与标记文件已保存');
       } else {
         const path = await invokeCommand<string>('start_recording', { directory: settings.recordDir || null });
         setRecordPath(path);
         setRecording(true);
         setStatus('记录已开始');
+        setDebugMarkers([]);
+        setDebugMarkerPath(markerPathFromRecordPath(path));
+        setDebugMarkerStatus('记录中：点击按钮即可写入同步标记');
       }
     } catch (error) {
       setStatus(String(error));
     }
   };
+
+  const handleDebugMarker = useCallback(async (label: string, note: string) => {
+    if (!recording) {
+      setDebugMarkerStatus('请先开始记录，再添加标记');
+      return;
+    }
+    const marker: DebugMarkerRecord = {
+      timestamp: new Date().toISOString(),
+      label,
+      note: note.trim(),
+      sampleCount
+    };
+    const latest = (channel: 'eeg1' | 'eeg2' | 'eeg3' | 'eeg4') =>
+      buffers[channel][buffers[channel].length - 1]?.value;
+    const currentFlag = deviceFlags[deviceFlags.length - 1]?.value;
+    try {
+      const path = await invokeCommand<string>('append_debug_marker', {
+        participantId: debugParticipantId.trim(),
+        label,
+        note: marker.note,
+        sampleCount,
+        deviceFlag: currentFlag,
+        algorithmAction: lastAlgorithmAction ?? '',
+        eeg1: latest('eeg1'),
+        eeg2: latest('eeg2'),
+        eeg3: latest('eeg3'),
+        eeg4: latest('eeg4')
+      });
+      setDebugMarkers((current) => [...current, marker].slice(-200));
+      setDebugMarkerPath(path || markerPathFromRecordPath(recordPath));
+      setDebugMarkerStatus(`已保存：${label} · sample ${sampleCount}`);
+    } catch (error) {
+      setDebugMarkerStatus(String(error));
+    }
+  }, [buffers, debugParticipantId, deviceFlags, lastAlgorithmAction, recordPath, recording, sampleCount]);
+
+  const handleStartDebugBlinkTrial = useCallback((expectedCount: 0 | 3 | 5) => {
+    if (!recording) {
+      setDebugMarkerStatus('请先开始记录，再启动眨眼真值测试');
+      return;
+    }
+    const participantId = debugParticipantId.trim();
+    if (participantId && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(participantId)) {
+      setDebugMarkerStatus('匿名受试者 ID 仅可使用 1–32 位字母、数字、点、下划线或连字符');
+      return;
+    }
+    if (debugBlinkTrial?.status === 'active') {
+      setDebugMarkerStatus('上一组 10 秒真值窗尚未结束');
+      return;
+    }
+    const startedAt = Date.now();
+    setDebugBlinkTrial({
+      expectedCount,
+      startedAt,
+      endsAt: startedAt + 10_000,
+      detectedCount: null,
+      status: 'active',
+      success: null
+    });
+    const instruction = expectedCount === 0
+      ? '接下来10秒不执行连续眨眼指令，可自然眨眼'
+      : `接下来10秒连续、均匀眨眼${expectedCount}次`;
+    void handleDebugMarker('眨眼真值窗开始', `预期=${expectedCount}; ${instruction}`);
+    setDebugMarkerStatus(instruction);
+  }, [debugBlinkTrial?.status, debugParticipantId, handleDebugMarker, recording]);
 
   const normalWaveforms = useMemo(() => {
     return allChannels
@@ -784,6 +923,8 @@ export default function App() {
     lastDemoGestureTimestamp.current = -1;
     lastAppliedDemoTimestamp.current = -1;
     setSleepSession(createSleepSessionState(toSleepSessionConfig(settingsRef.current)));
+    setSleepGuidanceActive(false);
+    setSleepGuidanceMessage('已重置，请重新完成基线测量后点击开始助眠');
     setSleepMetrics(null);
     setBlinkVolumeOffset(0);
     blinkDetector.current.reset();
@@ -895,6 +1036,8 @@ export default function App() {
         message: 'Alpha 20s 校准中 · 眨眼待测量',
         alphaCalibrationSeconds: health.demo?.calibration_seconds
           ?? DEFAULT_ALPHA_CALIBRATION_SECONDS,
+        closedEyeCalibrationSeconds: health.demo?.closed_eye_calibration_seconds
+          ?? DEFAULT_CLOSED_EYE_CALIBRATION_SECONDS,
         blinkCalibrationSeconds: health.demo?.blink_calibration_seconds
           ?? DEFAULT_BLINK_CALIBRATION_SECONDS,
         lastResponse: demoResponse
@@ -933,38 +1076,125 @@ export default function App() {
         phase: 'local',
         message: '本地 Alpha / 眨眼检测',
         alphaCalibrationSeconds: DEFAULT_ALPHA_CALIBRATION_SECONDS,
+        closedEyeCalibrationSeconds: DEFAULT_CLOSED_EYE_CALIBRATION_SECONDS,
         blinkCalibrationSeconds: DEFAULT_BLINK_CALIBRATION_SECONDS,
         lastResponse: null
       });
     }
   }, []);
 
+  const effectiveAutomationAction = !sleepGuidanceActive
+    ? 'hold'
+    : sleepSession.action === 'play' && !settings.sleepMusic.autoMode
+      ? 'hold'
+      : sleepSession.action === 'fade' && !settings.sleepMusic.alphaVolumeControlEnabled
+        ? 'hold'
+        : sleepSession.action === 'stop' && !settings.sleepMusic.sleepStopEnabled
+          ? 'hold'
+          : sleepSession.action;
+
   const musicPlayer = useMusicPlayer({
     tracks: settings.sleepMusic.tracks,
     selectedTrackId: settings.sleepMusic.selectedTrackId,
     enabled: settings.sleepMusic.enabled,
-    autoMode: settings.sleepMusic.autoMode,
-    automationAction: sleepSession.action,
+    // The EEGSleepUpper switches are independent. The hook remains active and
+    // receives a gated action, so Alpha volume and sleep-stop can be toggled
+    // without coupling them to the Alpha-triggered play switch.
+    autoMode: true,
+    automationAction: effectiveAutomationAction,
     targetVolume: clamp(
       sleepSession.targetVolume + blinkVolumeOffset,
       0,
-      settings.sleepMusic.baseVolume
+      Math.min(settings.sleepMusic.baseVolume, settings.sleepMusic.maximumVolume)
     ),
     stopFadeSeconds: settings.sleepMusic.stopFadeSeconds,
+    outputDeviceId: settings.sleepMusic.audioOutputDeviceId,
     onSelectTrack: handleSelectSleepTrack
   });
+
+  const handleStartSleepGuidance = useCallback(() => {
+    const sleep = settingsRef.current.sleepMusic;
+    const response = sleepDemoService.lastResponse;
+    if (!sleep.enabled) {
+      setSleepGuidanceMessage('请先在后台设置中启用音乐引导');
+      return;
+    }
+    if (!musicPlayer.selectedTrack) {
+      setSleepGuidanceMessage('请先从音乐库选择一首助眠音乐');
+      return;
+    }
+    if (sleep.serviceEnabled && isTauriRuntime()) {
+      if (!response || sleepDemoService.phase === 'fallback') {
+        setSleepGuidanceMessage('PC 实时算法尚未就绪，请先启动算法服务');
+        return;
+      }
+      if (!response.state.calibration_complete) {
+        setSleepGuidanceMessage('请先完成睁眼基线测量');
+        return;
+      }
+      if (!response.state.closed_eye_calibration_complete) {
+        setSleepGuidanceMessage('请先完成闭眼基线测量');
+        return;
+      }
+      if (sleep.blinkControlEnabled && !response.state.blink_calibration_complete) {
+        setSleepGuidanceMessage('已启用眨眼控制，请先完成眨眼基线测量');
+        return;
+      }
+    }
+    setBlinkVolumeOffset(0);
+    setSleepSession(createSleepSessionState(toSleepSessionConfig(settingsRef.current)));
+    setSleepGuidanceActive(true);
+    setSleepGuidanceMessage('助眠已开始：可自然闭眼，系统将冻结睁眼基线并等待 Alpha 触发音乐');
+    musicPlayer.pause();
+    if (!sleep.autoMode) void musicPlayer.play();
+  }, [musicPlayer.pause, musicPlayer.selectedTrack, sleepDemoService.lastResponse, sleepDemoService.phase]);
+
+  const handleStopSleepGuidance = useCallback(() => {
+    setSleepGuidanceActive(false);
+    setSleepGuidanceMessage('助眠已结束；再次开始前可按需重新测量基线');
+    setSleepSession(createSleepSessionState(toSleepSessionConfig(settingsRef.current)));
+    setBlinkVolumeOffset(0);
+    musicPlayer.pause();
+  }, [musicPlayer.pause]);
+
+  const handleDebugStartSleepAndRecord = useCallback(() => {
+    void (async () => {
+      if (!recording) await toggleRecording();
+      handleStartSleepGuidance();
+      setDebugMarkerStatus('助眠调试会话已启动；可写入眨眼与伪迹真值标记');
+    })();
+  }, [handleStartSleepGuidance, recording]);
+
+  const handleDebugStartBlinkValidation = useCallback(() => {
+    void (async () => {
+      if (!recording) await toggleRecording();
+      setSettings((current) => ({
+        ...current,
+        sleepMusic: { ...current.sleepMusic, blinkControlEnabled: true }
+      }));
+      setSleepGuidanceActive(false);
+      musicPlayer.pause();
+      setDebugMarkerStatus('仅眨眼验证会话：先完成眨眼基线，再使用 0/3/5 次真值测试');
+    })();
+  }, [musicPlayer.pause, recording]);
+
+  const handleDebugStopSession = useCallback(() => {
+    handleStopSleepGuidance();
+    setDebugBlinkTrial(null);
+    if (recording) void toggleRecording();
+  }, [handleStopSleepGuidance, recording]);
 
   useEffect(() => {
     setBlinkVolumeOffset((current) => {
       const applied = clamp(
         sleepSession.targetVolume + current,
         0,
-        settings.sleepMusic.baseVolume
+        Math.min(settings.sleepMusic.baseVolume, settings.sleepMusic.maximumVolume)
       );
       const synchronized = applied - sleepSession.targetVolume;
       return Math.abs(synchronized - current) < 1e-6 ? current : synchronized;
     });
-  }, [settings.sleepMusic.baseVolume, sleepSession.targetVolume]);
+  }, [settings.sleepMusic.baseVolume, settings.sleepMusic.maximumVolume, sleepSession.targetVolume]);
 
   const handleOpenMusicLibrary = useCallback(() => {
     resumeAfterLibraryRef.current = musicPlayer.snapshot.playing;
@@ -989,7 +1219,64 @@ export default function App() {
     : null;
 
   useEffect(() => {
-    if ((!sleepMetrics && !onlineDemoSignal) || !settings.sleepMusic.enabled) return;
+    const nextAction = onlineDemoSignal
+      ? summarizeAlgorithmAction(onlineDemoSignal.action_flags)
+      : null;
+    if (nextAction) setLastAlgorithmAction(nextAction);
+  }, [onlineDemoSignal]);
+
+  useEffect(() => {
+    if (!onlineDemoSignal) return;
+    const incoming: DebugAlgorithmEvent[] = [];
+    for (const event of onlineDemoSignal.events) {
+      const key = `${onlineDemoSignal.session_id ?? 'session'}|${onlineDemoSignal.timestamp_ms}|${event.flag}|${event.time_seconds}`;
+      if (debugAlgorithmEventKeys.current.has(key)) continue;
+      debugAlgorithmEventKeys.current.add(key);
+      incoming.push({
+        timestamp: new Date().toISOString(),
+        label: translateAlgorithmState(event.flag),
+        detail: event.value === null ? `算法时间 ${event.time_seconds.toFixed(2)} s` : `值 ${event.value} · 算法时间 ${event.time_seconds.toFixed(2)} s`
+      });
+    }
+    if (incoming.length > 0) {
+      setDebugAlgorithmEvents((current) => [...current, ...incoming].slice(-250));
+    }
+
+    const detectedCount = onlineDemoSignal.action_flags.includes('BLINK_5')
+      ? 5
+      : onlineDemoSignal.action_flags.includes('BLINK_3')
+        ? 3
+        : null;
+    if (detectedCount) {
+      setDebugBlinkTrial((current) => current?.status === 'active'
+        ? { ...current, detectedCount }
+        : current);
+    }
+  }, [onlineDemoSignal]);
+
+  useEffect(() => {
+    if (debugBlinkTrial?.status !== 'active') return;
+    const delay = Math.max(0, debugBlinkTrial.endsAt - Date.now());
+    const timer = window.setTimeout(() => {
+      setDebugBlinkTrial((current) => {
+        if (!current || current.status !== 'active') return current;
+        const success = current.expectedCount === 0
+          ? current.detectedCount === null
+          : current.detectedCount === current.expectedCount;
+        const detectedText = current.detectedCount === null ? '未检出' : `检出${current.detectedCount}次`;
+        void handleDebugMarker(
+          '眨眼真值窗结果',
+          `预期=${current.expectedCount}; ${detectedText}; ${success ? '通过' : '未通过'}`
+        );
+        setDebugMarkerStatus(`真值测试${success ? '通过' : '未通过'}：预期 ${current.expectedCount}，${detectedText}`);
+        return { ...current, status: 'complete', success };
+      });
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [debugBlinkTrial?.endsAt, debugBlinkTrial?.status, handleDebugMarker]);
+
+  useEffect(() => {
+    if (!sleepGuidanceActive || (!sleepMetrics && !onlineDemoSignal) || !settings.sleepMusic.enabled) return;
     const values = buffers[settings.eeg.selectedChannel];
     const quality = estimateSignalQuality(values);
     const demoPhase = settings.demoMode ? settings.sleepMusic.demoPhase : 'live';
@@ -1027,6 +1314,7 @@ export default function App() {
     settings.sleepMusic.demoPhase,
     settings.sleepMusic.enabled,
     settings.sleepMusic.serviceEnabled,
+    sleepGuidanceActive,
     sleepConfig,
     sleepMetrics,
     onlineDemoSignal,
@@ -1074,7 +1362,9 @@ export default function App() {
   useEffect(() => {
     const remoteState = remoteBlinkState.current;
     if (!settings.sleepMusic.serviceEnabled || !isTauriRuntime() || !remoteState) return;
-    const sessionActive = sleepSession.phase !== 'ready' && sleepSession.phase !== 'signal-poor';
+    // 点击“开始助眠”后立即冻结睁眼 Alpha 基线。若等到检出 Alpha 再冻结，
+    // 用户点击后马上闭眼会把闭眼 Alpha 污染进睁眼基线。
+    const sessionActive = sleepGuidanceActive;
     sleepDemoStepQueue.current = sleepDemoStepQueue.current
       .then(async () => {
         const response = await configureSleepDemo(
@@ -1089,7 +1379,7 @@ export default function App() {
   }, [
     settings.sleepMusic.alphaVolumeMode,
     settings.sleepMusic.serviceEnabled,
-    sleepSession.phase
+    sleepGuidanceActive
   ]);
 
   const handleBlinkCalibration = useCallback(() => {
@@ -1127,6 +1417,41 @@ export default function App() {
     const startedAt = Date.now();
     lastBlinkSampleTimestamp.current = startedAt;
     setBlinkSnapshot(blinkDetector.current.beginCalibration(startedAt));
+  }, []);
+
+  const handleAlphaCalibration = useCallback((kind: 'open-eye' | 'closed-eye') => {
+    const remoteState = remoteBlinkState.current;
+    if (!settingsRef.current.sleepMusic.serviceEnabled || !isTauriRuntime() || !remoteState) {
+      setSleepDemoService((current) => ({
+        ...current,
+        message: '个体 Alpha 基线测量需要启用本机 PC v1.2 算法服务'
+      }));
+      return;
+    }
+    setSleepDemoService((current) => ({
+      ...current,
+      phase: 'calibrating',
+      message: kind === 'open-eye'
+        ? '睁眼基线测量中：平视前方、面部放松、保持头部不动'
+        : '闭眼基线测量中：自然闭眼、保持清醒、不要咬牙或转头'
+    }));
+    sleepDemoStepQueue.current = sleepDemoStepQueue.current
+      .then(async () => {
+        const response = await startSleepDemoAlphaCalibration(
+          settingsRef.current.sleepMusic.serviceEndpoint,
+          remoteState.sessionId,
+          kind
+        );
+        setSleepDemoService((current) => ({ ...current, lastResponse: response }));
+      })
+      .catch((error) => {
+        setSleepDemoService((current) => ({
+          ...current,
+          phase: 'fallback',
+          message: `${kind === 'open-eye' ? '睁眼' : '闭眼'}基线测量启动失败`
+        }));
+        console.warn('Sleep demo alpha calibration failed', error);
+      });
   }, []);
 
   useEffect(() => {
@@ -1185,7 +1510,7 @@ export default function App() {
       const nextVolume = clamp(
         musicPlayer.snapshot.volume + direction * current.blinkVolumeStep,
         0,
-        current.baseVolume
+        Math.min(current.baseVolume, current.maximumVolume)
       );
       setBlinkVolumeOffset(nextVolume - sleepSession.targetVolume);
       musicPlayer.setVolume(nextVolume);
@@ -1209,7 +1534,7 @@ export default function App() {
     const nextVolume = clamp(
       musicPlayer.snapshot.volume + (down ? -1 : 1) * current.blinkVolumeStep,
       0,
-      current.baseVolume
+      Math.min(current.baseVolume, current.maximumVolume)
     );
     setBlinkVolumeOffset(nextVolume - sleepSession.targetVolume);
     musicPlayer.setVolume(nextVolume);
@@ -1239,7 +1564,8 @@ export default function App() {
     serviceStatus: {
       phase: sleepService.phase,
       message: sleepService.message,
-      chunksSeen: sleepService.chunksSeen
+      chunksSeen: sleepService.chunksSeen,
+      lastResponse: sleepService.lastResponse
     },
     demoSignalStatus: sleepDemoService,
     onSelectTrack: handleSelectSleepTrack,
@@ -1247,7 +1573,13 @@ export default function App() {
     onRemoveTrack: handleRemoveSleepTrack,
     onAutoModeChange: handleAutoModeChange,
     onVolumeChange: handleBaseVolumeChange,
+    onOpenEyeCalibration: () => handleAlphaCalibration('open-eye'),
+    onClosedEyeCalibration: () => handleAlphaCalibration('closed-eye'),
     onBlinkCalibration: handleBlinkCalibration,
+    guidanceActive: sleepGuidanceActive,
+    guidanceMessage: sleepGuidanceMessage,
+    onStartGuidance: handleStartSleepGuidance,
+    onStopGuidance: handleStopSleepGuidance,
     onResetSession: resetSleepSession
   };
 
@@ -1291,6 +1623,8 @@ export default function App() {
           warmupRemaining={warmupRemaining}
           onSleepMetrics={handleSleepMetrics}
           musicPanel={musicPanel}
+          deviceFlags={deviceFlags}
+          algorithmAction={lastAlgorithmAction}
         />
         {musicLibrary}
       </main>
@@ -1357,7 +1691,66 @@ export default function App() {
 
       <div className={settingsOpen ? 'workspace with-settings' : 'workspace'}>
         <section className="waveform-area">
-          {settings.displayMode === 'eeg' ? (
+          {settings.displayMode === 'debug' ? (
+            <DebugModeView
+              eegBuffers={{
+                eeg1: visibleBuffers.eeg1,
+                eeg2: visibleBuffers.eeg2,
+                eeg3: visibleBuffers.eeg3,
+                eeg4: visibleBuffers.eeg4
+              }}
+              ppgBuffers={{
+                ir1: visibleBuffers.ir1,
+                red1: visibleBuffers.red1,
+                green1: visibleBuffers.green1,
+                ir2: visibleBuffers.ir2,
+                red2: visibleBuffers.red2,
+                green2: visibleBuffers.green2
+              }}
+              connected={connected}
+              deviceName={devices.find((device) => device.id === selectedDeviceId)?.name ?? selectedDeviceId ?? '--'}
+              linkStatus={status}
+              sampleCount={sampleCount}
+              invalidSampleCount={invalidSampleCount}
+              latestDeviceFlag={deviceFlags[deviceFlags.length - 1]?.value ?? null}
+              recording={recording}
+              recordPath={recordPath}
+              markerPath={debugMarkerPath}
+              markerStatus={debugMarkerStatus}
+              markers={debugMarkers}
+              algorithmEvents={debugAlgorithmEvents}
+              algorithmAction={lastAlgorithmAction}
+              demoResponse={sleepDemoService.lastResponse}
+              demoPhase={sleepDemoService.phase}
+              demoMessage={sleepDemoService.message}
+              stagingResponse={sleepService.lastResponse}
+              stagingPhase={sleepService.phase}
+              stagingMessage={sleepService.message}
+              session={sleepSession}
+              sleepSettings={settings.sleepMusic}
+              player={musicPlayer}
+              guidanceActive={sleepGuidanceActive}
+              guidanceMessage={sleepGuidanceMessage}
+              blinkTrial={debugBlinkTrial}
+              participantId={debugParticipantId}
+              onParticipantIdChange={setDebugParticipantId}
+              onSleepSettingsChange={(patch) => setSettings((current) => ({
+                ...current,
+                sleepMusic: { ...current.sleepMusic, ...patch }
+              }))}
+              onOpenEyeCalibration={() => handleAlphaCalibration('open-eye')}
+              onClosedEyeCalibration={() => handleAlphaCalibration('closed-eye')}
+              onBlinkCalibration={handleBlinkCalibration}
+              onStartGuidance={handleStartSleepGuidance}
+              onStopGuidance={handleStopSleepGuidance}
+              onStartSleepAndRecord={handleDebugStartSleepAndRecord}
+              onStartBlinkValidation={handleDebugStartBlinkValidation}
+              onStopSession={handleDebugStopSession}
+              onStartBlinkTrial={handleStartDebugBlinkTrial}
+              onToggleRecording={() => void toggleRecording()}
+              onAddMarker={(label, note) => void handleDebugMarker(label, note)}
+            />
+          ) : settings.displayMode === 'eeg' ? (
             <EegModeView
               channel={settings.eeg.selectedChannel}
               values={visibleBuffers[settings.eeg.selectedChannel]}
@@ -1385,6 +1778,9 @@ export default function App() {
             sleepDemoStatus={{
               phase: sleepDemoService.phase,
               message: sleepDemoService.message,
+              alphaCalibrationSeconds: sleepDemoService.alphaCalibrationSeconds,
+              closedEyeCalibrationSeconds: sleepDemoService.closedEyeCalibrationSeconds,
+              blinkCalibrationSeconds: sleepDemoService.blinkCalibrationSeconds,
               lastResponse: sleepDemoService.lastResponse
             }}
             sleepRuntime={sleepRuntime}
@@ -1392,7 +1788,26 @@ export default function App() {
             onOpenSleepAlgorithm={() => void handleOpenSleepAlgorithm()}
             onStartSleepService={() => void handleStartSleepService()}
             onStopSleepService={() => void handleStopSleepService()}
+            onOpenEyeCalibration={() => handleAlphaCalibration('open-eye')}
+            onClosedEyeCalibration={() => handleAlphaCalibration('closed-eye')}
             onBlinkCalibration={handleBlinkCalibration}
+            audioOutput={{
+              devices: musicPlayer.snapshot.outputDevices,
+              selectedDeviceId: musicPlayer.snapshot.selectedOutputDeviceId,
+              supported: musicPlayer.snapshot.outputDeviceSupported,
+              error: musicPlayer.snapshot.outputDeviceError
+            }}
+            onAudioOutputDeviceChange={(deviceId) => {
+              void musicPlayer.setOutputDevice(deviceId).then((changed) => {
+                if (!changed) return;
+                setSettings((current) => ({
+                  ...current,
+                  sleepMusic: { ...current.sleepMusic, audioOutputDeviceId: deviceId }
+                }));
+              });
+            }}
+            onRefreshAudioOutputs={() => void musicPlayer.refreshOutputDevices(true)}
+            onTestAudioOutput={() => void musicPlayer.testOutput()}
             onOpenMusicLibrary={handleOpenMusicLibrary}
           />
         )}
@@ -1445,10 +1860,11 @@ function applyNormalFilters(
   ].join('|');
   return cache.update(key, values, () => {
     const chain = bandpassOn
-      ? FilterChain.firBandpass({
+      ? FilterChain.butterworthBandpass({
         low: settings.filterLow,
         high: settings.filterHigh,
-        sampleRate: DEFAULT_SAMPLE_RATE
+        sampleRate: DEFAULT_SAMPLE_RATE,
+        order: 2
       })
       : null;
     const kalman = kalmanOn ? new KalmanFilter(settings.kalmanQ, settings.kalmanR) : null;
@@ -1560,10 +1976,16 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8765;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8768;
   } catch {
-    return 8765;
+    return 8768;
   }
+}
+
+function markerPathFromRecordPath(path: string): string {
+  return path.toLowerCase().endsWith('.csv')
+    ? `${path.slice(0, -4)}_markers.csv`
+    : path ? `${path}_markers.csv` : '';
 }
 
 async function waitForSleepStagingHealth(endpoint: string): Promise<SleepStagingHealth> {

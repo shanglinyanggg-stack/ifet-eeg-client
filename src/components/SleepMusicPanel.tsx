@@ -26,11 +26,13 @@ import {
   blinkCalibrationFailureMessage,
   calibrationProgress,
   formatEnabledBlinkPairs,
+  formatReferenceStrength,
   type SleepDemoSignalResponse
 } from '../domain/sleep-demo-signal';
 import type { SleepMetrics } from '../domain/sleep-metrics';
 import type { SleepPhase, SleepSessionState } from '../domain/sleep-session';
 import type { SleepMusicSettings } from '../domain/settings';
+import type { SleepStagingStepResponse } from '../domain/sleep-staging-client';
 
 export interface SleepMusicPanelProps {
   variant?: 'full' | 'compact';
@@ -43,11 +45,13 @@ export interface SleepMusicPanelProps {
     phase: 'local' | 'checking' | 'warming' | 'ready' | 'fallback';
     message: string;
     chunksSeen: number;
+    lastResponse?: SleepStagingStepResponse | null;
   };
   demoSignalStatus?: {
     phase: 'local' | 'calibrating' | 'ready' | 'fallback';
     message: string;
     alphaCalibrationSeconds: number;
+    closedEyeCalibrationSeconds?: number;
     blinkCalibrationSeconds: number;
     lastResponse: SleepDemoSignalResponse | null;
   };
@@ -56,7 +60,13 @@ export interface SleepMusicPanelProps {
   onRemoveTrack: (trackId: string) => void;
   onAutoModeChange: (enabled: boolean) => void;
   onVolumeChange: (volume: number) => void;
+  onOpenEyeCalibration?: () => void;
+  onClosedEyeCalibration?: () => void;
   onBlinkCalibration: () => void;
+  guidanceActive?: boolean;
+  guidanceMessage?: string;
+  onStartGuidance?: () => void;
+  onStopGuidance?: () => void;
   onResetSession: () => void;
 }
 
@@ -108,7 +118,13 @@ export function SleepMusicPanel({
   onRemoveTrack,
   onAutoModeChange,
   onVolumeChange,
+  onOpenEyeCalibration = () => undefined,
+  onClosedEyeCalibration = () => undefined,
   onBlinkCalibration,
+  guidanceActive = true,
+  guidanceMessage,
+  onStartGuidance = () => undefined,
+  onStopGuidance = () => undefined,
   onResetSession
 }: SleepMusicPanelProps) {
   const phase = PHASE_META[session.phase];
@@ -125,11 +141,18 @@ export function SleepMusicPanel({
           : serviceStatus?.phase === 'fallback'
             ? '本地降级'
             : '本地实时判定';
-  const actionLabel = resolveActionLabel(session, settings);
+  const actionLabel = guidanceActive ? resolveActionLabel(session, settings) : '等待点击开始助眠';
   const progress = resolveStageProgress(session, settings);
   const currentTime = formatPlaybackTime(player.snapshot.currentTime);
   const duration = formatPlaybackTime(player.snapshot.duration);
   const [announcing, setAnnouncing] = useState(false);
+  const algorithmAlphaRatio = demoSignalStatus?.lastResponse?.telemetry.alpha_ratio ?? null;
+  const algorithmAlphaThreshold = demoSignalStatus?.lastResponse?.telemetry.alpha_on_threshold ?? null;
+  const stagingResponse = serviceStatus?.lastResponse ?? null;
+  const drowsiness = stagingResponse?.decision_valid && stagingResponse.selected_sleep_probability !== null
+    ? Math.round(stagingResponse.selected_sleep_probability * 100)
+    : null;
+  const realtimeStage = resolveRealtimeStage(serviceStatus?.phase, stagingResponse);
 
   useEffect(() => {
     if (!settings.audienceCues || session.phase === 'ready') {
@@ -152,6 +175,14 @@ export function SleepMusicPanel({
             <span>{actionLabel}</span>
           </div>
           <span className="sleep-source-badge"><Radio size={12} />{sourceLabel}</span>
+          <button
+            type="button"
+            className={`sleep-guidance-button is-compact ${guidanceActive ? 'is-active' : ''}`}
+            onClick={guidanceActive ? onStopGuidance : onStartGuidance}
+            aria-label={guidanceActive ? '结束助眠' : '开始助眠'}
+          >
+            {guidanceActive ? <Pause size={13} /> : <Play size={13} />}
+          </button>
           <button type="button" className="sleep-library-button is-icon" onClick={onOpenLibrary} aria-label="打开助眠音乐库" title="音乐库">
             <Library size={14} />
           </button>
@@ -172,6 +203,8 @@ export function SleepMusicPanel({
           status={demoSignalStatus}
           blink={blink}
           blinkEnabled={settings.blinkControlEnabled}
+          onOpenEyeCalibration={onOpenEyeCalibration}
+          onClosedEyeCalibration={onClosedEyeCalibration}
           onBlinkCalibration={onBlinkCalibration}
           compact
         />
@@ -185,6 +218,14 @@ export function SleepMusicPanel({
         <h2><Music2 size={15} />睡眠音乐引导</h2>
         <div className="sleep-music-badges">
           <span className="sleep-source-badge"><Radio size={12} />{sourceLabel}</span>
+          <button
+            type="button"
+            className={`sleep-guidance-button ${guidanceActive ? 'is-active' : ''}`}
+            onClick={guidanceActive ? onStopGuidance : onStartGuidance}
+          >
+            {guidanceActive ? <Pause size={14} /> : <Play size={14} />}
+            <span>{guidanceActive ? '结束助眠' : '开始助眠'}</span>
+          </button>
           <button type="button" className="sleep-library-button" onClick={onOpenLibrary} title="打开音乐库">
             <Library size={14} /><span>音乐库</span>
           </button>
@@ -198,15 +239,25 @@ export function SleepMusicPanel({
         <span className="sleep-stage-icon"><phase.Icon size={22} strokeWidth={1.8} /></span>
         <div className="sleep-stage-copy" aria-live="polite">
           <strong>{phase.title}</strong>
-          <span>{session.reason === 'service-warmup' && serviceStatus ? serviceStatus.message : phase.description}</span>
+          <span>{!guidanceActive && guidanceMessage
+            ? guidanceMessage
+            : session.reason === 'service-warmup' && serviceStatus
+              ? serviceStatus.message
+              : phase.description}</span>
         </div>
         <strong className="sleep-action-label">{actionLabel}</strong>
         <div className="sleep-stage-meter" aria-label={`阶段进度 ${Math.round(progress)}%`}>
           <span style={{ width: `${progress}%` }} />
         </div>
         <div className="sleep-stage-kpis">
-          <span>Alpha <strong>{Math.round((metrics?.alphaRelative ?? session.alphaEma) * 100)}%</strong></span>
-          <span>困意 <strong>{Math.round(metrics?.sleepOnsetScore ?? session.sleepScoreEma)}</strong></span>
+          <span title="当前 Alpha 相对个体睁眼基线">
+            Alpha <strong>{algorithmAlphaRatio === null ? `${Math.round((metrics?.alphaRelative ?? session.alphaEma) * 100)}%` : `${Math.round(algorithmAlphaRatio * 100)}%`}</strong>
+            {algorithmAlphaThreshold !== null && <small>阈值 {Math.round(algorithmAlphaThreshold * 100)}%</small>}
+          </span>
+          <span title="PC 分期算法保守睡眠概率">
+            困意 <strong>{drowsiness === null ? `${Math.round(metrics?.sleepOnsetScore ?? session.sleepScoreEma)}` : `${drowsiness}%`}</strong>
+            <small>{realtimeStage}</small>
+          </span>
           <span>质量 <strong>{Math.round(session.coverage * 100)}%</strong></span>
         </div>
       </div>
@@ -215,6 +266,8 @@ export function SleepMusicPanel({
         status={demoSignalStatus}
         blink={blink}
         blinkEnabled={settings.blinkControlEnabled}
+        onOpenEyeCalibration={onOpenEyeCalibration}
+        onClosedEyeCalibration={onClosedEyeCalibration}
         onBlinkCalibration={onBlinkCalibration}
       />
 
@@ -317,12 +370,16 @@ function DemoSignalTelemetry({
   status,
   blink,
   blinkEnabled,
+  onOpenEyeCalibration,
+  onClosedEyeCalibration,
   onBlinkCalibration,
   compact = false
 }: {
   status: SleepMusicPanelProps['demoSignalStatus'];
   blink: BlinkGestureSnapshot;
   blinkEnabled: boolean;
+  onOpenEyeCalibration: () => void;
+  onClosedEyeCalibration: () => void;
   onBlinkCalibration: () => void;
   compact?: boolean;
 }) {
@@ -342,6 +399,12 @@ function DemoSignalTelemetry({
     response?.state.blink_calibration_complete ?? blinkStatus === 'complete',
     response?.state.blink_calibration_progress ?? blink.calibrationProgress
   );
+  const closedEyeProgress = calibrationProgress(
+    response,
+    status?.closedEyeCalibrationSeconds ?? 20,
+    response?.state.closed_eye_calibration_complete ?? false,
+    response?.state.closed_eye_calibration_progress
+  );
   const telemetry = response?.telemetry;
   const alphaLevel = Math.round((telemetry?.alpha_level ?? 0) * 100);
   const recommendedVolume = Math.round((telemetry?.recommended_volume ?? 0) * 100);
@@ -352,15 +415,46 @@ function DemoSignalTelemetry({
   const gapRejected = telemetry?.blink_invalid_gap_rejections ?? blink.invalidGapRejections ?? 0;
   const recovered = telemetry?.blink_gap_recoveries ?? blink.gapRecoveries ?? 0;
   const healthChecks = telemetry?.blink_baseline_health_checks ?? blink.baselineHealthChecks ?? 0;
+  const recoveryProgress = telemetry?.blink_baseline_recovery_progress ?? blink.baselineRecoveryProgress ?? 0;
+  const baselineRecoveries = telemetry?.blink_baseline_recoveries ?? blink.baselineRecoveries ?? 0;
+  const disabledPairs = formatEnabledBlinkPairs(
+    telemetry?.blink_runtime_disabled_pairs ?? blink.runtimeDisabledPairs ?? []
+  );
+  const alphaRatio = telemetry?.alpha_ratio ?? null;
+  const alphaOnThreshold = telemetry?.alpha_on_threshold ?? null;
+  const alphaRatioPercent = alphaRatio === null ? 0 : clampPercent(alphaRatio * 100);
+  const alphaThresholdPercent = alphaOnThreshold === null ? 0 : clampPercent(alphaOnThreshold * 100);
+  const initialBaseline = telemetry?.open_eye_alpha_initial_baseline ?? null;
+  const currentBaseline = telemetry?.open_eye_alpha_baseline ?? null;
+  const baselineChange = initialBaseline !== null && currentBaseline !== null && Math.abs(initialBaseline) > 1e-6
+    ? ((currentBaseline - initialBaseline) / Math.abs(initialBaseline)) * 100
+    : null;
   const enabledPairs = formatEnabledBlinkPairs(
     telemetry?.blink_enabled_channel_pairs ?? blink.enabledPairs ?? []
   );
+  const openEyeProgressHint = response?.state.calibration_complete
+    ? `参考 ${formatReferenceStrength(telemetry?.open_eye_alpha_baseline) ?? '--'}`
+    : '睁眼平视，保持静止';
+  const closedEyeProgressHint = response?.state.closed_eye_calibration_complete
+    ? `参考 ${formatReferenceStrength(telemetry?.closed_eye_alpha_reference) ?? '--'}`
+    : response?.state.calibration_complete
+      ? '自然闭眼，保持清醒'
+      : '先测睁眼基线';
+  const blinkProgressHint = stale
+    ? '漂移恢复中'
+    : blinkStatus === 'complete'
+      ? `阈值 ${formatReferenceStrength(telemetry?.blink_threshold_robust_z, ' z') ?? '--'}`
+      : blinkStatus === 'running'
+        ? blinkProgress < 3 / 13
+          ? '前 3 秒保持静止'
+          : '连续自然眨眼'
+        : '先静止 3 秒';
   const failure = blinkCalibrationFailureMessage(
     response?.state.blink_calibration_failure_reason ?? blink.calibrationFailureReason
   );
   const state = status?.phase ?? 'local';
   const calibrationLabel = stale
-    ? '基线漂移'
+    ? `自动恢复 ${Math.round(recoveryProgress * 100)}%`
     : blinkStatus === 'complete'
       ? `${pendingBlinks} 次待确认`
       : blinkStatus === 'running'
@@ -392,16 +486,37 @@ function DemoSignalTelemetry({
   return (
     <div className="sleep-demo-telemetry" data-state={state} data-blink-state={stale ? 'stale' : blinkStatus} aria-label="Alpha 与眨眼配对算法遥测">
       <div className="sleep-demo-calibration">
-        <span className="sleep-demo-label">Alpha 基线</span>
-        <div className="sleep-demo-progress" aria-label={`Alpha 校准 ${Math.round(alphaProgress * 100)}%`}>
+        <span className="sleep-demo-label">睁眼基线</span>
+        <div className="sleep-demo-progress" aria-label={`睁眼基线校准 ${Math.round(alphaProgress * 100)}%`}>
           <span style={{ width: `${alphaProgress * 100}%` }} />
+          <em>{openEyeProgressHint}</em>
         </div>
         <strong>{response?.state.calibration_complete ? '就绪' : response ? `${Math.round(alphaProgress * 100)}%` : '本地'}</strong>
+        <button type="button" className="sleep-blink-calibration-button" onClick={onOpenEyeCalibration}>
+          <RotateCcw size={13} />{response?.state.calibration_complete ? '重新测量' : '开始测量'}
+        </button>
+      </div>
+      <div className="sleep-demo-calibration is-closed-eye">
+        <span className="sleep-demo-label">闭眼基线</span>
+        <div className="sleep-demo-progress" aria-label={`闭眼基线校准 ${Math.round(closedEyeProgress * 100)}%`}>
+          <span style={{ width: `${closedEyeProgress * 100}%` }} />
+          <em>{closedEyeProgressHint}</em>
+        </div>
+        <strong>{response?.state.closed_eye_calibration_complete ? '就绪' : `${Math.round(closedEyeProgress * 100)}%`}</strong>
+        <button
+          type="button"
+          className="sleep-blink-calibration-button"
+          onClick={onClosedEyeCalibration}
+          disabled={!response?.state.calibration_complete}
+        >
+          <Eye size={13} />{response?.state.closed_eye_calibration_complete ? '重新测量' : '开始测量'}
+        </button>
       </div>
       <div className="sleep-demo-calibration is-blink">
         <span className="sleep-demo-label">眨眼配对</span>
         <div className="sleep-demo-progress" aria-label={`眨眼测量 ${Math.round(blinkProgress * 100)}%`}>
           <span style={{ width: `${blinkProgress * 100}%` }} />
+          <em>{blinkProgressHint}</em>
         </div>
         <strong>{stale ? '漂移' : blinkStatus === 'complete' ? '就绪' : blinkStatus === 'running' ? `${Math.round(blinkProgress * 100)}%` : '未就绪'}</strong>
         <button type="button" className="sleep-blink-calibration-button" onClick={onBlinkCalibration}>
@@ -411,6 +526,18 @@ function DemoSignalTelemetry({
       <div className="sleep-demo-kpi">
         <span>Alpha 水平</span>
         <strong>{alphaLevel}%</strong>
+      </div>
+      <div className="sleep-demo-kpi is-alpha-threshold">
+        <span>Alpha 占比 / 开启阈值</span>
+        <strong>{alphaRatio === null ? '--' : `${Math.round(alphaRatioPercent)}%`}<small> / {alphaOnThreshold === null ? '--' : `${Math.round(alphaThresholdPercent)}%`}</small></strong>
+        <div className="sleep-alpha-threshold-track" aria-label={`Alpha 占比 ${Math.round(alphaRatioPercent)}%，开启阈值 ${Math.round(alphaThresholdPercent)}%`}>
+          <span style={{ width: `${alphaRatioPercent}%` }} />
+          {alphaOnThreshold !== null && <i style={{ left: `${alphaThresholdPercent}%` }} title="音乐开启阈值" />}
+        </div>
+      </div>
+      <div className="sleep-demo-kpi">
+        <span>睁眼基线变化</span>
+        <strong>{baselineChange === null ? '--' : `${baselineChange >= 0 ? '+' : ''}${baselineChange.toFixed(1)}%`}</strong>
       </div>
       <div className="sleep-demo-kpi">
         <span>推荐音量</span>
@@ -444,11 +571,15 @@ function DemoSignalTelemetry({
         <span>基线健康检查</span>
         <strong>{healthChecks}</strong>
       </div>
+      <div className="sleep-demo-kpi">
+        <span>自动恢复 / 暂停配对</span>
+        <strong>{stale ? `${Math.round(recoveryProgress * 100)}%` : baselineRecoveries}<small> / {disabledPairs}</small></strong>
+      </div>
       {(blinkStatus !== 'complete' || stale || status?.phase === 'fallback') && (
         <div className="sleep-blink-calibration-notice" role="status">
           {blinkStatus === 'running' && !stale ? <Eye size={14} /> : <ShieldAlert size={14} />}
           <span>{stale
-            ? '基线漂移超限，眨眼控制已暂停，请检查佩戴后重新测量'
+            ? `基线漂移超限，眨眼控制已暂停；稳定安静信号自动恢复中（${Math.round(recoveryProgress * 100)}%），也可立即重新测量`
             : blinkStatus === 'running'
               ? '先 3 秒睁眼安静不眨眼，再每 0.5-1 秒自然眨眼一次，保持头部和下颌静止'
               : failure || (blinkStatus === 'idle'
@@ -467,6 +598,19 @@ function DemoSignalTelemetry({
       )}
     </div>
   );
+}
+
+export function resolveRealtimeStage(
+  phase: 'local' | 'checking' | 'warming' | 'ready' | 'fallback' | undefined,
+  response: SleepStagingStepResponse | null
+): string {
+  if (phase === 'fallback') return '本地降级';
+  if (phase === 'checking') return '连接中';
+  if (!response?.decision_valid) return phase === 'warming' ? '分期预热' : '等待分期';
+  if (response.selected_stage === 'W') return 'W 清醒';
+  if (response.selected_stage === 'NREM') return 'NREM';
+  if (response.selected_stage === 'REM') return 'REM';
+  return '等待分期';
 }
 
 function resolveActionLabel(session: SleepSessionState, settings: SleepMusicSettings): string {

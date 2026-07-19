@@ -22,7 +22,11 @@ function createPlayer(): MusicPlayerController {
       volume: 0.6,
       fadeRemainingSeconds: 0,
       error: null,
-      autoplayBlocked: false
+      autoplayBlocked: false,
+      outputDevices: [{ deviceId: 'default', label: '系统默认输出' }],
+      selectedOutputDeviceId: 'default',
+      outputDeviceSupported: true,
+      outputDeviceError: null
     },
     play: vi.fn(),
     pause: vi.fn(),
@@ -30,7 +34,10 @@ function createPlayer(): MusicPlayerController {
     previous: vi.fn(),
     next: vi.fn(),
     seek: vi.fn(),
-    setVolume: vi.fn()
+    setVolume: vi.fn(),
+    refreshOutputDevices: vi.fn(async () => undefined),
+    setOutputDevice: vi.fn(async () => true),
+    testOutput: vi.fn(async () => undefined)
   };
 }
 
@@ -46,8 +53,11 @@ function createBlinkSnapshot(count = 0) {
     calibrationConsensus: 0.75,
     enabledPairs: [[0, 1], [2, 3]] as Array<readonly [number, number]>,
     baselineStale: false,
+    baselineRecoveryProgress: 0,
+    baselineRecoveries: 0,
     baselineHealthChecks: 3,
     adaptiveBaselineUpdates: 0,
+    runtimeDisabledPairs: [],
     singleChannelRejections: 1,
     invalidGapRejections: 0,
     gapRecoveries: 1
@@ -55,6 +65,53 @@ function createBlinkSnapshot(count = 0) {
 }
 
 describe('SleepMusicPanel', () => {
+  test('starts guidance explicitly instead of arming automatic music on panel open', () => {
+    const player = createPlayer();
+    const settings = {
+      ...defaultSettings.sleepMusic,
+      tracks: [player.selectedTrack!],
+      selectedTrackId: player.selectedTrack!.id
+    };
+    const onStartGuidance = vi.fn();
+
+    render(
+      <SleepMusicPanel
+        session={createSleepSessionState({
+          baseVolume: settings.baseVolume,
+          transitionVolume: settings.transitionVolume,
+          relaxAlphaThreshold: settings.relaxAlphaThreshold,
+          fadeSleepScoreThreshold: settings.fadeSleepScoreThreshold,
+          stopSleepScoreThreshold: settings.stopSleepScoreThreshold,
+          relaxConfirmSeconds: settings.relaxConfirmSeconds,
+          transitionConfirmSeconds: settings.transitionConfirmSeconds,
+          sleepConfirmSeconds: settings.sleepConfirmSeconds,
+          awakeConfirmSeconds: settings.awakeConfirmSeconds,
+          emaAlpha: settings.emaAlpha,
+          minimumCoverage: settings.minimumCoverage
+        }, 0)}
+        metrics={null}
+        settings={settings}
+        player={player}
+        blink={createBlinkSnapshot()}
+        guidanceActive={false}
+        guidanceMessage="请先完成基线测量"
+        onStartGuidance={onStartGuidance}
+        onSelectTrack={vi.fn()}
+        onOpenLibrary={vi.fn()}
+        onRemoveTrack={vi.fn()}
+        onAutoModeChange={vi.fn()}
+        onVolumeChange={vi.fn()}
+        onBlinkCalibration={vi.fn()}
+        onResetSession={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('等待点击开始助眠')).toBeInTheDocument();
+    expect(screen.getByText('请先完成基线测量')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '开始助眠' }));
+    expect(onStartGuidance).toHaveBeenCalledTimes(1);
+  });
+
   test('shows an audience-readable automatic action and working player controls', () => {
     const player = createPlayer();
     const settings = {
@@ -220,6 +277,8 @@ describe('SleepMusicPanel', () => {
     expect(screen.getByText('EEG1+EEG2 / EEG3+EEG4')).toBeInTheDocument();
     expect(screen.getByText('86%')).toBeInTheDocument();
     expect(screen.getByText('90%')).toBeInTheDocument();
+    expect(screen.getByText('参考 0.200')).toBeInTheDocument();
+    expect(screen.getByText('阈值 2.800 z')).toBeInTheDocument();
     expect(screen.getByText('待确认眨眼')).toBeInTheDocument();
   });
 });

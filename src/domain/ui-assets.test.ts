@@ -23,4 +23,20 @@ describe('ui assets and chrome', () => {
     expect(imageCount).toBeGreaterThanOrEqual(4);
     expect(size).toBeGreaterThan(10000);
   });
+
+  test('signs the macOS app with audio-input permission for device enumeration', () => {
+    const entitlements = readFileSync(resolve(process.cwd(), 'src-tauri/Entitlements.plist'), 'utf8');
+    const macConfig = readFileSync(resolve(process.cwd(), 'src-tauri/tauri.macos.conf.json'), 'utf8');
+
+    expect(entitlements).toContain('com.apple.security.device.audio-input');
+    expect(macConfig).toContain('"entitlements": "Entitlements.plist"');
+  });
+
+  test('ships audible built-in tracks and a dedicated output test sound', () => {
+    const tracks = ['star-alpha.ogg', 'ocean-tide.ogg', 'forest-morning.ogg', 'rain-window.ogg', 'dawn-breath.ogg'];
+    for (const track of tracks) {
+      expect(statSync(resolve(process.cwd(), 'public/audio', track)).size).toBeGreaterThan(200_000);
+    }
+    expect(statSync(resolve(process.cwd(), 'public/audio/output-test.wav')).size).toBeGreaterThan(50_000);
+  });
 });

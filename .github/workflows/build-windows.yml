@@ -3,6 +3,8 @@ name: Build Windows
 on:
   workflow_dispatch:
   push:
+    branches:
+      - "codex/eeg-client-sleep-v0.2.5"
     tags:
       - "v*"
 
@@ -38,7 +40,7 @@ jobs:
 
       - name: Run algorithm unit tests
         shell: pwsh
-        run: output/build-tools/sleep-service-venv/Scripts/python.exe scripts/test_sleep_demo_v1013.py
+        run: output/build-tools/sleep-service-venv/Scripts/python.exe scripts/test_sleep_demo_v1021.py
 
       - name: Build algorithm sidecar exe
         shell: pwsh

@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest';
 import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import App from './App';
+import App, { extractChannelValues } from './App';
 import { defaultSettings } from './domain/settings';
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -40,6 +40,21 @@ afterEach(() => {
 });
 
 describe('App settings bootstrapping', () => {
+  test('converts protocol u24 EEG values before raw display', () => {
+    const values = extractChannelValues({
+      timestamp: '2026-07-19T00:00:00.000Z',
+      packet: {
+        ppg: { ir1: 0, red1: 0, green1: 0, ir2: 0, red2: 0, green2: 0, accX: 0, accY: 0, accZ: 0 },
+        eeg: { eeg1: 0xffffff, eeg2: 0x800000, eeg3: 0x7fffff, eeg4: 1 }
+      }
+    });
+
+    expect(values.eeg1).toBe(-1);
+    expect(values.eeg2).toBe(-8_388_608);
+    expect(values.eeg3).toBe(8_388_607);
+    expect(values.eeg4).toBe(1);
+  });
+
   test('keeps persisted EEG mode when mounted under StrictMode', async () => {
     localStorage.setItem(
       STORAGE_KEY,

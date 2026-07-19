@@ -19,6 +19,8 @@ import {
   type TimedValue
 } from '../domain/dsp';
 import { calculateSleepMetrics, type SleepMetrics } from '../domain/sleep-metrics';
+import { cleanSleepDeltaWave } from '../domain/delta-artifact-filter';
+import { translateAlgorithmState } from '../domain/sleep-demo-signal';
 import {
   eegScaleOptions,
   eegTimeWindowOptions,
@@ -35,8 +37,10 @@ import { SleepTrendChart } from './SleepTrendChart';
 import { ThemedSelect } from './ThemedSelect';
 import {
   SleepMusicPanel,
+  resolveRealtimeStage,
   type SleepMusicPanelProps
 } from './SleepMusicPanel';
+import type { DeviceFlagRecord } from '../App';
 
 interface PureWaveformViewProps {
   values: TimedValue[];
@@ -50,6 +54,8 @@ interface PureWaveformViewProps {
   warmupRemaining: number;
   onSleepMetrics?: (metrics: SleepMetrics) => void;
   musicPanel?: Omit<SleepMusicPanelProps, 'variant' | 'metrics'>;
+  deviceFlags?: DeviceFlagRecord[];
+  algorithmAction?: string | null;
 }
 
 const EEG_CHANNEL_OPTIONS = [
@@ -76,7 +82,9 @@ export function PureWaveformView({
   sampleCount,
   warmupRemaining,
   onSleepMetrics,
-  musicPanel
+  musicPanel,
+  deviceFlags = [],
+  algorithmAction = null
 }: PureWaveformViewProps) {
   const [bandPopoverOpen, setBandPopoverOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(true);
@@ -123,8 +131,11 @@ export function PureWaveformView({
         values,
         () => createBandFilter(range, eeg.notch)
       );
-      const scale = resolveScale(eeg.pure.bandScales[band.key], filtered.map((p) => p.value));
-      return { ...band, values: filtered, scale };
+      const displayValues = band.key === 'delta'
+        ? cleanSleepDeltaWave(filtered, values, EEG_SAMPLE_RATE)
+        : filtered;
+      const scale = resolveScale(eeg.pure.bandScales[band.key], displayValues.map((p) => p.value));
+      return { ...band, values: displayValues, scale };
     });
   }, [bands, channel, values, eeg.pure.bandRanges, eeg.pure.bandScales, eeg.notch]);
 
@@ -137,10 +148,11 @@ export function PureWaveformView({
     }
     const key = `${channel}|raw|${eeg.bandpassLow}-${eeg.bandpassHigh}`;
     return rawFilterCache.current.update(key, values, () =>
-      FilterChain.firBandpass({
+      FilterChain.butterworthBandpass({
         low: eeg.bandpassLow,
         high: eeg.bandpassHigh,
-        sampleRate: EEG_SAMPLE_RATE
+        sampleRate: EEG_SAMPLE_RATE,
+        order: 2
       })
     );
   }, [channel, values, eeg.bandpassEnabled, eeg.bandpassLow, eeg.bandpassHigh]);
@@ -197,6 +209,8 @@ export function PureWaveformView({
       percent: total > 1e-9 ? Math.round((item.value / total) * 100) : 0
     }));
   }, [bandSeries]);
+  const stagingResponse = musicPanel?.serviceStatus?.lastResponse ?? null;
+  const realtimeStage = resolveRealtimeStage(musicPanel?.serviceStatus?.phase, stagingResponse);
 
   return (
     <div className="pure-waveform-view" data-rail-open={railOpen}>
@@ -314,12 +328,21 @@ export function PureWaveformView({
               />
             ))}
           </div>
+          <PureFlagPanel
+            records={deviceFlags}
+            algorithmAction={algorithmAction}
+            stateFlags={musicPanel?.demoSignalStatus?.lastResponse?.state_flags ?? []}
+          />
         </section>
 
         <aside className="pure-rail" aria-label="数据面板">
           <div className="pure-rail-content">
             <BandDonut shares={shares} />
-            <SleepTrendChart metrics={sleepMetrics} />
+            <SleepTrendChart
+              metrics={sleepMetrics}
+              sleepProbability={stagingResponse?.decision_valid ? stagingResponse.selected_sleep_probability : null}
+              realtimeStage={realtimeStage}
+            />
             {musicPanel && (
               <div className="pure-sleep-music">
                 <SleepMusicPanel {...musicPanel} metrics={sleepMetrics} />
@@ -332,6 +355,39 @@ export function PureWaveformView({
         </aside>
       </div>
     </div>
+  );
+}
+
+function PureFlagPanel({
+  records,
+  algorithmAction,
+  stateFlags
+}: {
+  records: DeviceFlagRecord[];
+  algorithmAction: string | null;
+  stateFlags: string[];
+}) {
+  const current = records[records.length - 1];
+  const recent = records.slice(-6).reverse();
+  return (
+    <section className="pure-flag-panel" aria-label="设备与算法 Flag">
+      <div className="pure-flag-current">
+        <span>设备 Flag</span>
+        <strong>{current ? `${current.value} · 0x${current.value.toString(16).padStart(2, '0').toUpperCase()}` : '--'}</strong>
+        <small>{current ? new Date(current.timestamp).toLocaleTimeString('zh-CN', { hour12: false }) : '等待数据'}</small>
+      </div>
+      <div className="pure-flag-history" aria-label="最近设备 Flag">
+        {recent.length > 0 ? recent.map((record, index) => (
+          <span key={`${record.timestamp}-${index}`}>0x{record.value.toString(16).padStart(2, '0').toUpperCase()}</span>
+        )) : <span>无记录</span>}
+      </div>
+      <div className="pure-algorithm-flags">
+        <span>算法动作</span>
+        <strong>{algorithmAction ?? '等待下一个动作'}</strong>
+        <span>算法状态</span>
+        <strong>{stateFlags.slice(-2).map(translateAlgorithmState).join(' / ') || '等待'}</strong>
+      </div>
+    </section>
   );
 }
 

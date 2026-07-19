@@ -33,4 +33,12 @@ describe('SleepTrendChart', () => {
     expect(screen.getByRole('heading', { name: '困意值' })).toBeInTheDocument();
     expect(screen.getByLabelText('困意值 42%，数值越高越困')).toBeInTheDocument();
   });
+
+  test('prefers the conservative staging probability and shows the realtime stage', () => {
+    render(<SleepTrendChart metrics={metrics} sleepProbability={0.73} realtimeStage="NREM" />);
+
+    expect(screen.getByLabelText('困意值 73%，数值越高越困')).toBeInTheDocument();
+    expect(screen.getByText('NREM')).toBeInTheDocument();
+    expect(screen.queryByText('未见')).not.toBeInTheDocument();
+  });
 });

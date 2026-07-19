@@ -53,6 +53,38 @@ async fn stop_recording(state: State<'_, BleManagerState>) -> Result<(), String>
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn append_debug_marker(
+    state: State<'_, BleManagerState>,
+    participant_id: String,
+    label: String,
+    note: String,
+    sample_count: u64,
+    device_flag: Option<u8>,
+    algorithm_action: String,
+    eeg1: Option<f64>,
+    eeg2: Option<f64>,
+    eeg3: Option<f64>,
+    eeg4: Option<f64>,
+) -> Result<String, String> {
+    state
+        .append_debug_marker(
+            participant_id,
+            label,
+            note,
+            sample_count,
+            device_flag,
+            algorithm_action,
+            eeg1,
+            eeg2,
+            eeg3,
+            eeg4,
+        )
+        .await
+        .map_err(to_user_error)
+}
+
+#[tauri::command]
 async fn sleep_staging_health(
     state: State<'_, SleepStagingClientState>,
     endpoint: String,
@@ -109,6 +141,18 @@ async fn sleep_demo_blink_calibration(
 ) -> Result<Value, String> {
     state
         .demo_blink_calibration(&endpoint, session_id, action)
+        .await
+}
+
+#[tauri::command]
+async fn sleep_demo_alpha_calibration(
+    state: State<'_, SleepStagingClientState>,
+    endpoint: String,
+    session_id: String,
+    kind: String,
+) -> Result<Value, String> {
+    state
+        .demo_alpha_calibration(&endpoint, session_id, kind)
         .await
 }
 
@@ -194,12 +238,14 @@ pub fn run() {
             send_command,
             start_recording,
             stop_recording,
+            append_debug_marker,
             sleep_staging_health,
             sleep_staging_reset,
             sleep_staging_step,
             sleep_demo_reset,
             sleep_demo_blink,
             sleep_demo_blink_calibration,
+            sleep_demo_alpha_calibration,
             sleep_demo_config,
             sleep_demo_step,
             sleep_staging_runtime_info,

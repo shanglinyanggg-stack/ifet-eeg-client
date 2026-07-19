@@ -3,11 +3,16 @@ import type { SleepMetrics } from '../domain/sleep-metrics';
 
 interface SleepTrendChartProps {
   metrics: SleepMetrics;
+  sleepProbability?: number | null;
+  realtimeStage?: string;
 }
 
-export function SleepTrendChart({ metrics }: SleepTrendChartProps) {
+export function SleepTrendChart({ metrics, sleepProbability, realtimeStage = '等待分期' }: SleepTrendChartProps) {
+  const drowsiness = sleepProbability === null || sleepProbability === undefined
+    ? metrics.sleepOnsetScore
+    : Math.round(Math.max(0, Math.min(1, sleepProbability)) * 100);
   const ringStyle = {
-    '--sleep-score-angle': `${metrics.sleepOnsetScore * 3.6}deg`
+    '--sleep-score-angle': `${drowsiness * 3.6}deg`
   } as CSSProperties;
 
   return (
@@ -17,9 +22,9 @@ export function SleepTrendChart({ metrics }: SleepTrendChartProps) {
         <span className="panel-meta">{trendLabel(metrics.solTrend)}</span>
       </div>
       <div className="sleep-trend-body">
-        <div className="sleep-score-ring" style={ringStyle} aria-label={`困意值 ${metrics.sleepOnsetScore}%，数值越高越困`}>
+        <div className="sleep-score-ring" style={ringStyle} aria-label={`困意值 ${drowsiness}%，数值越高越困`}>
           <div className="sleep-score-core">
-            <strong>{metrics.sleepOnsetScore}</strong>
+            <strong>{drowsiness}</strong>
             <span>%</span>
           </div>
         </div>
@@ -28,7 +33,7 @@ export function SleepTrendChart({ metrics }: SleepTrendChartProps) {
             θ/α <strong>{formatRatio(metrics.thetaAlphaRatio)}</strong>
           </span>
           <span>
-            N2 <strong>{metrics.n2Candidate ? '候选' : '未见'}</strong>
+            分期 <strong>{realtimeStage}</strong>
           </span>
         </div>
       </div>

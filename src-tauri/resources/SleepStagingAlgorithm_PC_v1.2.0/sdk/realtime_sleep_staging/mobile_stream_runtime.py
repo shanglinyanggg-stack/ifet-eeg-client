@@ -251,6 +251,18 @@ class MobileStreamRuntime:
         self.minimum_coverage = float(
             self.config["preprocessing"]["minimum_window_coverage"]
         )
+        mapping = tuple(
+            int(value)
+            for value in self.config["preprocessing"].get(
+                "model_eeg_channel_mapping", [0, 1, 0, 1]
+            )
+        )
+        if len(mapping) != 4 or any(value not in range(4) for value in mapping):
+            raise ValueError(
+                "preprocessing.model_eeg_channel_mapping must contain four indices in [0,3]"
+            )
+        self.model_eeg_channel_mapping = mapping
+        self.source_eeg_channels = tuple(sorted(set(mapping)))
         self.maximum_gap_seconds = float(
             self.config["preprocessing"]["maximum_contiguous_gap_seconds"]
         )
@@ -265,6 +277,15 @@ class MobileStreamRuntime:
         self.filter_initial = sosfilt_zi(self.sos)
         self.stage_config = HierarchicalStageConfig(**self.config["stage_decoder"])
         self.music_config = ControlConfig(**self.config["music_controller"])
+        standard_fusion = self.config.get("fusion_policy", {}).get(
+            "standard_continuous", {}
+        )
+        self.cnn_weight = float(standard_fusion.get("cnn_weight", 0.6))
+        self.transformer_weight = float(
+            standard_fusion.get("sleeptransformer_weight", 0.4)
+        )
+        if not np.isclose(self.cnn_weight + self.transformer_weight, 1.0):
+            raise ValueError("CNN and SleepTransformer fusion weights must sum to one")
         options = ort.SessionOptions()
         options.intra_op_num_threads = intra_op_threads
         options.inter_op_num_threads = 1
@@ -446,7 +467,10 @@ class MobileStreamRuntime:
             raise ValueError(
                 f"imu_5s must have shape [3|6,{self.chunk_samples}], got {imu.shape}"
             )
-        if not np.isfinite(eeg).all() or not np.isfinite(imu[:3]).all():
+        model_eeg = np.asarray(
+            eeg[list(self.model_eeg_channel_mapping)], dtype=eeg.dtype
+        )
+        if not np.isfinite(model_eeg).all() or not np.isfinite(imu[:3]).all():
             raise ValueError("Inputs must be finite after timestamp binning and imputation")
         valid = (
             np.ones(self.chunk_samples, dtype=bool)
@@ -455,7 +479,7 @@ class MobileStreamRuntime:
         )
         if valid.shape != (self.chunk_samples,):
             raise ValueError(f"valid_5s must have shape [{self.chunk_samples}]")
-        filtered = self._filter_chunk(eeg, imu, state)
+        filtered = self._filter_chunk(model_eeg, imu, state)
         self._append_rolling(filtered, valid, state)
         base: dict[str, Any] = {
             "decision_ready": state.rolling_count == self.window_samples,
@@ -463,6 +487,10 @@ class MobileStreamRuntime:
             "chunks_seen": state.chunks_seen,
             "end_seconds": state.chunks_seen * self.step_seconds,
             "imu_axes_received": int(imu.shape[0]),
+            "eeg_channels_used": [index + 1 for index in self.source_eeg_channels],
+            "model_eeg_channel_mapping": [
+                index + 1 for index in self.model_eeg_channel_mapping
+            ],
             "future_samples_used": False,
         }
         if state.rolling_count < self.window_samples:
@@ -518,10 +546,20 @@ class MobileStreamRuntime:
                 context_valid,
             )
         )
-        fixed_probability = 0.6 * cnn_probability + 0.4 * transformer_probability
+        fixed_probability = (
+            self.cnn_weight * cnn_probability
+            + self.transformer_weight * transformer_probability
+        )
         fixed_probability /= fixed_probability.sum()
-        fixed_sleep_probability = 0.6 * cnn_sleep + 0.4 * transformer_sleep
-        transformer_weight = 0.4 if context_valid_count == CONTEXT_LENGTH else 0.0
+        fixed_sleep_probability = (
+            self.cnn_weight * cnn_sleep
+            + self.transformer_weight * transformer_sleep
+        )
+        transformer_weight = (
+            self.transformer_weight
+            if context_valid_count == CONTEXT_LENGTH
+            else 0.0
+        )
         recovery_probability = (
             (1.0 - transformer_weight) * cnn_probability
             + transformer_weight * transformer_probability
@@ -574,6 +612,7 @@ class MobileStreamRuntime:
             "window_samples": self.window_samples,
             "phase_count": PHASE_COUNT,
             "context_length": CONTEXT_LENGTH,
+            "model_eeg_channel_mapping": list(self.model_eeg_channel_mapping),
         }
 
     def state_arrays(self, state: MobileStreamState) -> dict[str, np.ndarray]:

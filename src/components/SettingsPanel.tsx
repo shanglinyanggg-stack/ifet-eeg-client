@@ -1,5 +1,6 @@
 import type React from 'react';
 import {
+  displayDelayOptions,
   eegScaleOptions,
   eegTimeWindowOptions,
   themeOptions,
@@ -11,14 +12,16 @@ import {
 import { createEegBands } from '../domain/dsp';
 import {
   blinkCalibrationFailureMessage,
+  calibrationProgress,
   formatEnabledBlinkPairs,
+  formatReferenceStrength,
   formatSelectedAlphaChannels,
   type SleepDemoSignalResponse
 } from '../domain/sleep-demo-signal';
 import { channelLabels, type ChannelKey } from '../domain/protocol';
 import type { BlinkGestureSnapshot } from '../domain/blink-gesture';
 import { ThemedSelect } from './ThemedSelect';
-import { ChevronRight, Eye, FolderOpen, ListMusic, Music2, Play, ServerCog, SlidersHorizontal, Square } from 'lucide-react';
+import { ChevronRight, Eye, FolderOpen, ListMusic, Music2, Play, RotateCcw, ServerCog, SlidersHorizontal, Speaker, Square } from 'lucide-react';
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -31,6 +34,9 @@ interface SettingsPanelProps {
   sleepDemoStatus?: {
     phase: 'local' | 'calibrating' | 'ready' | 'fallback';
     message: string;
+    alphaCalibrationSeconds: number;
+    closedEyeCalibrationSeconds: number;
+    blinkCalibrationSeconds: number;
     lastResponse: SleepDemoSignalResponse | null;
   };
   sleepRuntime?: {
@@ -42,14 +48,26 @@ interface SettingsPanelProps {
   onOpenSleepAlgorithm?: () => void;
   onStartSleepService?: () => void;
   onStopSleepService?: () => void;
+  onOpenEyeCalibration?: () => void;
+  onClosedEyeCalibration?: () => void;
   onBlinkCalibration?: () => void;
+  audioOutput?: {
+    devices: Array<{ deviceId: string; label: string }>;
+    selectedDeviceId: string;
+    supported: boolean;
+    error: string | null;
+  };
+  onAudioOutputDeviceChange?: (deviceId: string) => void;
+  onRefreshAudioOutputs?: () => void;
+  onTestAudioOutput?: () => void;
   onOpenMusicLibrary?: () => void;
 }
 
 const channels = Object.keys(channelLabels) as ChannelKey[];
 const displayModeOptions = [
   { value: 'normal', label: '全部波形' },
-  { value: 'eeg', label: '脑电模式' }
+  { value: 'eeg', label: '脑电模式' },
+  { value: 'debug', label: '调试记录' }
 ];
 const eegChannelOptions = [
   { value: 'eeg1', label: 'EEG1' },
@@ -87,7 +105,13 @@ export function SettingsPanel({
   onOpenSleepAlgorithm,
   onStartSleepService,
   onStopSleepService,
+  onOpenEyeCalibration,
+  onClosedEyeCalibration,
   onBlinkCalibration,
+  audioOutput,
+  onAudioOutputDeviceChange,
+  onRefreshAudioOutputs,
+  onTestAudioOutput,
   onOpenMusicLibrary
 }: SettingsPanelProps) {
   const update = (patch: Partial<AppSettings>) => onChange({ ...settings, ...patch });
@@ -104,6 +128,26 @@ export function SettingsPanel({
     ?? false;
   const blinkFailure = blinkCalibrationFailureMessage(
     blinkResponse?.state.blink_calibration_failure_reason ?? blinkStatus?.calibrationFailureReason
+  );
+  const openEyeComplete = blinkResponse?.state.calibration_complete ?? false;
+  const closedEyeComplete = blinkResponse?.state.closed_eye_calibration_complete ?? false;
+  const openEyeProgress = calibrationProgress(
+    blinkResponse ?? null,
+    sleepDemoStatus?.alphaCalibrationSeconds ?? 20,
+    openEyeComplete,
+    blinkResponse?.state.calibration_progress
+  );
+  const closedEyeProgress = calibrationProgress(
+    blinkResponse ?? null,
+    sleepDemoStatus?.closedEyeCalibrationSeconds ?? 20,
+    closedEyeComplete,
+    blinkResponse?.state.closed_eye_calibration_progress
+  );
+  const blinkProgress = calibrationProgress(
+    blinkResponse ?? null,
+    sleepDemoStatus?.blinkCalibrationSeconds ?? 10,
+    blinkCalibrationStatus === 'complete',
+    blinkResponse?.state.blink_calibration_progress ?? blinkStatus?.calibrationProgress
   );
 
   return (
@@ -128,6 +172,16 @@ export function SettingsPanel({
           options={themeOptions}
           onChange={(theme) => update({ theme: theme as ThemeName })}
         />
+      </div>
+      <div className="field-control">
+        <span className="field-label">信号显示时延</span>
+        <ThemedSelect
+          ariaLabel="信号显示时延"
+          value={String(settings.displayDelayMs)}
+          options={displayDelayOptions}
+          onChange={(displayDelayMs) => update({ displayDelayMs: Number(displayDelayMs) })}
+        />
+        <small className="setting-help">实时切换可视时间锚点，不改变采集、保存或算法输入。</small>
       </div>
       <label className="check-row">
         <input type="checkbox" checked={settings.autoReconnect} onChange={(event) => update({ autoReconnect: event.target.checked })} />
@@ -185,7 +239,23 @@ export function SettingsPanel({
               checked={settings.sleepMusic.autoMode}
               onChange={(event) => updateSleepMusic({ autoMode: event.target.checked })}
             />
-            自动播放控制
+            自动音乐：检测 Alpha 后播放
+          </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={settings.sleepMusic.alphaVolumeControlEnabled}
+              onChange={(event) => updateSleepMusic({ alphaVolumeControlEnabled: event.target.checked })}
+            />
+            Alpha 强度调节音量
+          </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={settings.sleepMusic.sleepStopEnabled}
+              onChange={(event) => updateSleepMusic({ sleepStopEnabled: event.target.checked })}
+            />
+            在线检测入睡后关闭音乐
           </label>
           <label className="check-row">
             <input
@@ -208,6 +278,30 @@ export function SettingsPanel({
           <ChevronRight size={16} />
         </button>
 
+        <div className="audio-output-setting">
+          <div>
+            <span className="field-label"><Speaker size={13} />音频播放设备</span>
+            <ThemedSelect
+              ariaLabel="音频播放设备"
+              value={audioOutput?.selectedDeviceId ?? settings.sleepMusic.audioOutputDeviceId}
+              options={(audioOutput?.devices ?? [{ deviceId: 'default', label: '系统默认输出' }]).map((device) => ({
+                value: device.deviceId,
+                label: device.label
+              }))}
+              onChange={(deviceId) => onAudioOutputDeviceChange?.(deviceId)}
+            />
+            <button type="button" onClick={onRefreshAudioOutputs} disabled={!onRefreshAudioOutputs}>
+              授权刷新
+            </button>
+            <button type="button" onClick={onTestAudioOutput} disabled={!onTestAudioOutput}>
+              测试声音
+            </button>
+          </div>
+          <small>{audioOutput?.error ?? (audioOutput?.supported
+            ? '音乐只切换输出设备；设备授权不会录制音频'
+            : '未支持设备选择时自动使用系统默认输出')}</small>
+        </div>
+
         <RangeSetting
           label="播放音量"
           value={settings.sleepMusic.baseVolume}
@@ -216,6 +310,18 @@ export function SettingsPanel({
           step={0.01}
           display={`${Math.round(settings.sleepMusic.baseVolume * 100)}%`}
           onChange={(baseVolume) => updateSleepMusic({ baseVolume })}
+        />
+        <RangeSetting
+          label="最高音量阈值"
+          value={settings.sleepMusic.maximumVolume}
+          min={0.05}
+          max={1}
+          step={0.01}
+          display={`${Math.round(settings.sleepMusic.maximumVolume * 100)}%`}
+          onChange={(maximumVolume) => updateSleepMusic({
+            maximumVolume,
+            baseVolume: Math.min(settings.sleepMusic.baseVolume, maximumVolume)
+          })}
         />
         <RangeSetting
           label="渐弱目标"
@@ -275,6 +381,9 @@ export function SettingsPanel({
               />
               <Eye size={13} />眨眼音量控制
             </label>
+            <p className="algorithm-consistency-note">
+              在线模式沿用旧自制版算法：音乐开启阈值由当前 Alpha 相对睁眼基线自适应计算；困意值采用 PC 分期算法的保守睡眠概率。下方手动阈值只用于本地降级模式。
+            </p>
             <div className="field-control">
               <span className="field-label">Alpha 音量模式</span>
               <ThemedSelect
@@ -286,22 +395,71 @@ export function SettingsPanel({
                 })}
               />
             </div>
-            <div className="blink-calibration-settings" data-state={blinkStale ? 'stale' : blinkCalibrationStatus}>
-              <div>
-                <strong>EEG1-EEG4 双配对个体测量</strong>
-                <span>{blinkStale
-                  ? '基线漂移超限，控制已暂停，请重新测量'
+            <div className="baseline-calibration-grid">
+              <BaselineCalibrationCard
+                title="睁眼基线"
+                instruction={openEyeComplete
+                  ? '已建立个体睁眼 Alpha 参考；需要更换佩戴位置时可重新测量'
+                  : '平视前方，面部放松，尽量少眨眼，保持头部不动'}
+                progress={openEyeProgress}
+                complete={openEyeComplete}
+                running={Boolean(blinkResponse) && !openEyeComplete}
+                reference={formatReferenceStrength(blinkResponse?.telemetry.open_eye_alpha_baseline)}
+                progressHint={openEyeComplete ? '测量完成' : '睁眼平视，保持静止'}
+                duration={`${sleepDemoStatus?.alphaCalibrationSeconds ?? 20}s`}
+                onStart={onOpenEyeCalibration}
+              />
+              <BaselineCalibrationCard
+                title="闭眼基线"
+                instruction={closedEyeComplete
+                  ? '已建立闭眼 Alpha 强度参考'
+                  : openEyeComplete
+                    ? '自然闭眼，保持清醒和静止，不要咬牙或转头'
+                    : '请先完成睁眼基线'}
+                progress={closedEyeProgress}
+                complete={closedEyeComplete}
+                running={openEyeComplete && !closedEyeComplete && closedEyeProgress > 0}
+                reference={formatReferenceStrength(blinkResponse?.telemetry.closed_eye_alpha_reference)}
+                progressHint={closedEyeComplete
+                  ? '测量完成'
+                  : openEyeComplete
+                    ? '自然闭眼，保持清醒'
+                    : '请先完成睁眼基线'}
+                duration={`${sleepDemoStatus?.closedEyeCalibrationSeconds ?? 20}s`}
+                onStart={onClosedEyeCalibration}
+                disabled={!openEyeComplete}
+              />
+              <BaselineCalibrationCard
+                title="眨眼基线"
+                instruction={blinkStale
+                  ? `漂移恢复中 ${Math.round((blinkResponse?.telemetry.blink_baseline_recovery_progress ?? blinkStatus?.baselineRecoveryProgress ?? 0) * 100)}%，恢复后自动重开控制`
                   : blinkCalibrationStatus === 'complete'
-                  ? `已启用 ${formatEnabledBlinkPairs(blinkResponse?.telemetry.blink_enabled_channel_pairs ?? blinkStatus?.enabledPairs)}`
-                  : blinkCalibrationStatus === 'running'
-                    ? `测量中 ${Math.round((blinkResponse?.state.blink_calibration_progress ?? blinkStatus?.calibrationProgress ?? 0) * 100)}%`
-                    : blinkCalibrationStatus === 'failed'
-                      ? blinkFailure
-                      : '先 3 秒睁眼安静不眨眼，再自然眨眼 10 秒'}</span>
-              </div>
-              <button type="button" onClick={onBlinkCalibration} disabled={!onBlinkCalibration}>
-                <Eye size={13} />{blinkCalibrationStatus === 'complete' && !blinkStale ? '重新测量' : '开始测量'}
-              </button>
+                    ? `已启用 ${formatEnabledBlinkPairs(blinkResponse?.telemetry.blink_enabled_channel_pairs ?? blinkStatus?.enabledPairs)}`
+                    : blinkCalibrationStatus === 'running'
+                      ? blinkProgress < 3 / 13
+                        ? '保持睁眼安静，前 3 秒不要眨眼'
+                        : '连续自然眨眼，每 0.5–1 秒一次；保持头和下颌不动'
+                      : blinkCalibrationStatus === 'failed'
+                        ? blinkFailure
+                        : '先 3 秒睁眼安静，再连续自然眨眼 10 秒'}
+                progress={blinkProgress}
+                complete={blinkCalibrationStatus === 'complete' && !blinkStale}
+                running={blinkCalibrationStatus === 'running' || blinkStale}
+                reference={formatReferenceStrength(blinkResponse?.telemetry.blink_threshold_robust_z, ' z')}
+                progressHint={blinkStale
+                  ? '基线漂移恢复中'
+                  : blinkCalibrationStatus === 'complete'
+                    ? '测量完成'
+                    : blinkCalibrationStatus === 'running'
+                      ? blinkProgress < 3 / 13
+                        ? '保持睁眼，暂不眨眼'
+                        : '连续自然眨眼 · 0.5–1 秒/次'
+                      : '准备：先静止 3 秒'}
+                duration="3+10s"
+                onStart={onBlinkCalibration}
+              />
+            </div>
+            <div className="blink-calibration-settings" data-state={blinkStale ? 'stale' : blinkCalibrationStatus}>
               {(blinkResponse || blinkStatus) && (
                 <dl>
                   <div><dt>配对有效峰</dt><dd>{blinkResponse?.telemetry.blink_calibration_peak_count ?? blinkStatus?.calibrationPeakCount ?? 0}</dd></div>
@@ -310,6 +468,8 @@ export function SettingsPanel({
                   <div><dt>丢包拒绝</dt><dd>{blinkResponse?.telemetry.blink_invalid_gap_rejections ?? blinkStatus?.invalidGapRejections ?? 0}</dd></div>
                   <div><dt>节律补偿</dt><dd>{blinkResponse?.telemetry.blink_gap_recoveries ?? blinkStatus?.gapRecoveries ?? 0}</dd></div>
                   <div><dt>健康检查</dt><dd>{blinkResponse?.telemetry.blink_baseline_health_checks ?? blinkStatus?.baselineHealthChecks ?? 0}</dd></div>
+                  <div><dt>自动恢复</dt><dd>{blinkResponse?.telemetry.blink_baseline_recoveries ?? blinkStatus?.baselineRecoveries ?? 0}</dd></div>
+                  <div><dt>暂停配对</dt><dd>{formatEnabledBlinkPairs(blinkResponse?.telemetry.blink_runtime_disabled_pairs ?? blinkStatus?.runtimeDisabledPairs)}</dd></div>
                 </dl>
               )}
             </div>
@@ -324,7 +484,7 @@ export function SettingsPanel({
             />
             <div className="two-col">
               <label>
-                Alpha 放松阈值
+                本地降级 Alpha 阈值
                 <input
                   type="number"
                   min={0.05}
@@ -414,7 +574,7 @@ export function SettingsPanel({
               <input
                 value={settings.sleepMusic.serviceEndpoint}
                 onChange={(event) => updateSleepMusic({ serviceEndpoint: event.target.value })}
-                placeholder="http://127.0.0.1:8765"
+                placeholder="http://127.0.0.1:8768"
               />
             </label>
             <div className="sleep-service-actions">
@@ -447,10 +607,10 @@ export function SettingsPanel({
       </div>
 
       <div className="setting-group">
-        <h3><span className="group-dot" />原始滤波</h3>
+        <h3><span className="group-dot" />原始滤波（全部波形）</h3>
         <label className="check-row">
           <input type="checkbox" checked={settings.filterEnabled} onChange={(event) => update({ filterEnabled: event.target.checked })} />
-          带通滤波
+          全部波形显示带通（低时延）
         </label>
         <div className="two-col">
           <label>
@@ -476,6 +636,7 @@ export function SettingsPanel({
             <input type="number" step="0.1" value={settings.kalmanR} onChange={(event) => update({ kalmanR: Number(event.target.value) })} />
           </label>
         </div>
+        <p className="setting-help">仅作用于“全部波形”显示。卡尔曼用于抑制逐点随机抖动：Q 越大跟随越快，R 越大越平滑但响应更慢。</p>
       </div>
 
       <div className="setting-group">
@@ -511,7 +672,7 @@ export function SettingsPanel({
         </div>
         <label className="check-row">
           <input type="checkbox" checked={settings.eeg.bandpassEnabled} onChange={(event) => updateEeg({ bandpassEnabled: event.target.checked })} />
-          EEG 带通
+          EEG 原始波形带通（低时延）
         </label>
         <div className="two-col">
           <label>
@@ -523,6 +684,7 @@ export function SettingsPanel({
             <input type="number" step="0.1" value={settings.eeg.bandpassHigh} onChange={(event) => updateEeg({ bandpassHigh: Number(event.target.value) })} />
           </label>
         </div>
+        <p className="setting-help">仅作用于脑电/纯波形模式顶部的原始 EEG；下方各频带始终按各自范围滤波。关闭后显示已正确转为有符号的原始 EEG。</p>
         <div className="field-control">
           <span className="field-label">陷波</span>
           <ThemedSelect
@@ -576,6 +738,48 @@ export function SettingsPanel({
         </div>
       </div>
     </aside>
+  );
+}
+
+function BaselineCalibrationCard({
+  title,
+  instruction,
+  progress,
+  complete,
+  running,
+  reference,
+  progressHint,
+  duration,
+  onStart,
+  disabled = false
+}: {
+  title: string;
+  instruction: string;
+  progress: number;
+  complete: boolean;
+  running: boolean;
+  reference?: string | null;
+  progressHint: string;
+  duration: string;
+  onStart?: () => void;
+  disabled?: boolean;
+}) {
+  const percent = Math.round(Math.max(0, Math.min(1, progress)) * 100);
+  return (
+    <div className="baseline-calibration-card" data-state={complete ? 'complete' : running ? 'running' : 'idle'}>
+      <div className="baseline-calibration-heading">
+        <strong>{title}</strong>
+        <span>{complete ? `已完成${reference ? ` · 参考强度 ${reference}` : ''}` : `${percent}% · ${duration}`}</span>
+      </div>
+      <div className="baseline-calibration-progress" aria-label={`${title}测量进度 ${percent}%`}>
+        <span style={{ width: `${percent}%` }} />
+        <em>{progressHint}</em>
+      </div>
+      <p>{instruction}</p>
+      <button type="button" onClick={onStart} disabled={!onStart || disabled}>
+        <RotateCcw size={12} />{complete ? '重新测量' : '开始测量'}
+      </button>
+    </div>
   );
 }
 

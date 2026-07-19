@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from 'vitest';
-import { defaultSettings, eegScaleOptions, eegTimeWindowOptions, loadSettings, saveSettings, themeOptions } from './settings';
+import { defaultSettings, displayDelayOptions, eegScaleOptions, eegTimeWindowOptions, loadSettings, saveSettings, themeOptions } from './settings';
 
 describe('settings persistence', () => {
   beforeEach(() => {
@@ -14,7 +14,11 @@ describe('settings persistence', () => {
     expect(defaultSettings.eeg.timeWindowSeconds).toBe('auto');
     expect(defaultSettings.eeg.bandpassEnabled).toBe(false);
     expect(defaultSettings.sleepMusic.autoMode).toBe(true);
-    expect(defaultSettings.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8765');
+    expect(defaultSettings.sleepMusic.alphaVolumeControlEnabled).toBe(true);
+    expect(defaultSettings.sleepMusic.sleepStopEnabled).toBe(true);
+    expect(defaultSettings.sleepMusic.maximumVolume).toBe(0.8);
+    expect(defaultSettings.displayDelayMs).toBe(0);
+    expect(defaultSettings.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8768');
     expect(defaultSettings.sleepMusic.libraryTracks).toHaveLength(5);
     expect(defaultSettings.sleepMusic.tracks).toHaveLength(0);
   });
@@ -35,6 +39,8 @@ describe('settings persistence', () => {
     expect(eegScaleOptions.map((option) => option.value)).toContain('100');
     expect(eegTimeWindowOptions[0]).toEqual({ value: 'auto', label: 'auto' });
     expect(eegTimeWindowOptions.map((option) => option.value)).toContain('10');
+    expect(displayDelayOptions[0]).toEqual({ value: '0', label: '实时' });
+    expect(displayDelayOptions.map((option) => option.value)).toContain('1000');
   });
 
   test('round-trips settings through localStorage', () => {

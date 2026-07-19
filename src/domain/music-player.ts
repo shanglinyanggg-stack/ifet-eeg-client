@@ -9,7 +9,18 @@ export interface MusicPlayerSnapshot {
   fadeRemainingSeconds: number;
   error: string | null;
   autoplayBlocked: boolean;
+  outputDevices: AudioOutputDevice[];
+  selectedOutputDeviceId: string;
+  outputDeviceSupported: boolean;
+  outputDeviceError: string | null;
 }
+
+export interface AudioOutputDevice {
+  deviceId: string;
+  label: string;
+}
+
+export const SYSTEM_DEFAULT_AUDIO_OUTPUT_ID = 'default';
 
 export interface MusicPlayerController {
   selectedTrack: SleepMusicTrack | null;
@@ -21,6 +32,9 @@ export interface MusicPlayerController {
   next: () => void;
   seek: (seconds: number) => void;
   setVolume: (volume: number) => void;
+  refreshOutputDevices: (requestPermission?: boolean) => Promise<void>;
+  setOutputDevice: (deviceId: string) => Promise<boolean>;
+  testOutput: () => Promise<void>;
 }
 
 export function formatPlaybackTime(seconds: number): string {

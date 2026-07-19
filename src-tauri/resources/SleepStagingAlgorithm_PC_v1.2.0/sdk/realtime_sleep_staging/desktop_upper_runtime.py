@@ -115,22 +115,45 @@ class DesktopUpperRuntime:
             if prediction.get("decision_valid"):
                 stage = int(prediction["stage_decoder_prediction3"])
                 labels = ("W", "NREM", "REM")
-                sleep_detected = stage != 0
+                model_stage_candidate = labels[stage]
+                model_sleep_probability = float(
+                    np.asarray(prediction["stage_decoder_probability3"])[1:].sum()
+                )
+                music_probability3 = np.asarray(
+                    prediction.get("music_probability3", []), dtype=np.float64
+                )
+                conservative_sleep_probability = (
+                    float(music_probability3[1:].sum())
+                    if music_probability3.shape == (3,)
+                    else model_sleep_probability
+                )
+                # The 75% stage decoder is a research staging output.  It is
+                # intentionally more sensitive than the dedicated 80% music
+                # controller and must not be presented as confirmed sleep or
+                # used to stop music by itself.  v1.0.13 incorrectly wired the
+                # sensitive stage state directly to both behaviours.
+                conservative_sleep = bool(prediction.get("music_sleep_state", False))
+                autonomous_allowed = bool(
+                    prediction.get("autonomous_music_allowed", False)
+                )
+                selected_stage = model_stage_candidate if conservative_sleep else "W"
                 response.update(
                     {
-                        "selected_prediction3": stage,
-                        "selected_stage": labels[stage],
-                        "sleep_detected": sleep_detected,
-                        "selected_sleep_probability": float(
-                            np.asarray(prediction["stage_decoder_probability3"])[1:].sum()
-                        ),
+                        "model_prediction3_candidate": stage,
+                        "model_stage_candidate": model_stage_candidate,
+                        "model_sleep_probability": model_sleep_probability,
+                        "selected_prediction3": stage if conservative_sleep else 0,
+                        "selected_stage": selected_stage,
+                        "sleep_detected": conservative_sleep,
+                        "selected_sleep_probability": conservative_sleep_probability,
+                        "sleep_confirmation_source": "music_controller_ema",
                         "intervention_action_candidate": (
-                            "stop_music" if sleep_detected else "play_music"
+                            "stop_music" if conservative_sleep else "play_music"
                         ),
                         "intervention_action": (
-                            "stop_music" if sleep_detected else "play_music"
+                            "stop_music" if conservative_sleep else "play_music"
                         )
-                        if prediction.get("autonomous_music_allowed", False)
+                        if autonomous_allowed
                         else "hold_previous_state",
                     }
                 )
@@ -141,6 +164,10 @@ class DesktopUpperRuntime:
                         "selected_stage": None,
                         "sleep_detected": None,
                         "selected_sleep_probability": None,
+                        "model_prediction3_candidate": None,
+                        "model_stage_candidate": None,
+                        "model_sleep_probability": None,
+                        "sleep_confirmation_source": "music_controller_ema",
                         "intervention_action_candidate": "hold_previous_state",
                         "intervention_action": "hold_previous_state",
                     }

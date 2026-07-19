@@ -26,10 +26,10 @@ try {
     if (-not $Health) {
         throw "Algorithm service did not become ready"
     }
-    if ($Health.demo.schema_version -ne "headset-demo-flags/v7") {
+    if ($Health.demo.schema_version -ne "headset-demo-flags/v9") {
         throw "Unexpected demo schema: $($Health.demo.schema_version)"
     }
-    if ($Health.demo.algorithm_version -ne "1.0.13") {
+    if ($Health.demo.algorithm_version -ne "1.0.21") {
         throw "Unexpected blink algorithm version: $($Health.demo.algorithm_version)"
     }
     if ($Health.demo.blink_calibration_seconds -ne 10) {

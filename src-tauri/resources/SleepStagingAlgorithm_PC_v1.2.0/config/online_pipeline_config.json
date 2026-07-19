@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "pipeline": "five-seed raw CNN60% + causal SleepTransformer40% + causal hierarchical stage decoder",
+  "pipeline": "dedicated EEG1-2 five-seed CNN35% + causal SleepTransformer65%",
   "sample_rate_hz": 100,
   "decision_interval_seconds": 5,
   "signal_window_seconds": 30,
@@ -11,18 +11,28 @@
     "first_valid_decision_seconds": 30,
     "reason": "Initialize every SOS section with scipy.signal.sosfilt_zi scaled by the first raw sample, then fill one causal 30-second model window.",
     "compatibility_validation": {
-      "old_windows_preserved": 36185,
-      "added_doctor_labeled_startup_windows": 18,
-      "added_labels": "18/18 W",
-      "raw_wake_correct": "15/18",
-      "frozen_stage_decoder_wake_correct": "18/18",
-      "frozen_music_controller_awake_correct": "18/18",
-      "five_seed_subject_equal_macro_f1_difference": -9.453358929345512e-05,
-      "five_seed_wake_sleep_balanced_accuracy_difference": -3.748855225371717e-05,
-      "limitation": "No doctor-labeled startup NREM or REM window is available."
+      "doctor_scored_windows": 36203,
+      "physical_eeg_channels": [
+        1,
+        2
+      ],
+      "first_valid_decision_seconds": 30,
+      "strict_stream_validation": "save/restore exact; future mutation does not change past outputs",
+      "limitation": "Historical pilot data do not include doctor-labeled startup NREM or REM windows."
     }
   },
   "preprocessing": {
+    "active_eeg_channels": [
+      1,
+      2
+    ],
+    "model_eeg_channel_mapping": [
+      0,
+      1,
+      0,
+      1
+    ],
+    "channel_policy_note": "EEG3/EEG4 are displayed and recorded only. Models were retrained with EEG1/EEG2 duplicated at the fixed-width feature interface.",
     "timestamp_bin_seconds": 0.01,
     "wearable_eeg_bandpass_hz": [
       0.3,
@@ -30,7 +40,7 @@
     ],
     "filter": "fourth-order causal Butterworth with persistent SOS state initialized as sosfilt_zi * first_sample",
     "cnn": "per-window per-channel EEG standardization clipped to [-8,8], plus standardized acceleration magnitude",
-    "sleeptransformer": "four-channel causal 2 s log-power frames with 1 s hop; current and seven past windows spaced 30 s apart",
+    "sleeptransformer": "EEG1/EEG2-only causal 2 s log-power frames with 1 s hop; current and seven past windows spaced 30 s apart",
     "sleeptransformer_frozen_feature_compatibility": {
       "spectral_token_storage": "float16 round-trip, then float32 ONNX input",
       "auxiliary_eeg_amplitude": "historical checkpoint convention: computed from the normalized temporary spectral batch",
@@ -42,33 +52,38 @@
   "models": [
     {
       "seed": 20260714,
-      "cnn_weight": 0.6,
-      "sleeptransformer_weight": 0.4,
-      "onnx_fp32_branches": "../models/seed_20260714_branches_fp32.onnx"
+      "cnn_weight": 0.35,
+      "sleeptransformer_weight": 0.65,
+      "onnx_fp32_branches": "../models/seed_20260714_branches_fp32.onnx",
+      "onnx_dynamic_int8_branches": "../models/seed_20260714_branches_dynamic_int8.onnx"
     },
     {
       "seed": 20260715,
-      "cnn_weight": 0.6,
-      "sleeptransformer_weight": 0.4,
-      "onnx_fp32_branches": "../models/seed_20260715_branches_fp32.onnx"
+      "cnn_weight": 0.35,
+      "sleeptransformer_weight": 0.65,
+      "onnx_fp32_branches": "../models/seed_20260715_branches_fp32.onnx",
+      "onnx_dynamic_int8_branches": "../models/seed_20260715_branches_dynamic_int8.onnx"
     },
     {
       "seed": 20260716,
-      "cnn_weight": 0.6,
-      "sleeptransformer_weight": 0.4,
-      "onnx_fp32_branches": "../models/seed_20260716_branches_fp32.onnx"
+      "cnn_weight": 0.35,
+      "sleeptransformer_weight": 0.65,
+      "onnx_fp32_branches": "../models/seed_20260716_branches_fp32.onnx",
+      "onnx_dynamic_int8_branches": "../models/seed_20260716_branches_dynamic_int8.onnx"
     },
     {
       "seed": 20260717,
-      "cnn_weight": 0.6,
-      "sleeptransformer_weight": 0.4,
-      "onnx_fp32_branches": "../models/seed_20260717_branches_fp32.onnx"
+      "cnn_weight": 0.35,
+      "sleeptransformer_weight": 0.65,
+      "onnx_fp32_branches": "../models/seed_20260717_branches_fp32.onnx",
+      "onnx_dynamic_int8_branches": "../models/seed_20260717_branches_dynamic_int8.onnx"
     },
     {
       "seed": 20260718,
-      "cnn_weight": 0.6,
-      "sleeptransformer_weight": 0.4,
-      "onnx_fp32_branches": "../models/seed_20260718_branches_fp32.onnx"
+      "cnn_weight": 0.35,
+      "sleeptransformer_weight": 0.65,
+      "onnx_fp32_branches": "../models/seed_20260718_branches_fp32.onnx",
+      "onnx_dynamic_int8_branches": "../models/seed_20260718_branches_dynamic_int8.onnx"
     }
   ],
   "seed_ensemble": "arithmetic mean of five three-class probability vectors",
@@ -82,20 +97,20 @@
   },
   "fusion_policy": {
     "standard_continuous": {
-      "cnn_weight": 0.6,
-      "sleeptransformer_weight": 0.4,
+      "cnn_weight": 0.35,
+      "sleeptransformer_weight": 0.65,
       "use": "raw_prediction3, stage_decoder_prediction3, and music_sleep_state"
     },
     "cold_restart_recovery_stage": {
       "output": "recovery_stage_prediction3",
-      "transformer_weight": "0.0 while context_valid_count < 8; 0.4 when context_valid_count == 8",
+      "transformer_weight": "0.0 while context_valid_count < 8; 0.65 when context_valid_count == 8",
       "cnn_weight": "1 - transformer_weight",
       "low_confidence_until_seconds_after_restart": 240,
       "music_control_input": false,
       "prospective_status": "research output only"
     },
     "cold_restart_music": {
-      "probability_source": "standard fixed CNN60% + SleepTransformer40%",
+      "probability_source": "dedicated EEG1-2 CNN35% + causal SleepTransformer65%",
       "controller": "music_controller",
       "new_cold_specific_controller": "rejected because outer wake-event protection was below 0.80",
       "autonomous_intervention_allowed_without_restored_state": false
@@ -114,8 +129,8 @@
   },
   "music_controller": {
     "ema_alpha": 0.25,
-    "sleep_on_threshold": 0.75,
-    "wake_on_threshold": 0.35,
+    "sleep_on_threshold": 0.8,
+    "wake_on_threshold": 0.65,
     "sleep_confirm_updates": 1,
     "wake_confirm_updates": 3
   },
@@ -173,12 +188,13 @@
   "deployment_target": "desktop_upper_computer",
   "runtime_precision": "ONNX FP32",
   "onnx_execution_provider": "CPUExecutionProvider",
-  "selected_algorithm": "five-seed raw EEG CNN 60% + causal SleepTransformer 40% + causal hierarchical W/sleep then NREM/REM decoder",
+  "selected_algorithm": "dedicated EEG1-2 five-seed online CNN35% + causal SleepTransformer65%",
   "selection_metric": {
-    "protocol": "six-subject nested LOSO, five seeds, subject-equal",
-    "wake_sleep_balanced_accuracy": 0.7735366707570154,
-    "wake_recall": 0.6794631886361157,
-    "sleep_recall": 0.8676101528779149,
-    "macro_f1": 0.6185558875053024
+    "protocol": "historical subject-held-out ysl/zgy, one seed for architecture and threshold selection; all six subjects used only for deployment refit",
+    "wake_sleep_balanced_accuracy": 0.7284070811836143,
+    "wake_recall": 0.6590068674062335,
+    "sleep_recall": 0.7978072949609951,
+    "sleep_threshold": 0.8,
+    "warning": "Historical pilot validation, not a prospective test result."
   }
 }

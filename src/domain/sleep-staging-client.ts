@@ -32,6 +32,15 @@ export interface SleepStagingStepResponse {
   maximum_contiguous_gap_seconds: number;
   chunks_seen?: number;
   end_seconds?: number;
+  model_stage_candidate?: 'W' | 'NREM' | 'REM' | null;
+  model_sleep_probability?: number | null;
+  context_valid_count?: number;
+  context_attempt_count?: number;
+  runtime_step_ms?: number;
+  phase?: number;
+  quality?: number;
+  recovery_low_confidence?: boolean;
+  sleep_confirmation_source?: string;
 }
 
 export interface SleepStagingRuntimeInfo {
@@ -96,6 +105,18 @@ export async function startSleepDemoBlinkCalibration(
     endpoint: normalizeSleepEndpoint(endpoint),
     sessionId,
     action: restart ? 'restart' : 'start'
+  });
+}
+
+export async function startSleepDemoAlphaCalibration(
+  endpoint: string,
+  sessionId: string,
+  kind: 'open-eye' | 'closed-eye'
+): Promise<SleepDemoSignalResponse> {
+  return invoke<SleepDemoSignalResponse>('sleep_demo_alpha_calibration', {
+    endpoint: normalizeSleepEndpoint(endpoint),
+    sessionId,
+    kind
   });
 }
 

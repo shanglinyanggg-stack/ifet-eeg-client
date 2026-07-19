@@ -21,7 +21,7 @@ ALGORITHM = (
 
 
 def load_algorithm():
-    spec = importlib.util.spec_from_file_location("ifet_demo_signal_flags_v1013", ALGORITHM)
+    spec = importlib.util.spec_from_file_location("ifet_demo_signal_flags_v1021", ALGORITHM)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load {ALGORITHM}")
     module = importlib.util.module_from_spec(spec)
@@ -62,12 +62,12 @@ def run_calibration(channel_count: int):
     return detector, output
 
 
-class DemoSignalFlagsV1013Tests(unittest.TestCase):
-    def test_four_channel_calibration_reaches_v7_ready_state(self) -> None:
+class DemoSignalFlagsV1021Tests(unittest.TestCase):
+    def test_four_channel_calibration_reaches_v9_ready_state(self) -> None:
         detector, output = run_calibration(4)
         packet = output.to_packet()
         profile = detector.calibration_profile()
-        self.assertEqual(packet["schema_version"], "headset-demo-flags/v7")
+        self.assertEqual(packet["schema_version"], "headset-demo-flags/v9")
         self.assertTrue(packet["state"]["blink_calibration_complete"])
         self.assertGreaterEqual(profile["blink_peak_count"], 5)
         self.assertGreaterEqual(profile["blink_consensus"], 0.65)
@@ -78,6 +78,10 @@ class DemoSignalFlagsV1013Tests(unittest.TestCase):
         self.assertIn("blink_baseline_stale", packet["state"])
         self.assertIn("blink_invalid_gap_rejections", packet["telemetry"])
         self.assertIn("blink_baseline_health_checks", packet["telemetry"])
+        self.assertIn("blink_baseline_recovery_progress", packet["telemetry"])
+        self.assertIn("blink_runtime_disabled_pairs", packet["telemetry"])
+        self.assertIn("blink_template_ready", packet["telemetry"])
+        self.assertTrue(packet["state"]["blink_group_decoder_enabled"])
 
     def test_legacy_pair_only_calibration_still_passes(self) -> None:
         detector, _ = run_calibration(2)
@@ -103,6 +107,30 @@ class DemoSignalFlagsV1013Tests(unittest.TestCase):
         self.assertNotIn("BLINK", flags)
         self.assertNotIn("BLINK_3", flags)
         self.assertNotIn("BLINK_5", flags)
+
+    def test_open_eye_restart_preserves_learned_blink_profile(self) -> None:
+        detector, _ = run_calibration(4)
+        sample_rate = 100
+        time = np.arange(2_200, dtype=np.float64) / sample_rate
+        alpha = np.vstack([
+            20.0 * np.sin(2.0 * np.pi * 10.0 * time + phase)
+            for phase in (0.0, 0.2, 0.4, 0.6)
+        ])
+        for start in range(0, alpha.shape[1], 50):
+            detector.stream_step(
+                alpha[:, start : start + 50],
+                np.zeros((3, 50), dtype=np.float64),
+                np.ones(50, dtype=bool),
+            )
+        self.assertTrue(detector.calibration_complete)
+        self.assertTrue(detector.blink_calibration_complete)
+
+        detector.begin_open_eye_calibration()
+
+        self.assertFalse(detector.calibration_complete)
+        self.assertFalse(detector.closed_eye_calibration_complete)
+        self.assertTrue(detector.blink_calibration_complete)
+        self.assertTrue(detector.blink_template_ready)
 
 
 if __name__ == "__main__":

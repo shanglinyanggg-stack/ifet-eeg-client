@@ -49,12 +49,13 @@ class DemoRuntime:
     def status(self) -> dict[str, Any]:
         config = self.detector.config
         return {
-            "schema_version": "headset-demo-flags/v7",
-            "algorithm_version": "1.0.13",
+            "schema_version": "headset-demo-flags/v9",
+            "algorithm_version": "1.0.21",
             "session_id": self.session_id,
             "sample_rate_hz": config.sample_rate_hz,
             "recommended_step_milliseconds": 500,
             "calibration_seconds": config.calibration_seconds,
+            "closed_eye_calibration_seconds": config.closed_eye_calibration_seconds,
             "blink_calibration_seconds": config.blink_calibration_seconds,
             "blink_quiet_baseline_seconds": config.blink_quiet_baseline_seconds,
             "blink_calibration_requires_explicit_start": True,
@@ -97,6 +98,22 @@ class DemoRuntime:
             self.detector.begin_blink_calibration()
             self.blink_calibration_status = "running"
             self.blink_calibration_failure_reason = None
+            self.last_packet = self._decorate_packet(self.last_packet)
+            return self.last_packet
+
+    def begin_alpha_calibration(
+        self,
+        kind: str,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self.lock:
+            self._ensure_session(session_id)
+            if kind == "open-eye":
+                self.detector.begin_open_eye_calibration()
+            elif kind == "closed-eye":
+                self.detector.begin_closed_eye_calibration()
+            else:
+                raise ValueError("alpha calibration kind must be open-eye or closed-eye")
             self.last_packet = self._decorate_packet(self.last_packet)
             return self.last_packet
 
@@ -173,6 +190,18 @@ class DemoRuntime:
         state = dict(packet.get("state", {}))
         state.update(
             {
+                "alpha_present": bool(
+                    packet.get("state", {}).get("alpha_present", False)
+                    and self.detector.calibration_complete
+                ),
+                "calibration_complete": self.detector.calibration_complete,
+                "calibration_progress": self.detector.calibration_progress,
+                "closed_eye_calibration_complete": (
+                    self.detector.closed_eye_calibration_complete
+                ),
+                "closed_eye_calibration_progress": (
+                    self.detector.closed_eye_calibration_progress
+                ),
                 "blink_calibration_complete": self.detector.blink_calibration_complete,
                 "blink_calibration_progress": self.detector.blink_calibration_progress,
                 "blink_calibration_status": self.blink_calibration_status,
@@ -180,11 +209,21 @@ class DemoRuntime:
                 "blink_interaction_enabled": self.detector.blink_interaction_enabled,
                 "blink_dual_channel_required": True,
                 "blink_baseline_stale": bool(profile.get("blink_baseline_stale", False)),
+                "blink_baseline_frozen": bool(profile.get("blink_baseline_frozen", False)),
+                "blink_control_ready": bool(profile.get("blink_control_ready", False)),
+                "blink_stabilization_remaining_seconds": float(
+                    profile.get("blink_stabilization_remaining_seconds", 0.0)
+                ),
+                "blink_group_decoder_enabled": bool(
+                    profile.get("blink_group_decoder_enabled", True)
+                ),
             }
         )
         telemetry = dict(packet.get("telemetry", {}))
         telemetry.update(
             {
+                "open_eye_alpha_baseline": profile.get("center"),
+                "closed_eye_alpha_reference": profile.get("closed_eye_reference"),
                 "alpha_volume_mode": self.detector.alpha_volume_mode,
                 "alpha_step_count": (
                     0
@@ -201,18 +240,60 @@ class DemoRuntime:
                 "blink_invalid_gap_rejections": profile.get("blink_invalid_gap_rejections", 0),
                 "blink_baseline_health_checks": profile.get("blink_baseline_health_checks", 0),
                 "blink_gap_recoveries": profile.get("blink_gap_recoveries", 0),
+                "open_eye_alpha_initial_baseline": profile.get("initial_center"),
+                "alpha_on_threshold": profile.get("on_threshold"),
+                "alpha_off_threshold": profile.get("off_threshold"),
+                "blink_baseline_recovery_progress": profile.get(
+                    "blink_baseline_recovery_progress", 0.0
+                ),
+                "blink_baseline_recoveries": profile.get(
+                    "blink_baseline_recoveries", 0
+                ),
+                "blink_runtime_disabled_pairs": profile.get(
+                    "blink_runtime_disabled_channel_pairs", []
+                ),
+                "blink_burst_rejections": profile.get("blink_burst_rejections", 0),
+                "blink_template_ready": profile.get("blink_template_ready", False),
+                "blink_template_correlation": profile.get(
+                    "blink_template_last_correlation"
+                ),
+                "blink_template_matches": profile.get("blink_template_matches", 0),
+                "blink_template_rejections": profile.get(
+                    "blink_template_rejections", 0
+                ),
+                "blink_group_evaluations": profile.get("blink_group_evaluations", 0),
+                "blink_group_commands": profile.get("blink_group_commands", 0),
+                "blink_group_rejections": profile.get("blink_group_rejections", 0),
             }
         )
+        if not self.detector.calibration_complete:
+            telemetry.update(
+                {
+                    "alpha_ratio": None,
+                    "alpha_score": None,
+                    "alpha_level": None,
+                    "alpha_step": 0,
+                }
+            )
         state_flags = [
             flag
             for flag in packet.get("state_flags", [])
-            if flag != "BLINK_INTERACTION_ENABLED"
+            if flag
+            not in {
+                "CALIBRATION_COMPLETE",
+                "CLOSED_EYE_CALIBRATION_COMPLETE",
+                "BLINK_INTERACTION_ENABLED",
+            }
         ]
+        if self.detector.calibration_complete:
+            state_flags.append("CALIBRATION_COMPLETE")
+        if self.detector.closed_eye_calibration_complete:
+            state_flags.append("CLOSED_EYE_CALIBRATION_COMPLETE")
         if self.detector.blink_interaction_enabled:
             state_flags.append("BLINK_INTERACTION_ENABLED")
         return {
             **packet,
-            "schema_version": "headset-demo-flags/v7",
+            "schema_version": "headset-demo-flags/v9",
             "state": state,
             "telemetry": telemetry,
             "state_flags": list(dict.fromkeys(state_flags)),
@@ -222,7 +303,7 @@ class DemoRuntime:
         self, blink_interaction_enabled: bool = False
     ) -> dict[str, Any]:
         return {
-            "schema_version": "headset-demo-flags/v7",
+            "schema_version": "headset-demo-flags/v9",
             "session_id": self.session_id,
             "timestamp_ms": 0,
             "source_timestamp": None,
@@ -242,6 +323,10 @@ class DemoRuntime:
                 "blink_count_pending": 0,
                 "blink_dual_channel_required": True,
                 "blink_baseline_stale": False,
+                "blink_baseline_frozen": False,
+                "blink_control_ready": False,
+                "blink_stabilization_remaining_seconds": 0.0,
+                "blink_group_decoder_enabled": True,
             },
             "telemetry": {
                 "alpha_ratio": None,
@@ -257,6 +342,9 @@ class DemoRuntime:
                 "alpha_channel_switches": 0,
                 "open_eye_alpha_baseline": None,
                 "closed_eye_alpha_reference": None,
+                "open_eye_alpha_initial_baseline": None,
+                "alpha_on_threshold": None,
+                "alpha_off_threshold": None,
                 "adaptive_baseline_updates": 0,
                 "blink_strength_z": None,
                 "blink_width_seconds": None,
@@ -271,6 +359,17 @@ class DemoRuntime:
                 "blink_invalid_gap_rejections": 0,
                 "blink_baseline_health_checks": 0,
                 "blink_gap_recoveries": 0,
+                "blink_baseline_recovery_progress": 0.0,
+                "blink_baseline_recoveries": 0,
+                "blink_runtime_disabled_pairs": [],
+                "blink_burst_rejections": 0,
+                "blink_template_ready": False,
+                "blink_template_correlation": None,
+                "blink_template_matches": 0,
+                "blink_template_rejections": 0,
+                "blink_group_evaluations": 0,
+                "blink_group_commands": 0,
+                "blink_group_rejections": 0,
             },
             "events": [],
         }
@@ -363,6 +462,11 @@ class _Handler(BaseHTTPRequestHandler):
                 result = self.runtime.demo.begin_blink_calibration(
                     payload.get("session_id"),
                 )
+            elif self.path == "/demo/alpha-calibration":
+                result = self.runtime.demo.begin_alpha_calibration(
+                    str(payload.get("kind", "")).strip().lower(),
+                    payload.get("session_id"),
+                )
             elif self.path == "/demo/config":
                 result = self.runtime.demo.configure(
                     payload.get("alpha_volume_mode"),
@@ -400,8 +504,8 @@ def serve(runtime: CombinedRuntime, host: str, port: int) -> None:
                 "service": "desktop_upper_sleep_staging",
                 "url": f"http://{host}:{port}",
                 "health": f"http://{host}:{port}/health",
-                "demo_schema": "headset-demo-flags/v7",
-                "blink_algorithm": "1.0.13",
+                "demo_schema": "headset-demo-flags/v9",
+                "blink_algorithm": "1.0.21",
             },
             ensure_ascii=False,
         ),

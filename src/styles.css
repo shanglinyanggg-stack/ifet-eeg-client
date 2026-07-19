@@ -2223,6 +2223,766 @@ input::placeholder {
   }
 }
 
+/* Sleep-demo baseline workflow, audio routing, and pure-view flag monitor. */
+.algorithm-consistency-note {
+  margin: 0;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: var(--radius-xs);
+  background: var(--accent-soft);
+  color: var(--text-soft);
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.baseline-calibration-grid {
+  display: grid;
+  gap: 7px;
+}
+
+.baseline-calibration-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--surface-strong) 74%, transparent);
+}
+
+.baseline-calibration-card[data-state="running"] {
+  border-color: color-mix(in srgb, var(--warning) 52%, var(--border));
+}
+
+.baseline-calibration-card[data-state="complete"] {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+}
+
+.baseline-calibration-heading {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-main);
+  font-size: 10px;
+}
+
+.baseline-calibration-heading span {
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.baseline-calibration-progress {
+  grid-column: 1 / -1;
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 18px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--text-soft) 18%, transparent);
+}
+
+.baseline-calibration-progress span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  transition: width 280ms ease-out;
+}
+
+.baseline-calibration-progress em {
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  max-width: calc(100% - 10px);
+  color: var(--text-main);
+  font-size: 8.5px;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px var(--bg);
+  white-space: nowrap;
+}
+
+.setting-help {
+  display: block;
+  margin: 3px 0 0;
+  color: var(--text-soft);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.baseline-calibration-card p {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.baseline-calibration-card button,
+.audio-output-setting button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 29px;
+  gap: 4px;
+  padding: 0 8px;
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-radius: var(--radius-xs);
+  color: var(--text-main);
+  font-size: 9.5px;
+}
+
+.audio-output-setting {
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--surface-strong) 70%, transparent);
+}
+
+.audio-output-setting > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.audio-output-setting .field-label {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.audio-output-setting small {
+  color: var(--text-soft);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.sleep-stage-kpis span > small {
+  display: block;
+  overflow: hidden;
+  margin-top: 1px;
+  color: var(--text-soft);
+  font-size: 8px;
+  text-overflow: ellipsis;
+}
+
+.pure-flag-panel {
+  flex: 0 0 76px;
+  display: grid;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(120px, 0.7fr) minmax(240px, 1.5fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-strong) 76%, transparent);
+  box-shadow: inset 0 1px 0 var(--panel-highlight);
+}
+
+/* EEGSleepUpper-compatible debug workstation. */
+.debug-mode {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  gap: 8px;
+}
+
+.debug-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 7px 10px;
+}
+
+.debug-toolbar-title,
+.debug-toolbar-title > span,
+.debug-toolbar-status,
+.debug-toolbar button,
+.debug-display-controls,
+.debug-display-controls > label,
+.debug-link-summary,
+.debug-segmented,
+.debug-section > header,
+.debug-calibration-line > div:first-child,
+.debug-calibration-line button,
+.debug-diagnostic-line,
+.debug-music-row,
+.debug-session-actions,
+.debug-trial-buttons,
+.debug-marker-buttons button,
+.debug-custom-marker {
+  display: flex;
+  align-items: center;
+}
+
+.debug-toolbar-title {
+  gap: 8px;
+}
+
+.debug-toolbar-title > span {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.debug-toolbar small,
+.debug-inspector small {
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.debug-toolbar-status {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.debug-toolbar-status > span,
+.debug-link-summary > span {
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-soft);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.debug-toolbar-status > span[data-state="ready"] {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.debug-toolbar button,
+.debug-custom-marker {
+  min-height: 30px;
+  gap: 5px;
+  padding: 0 10px;
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+  border-radius: var(--radius-xs);
+}
+
+.debug-toolbar button.is-recording {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.debug-display-controls {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-height: 42px;
+  padding: 5px 8px;
+}
+
+.debug-display-controls > label {
+  gap: 5px;
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.debug-display-controls .themed-select {
+  min-width: 150px;
+}
+
+.debug-segmented {
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--control-bg);
+}
+
+.debug-segmented button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  gap: 4px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: calc(var(--radius-xs) - 2px);
+  background: transparent;
+  font-size: 9.5px;
+}
+
+.debug-segmented button.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.debug-link-summary {
+  flex: 1 1 260px;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.debug-body {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(390px, 35vw, 560px);
+  min-width: 0;
+  min-height: 0;
+  gap: 8px;
+}
+
+.debug-waveforms {
+  display: grid;
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+  min-height: 0;
+  gap: 7px;
+}
+
+.debug-waveforms[data-view="ppg"] {
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.debug-inspector {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  gap: 7px;
+  padding-right: 2px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.debug-section {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.debug-section > header {
+  min-height: 32px;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-elevated);
+  font-size: 10.5px;
+}
+
+.debug-section > header > span {
+  color: var(--accent);
+}
+
+.debug-section-body {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+}
+
+.debug-action-card,
+.debug-baseline-health,
+.debug-trial-status,
+.debug-sleep-state {
+  display: grid;
+  gap: 3px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--surface-elevated) 74%, transparent);
+}
+
+.debug-action-card > span,
+.debug-action-card > small,
+.debug-baseline-health > span,
+.debug-trial-status > span,
+.debug-sleep-state > span {
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.debug-action-card > strong {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.debug-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.debug-metric-grid.is-compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.debug-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.debug-metric[data-warning="true"] {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--border));
+  background: var(--warning-soft);
+}
+
+.debug-metric strong {
+  overflow: hidden;
+  color: var(--text-main);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-calibration-line {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 7px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+
+.debug-calibration-line[data-state="complete"] {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+}
+
+.debug-calibration-line > div:first-child {
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.debug-calibration-line > div:first-child strong {
+  color: var(--text-main);
+}
+
+.debug-progress {
+  grid-column: 1 / -1;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--control-bg);
+}
+
+.debug-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--success));
+}
+
+.debug-calibration-line > small {
+  align-self: center;
+  line-height: 1.45;
+}
+
+.debug-calibration-line button {
+  min-height: 26px;
+  gap: 4px;
+  padding: 0 7px;
+  border-radius: var(--radius-xs);
+  font-size: 8.5px;
+}
+
+.debug-diagnostic-line {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.debug-diagnostic-line > span {
+  padding: 4px 6px;
+  border-radius: 99px;
+  background: var(--control-bg);
+  color: var(--text-soft);
+  font-size: 8.5px;
+}
+
+.debug-diagnostic-line strong {
+  color: var(--text-main);
+}
+
+.debug-baseline-health[data-state="ready"],
+.debug-trial-status[data-state="ready"] {
+  border-color: color-mix(in srgb, var(--success) 50%, var(--border));
+  background: var(--success-soft);
+}
+
+.debug-baseline-health[data-state="warning"],
+.debug-trial-status[data-state="warning"] {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--border));
+  background: var(--warning-soft);
+}
+
+.debug-trial-status[data-state="active"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: var(--accent-soft);
+}
+
+.debug-sleep-state {
+  line-height: 1.4;
+}
+
+.debug-switch-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.debug-switch-grid label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-soft);
+  font-size: 8.5px;
+}
+
+.debug-select-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.debug-range {
+  display: grid;
+  gap: 3px;
+}
+
+.debug-range > span {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.debug-range strong {
+  color: var(--text-main);
+}
+
+.debug-music-row,
+.debug-session-actions,
+.debug-trial-buttons {
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.debug-music-row > span {
+  display: flex;
+  align-items: center;
+  flex: 1 1 150px;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.debug-music-row button,
+.debug-session-actions button,
+.debug-trial-buttons button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  gap: 4px;
+  padding: 0 8px;
+  border-radius: var(--radius-xs);
+  font-size: 8.5px;
+}
+
+.debug-guidance-message {
+  line-height: 1.45;
+}
+
+.debug-participant-id {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.debug-participant-id input {
+  min-height: 30px;
+}
+
+.debug-marker-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.debug-marker-buttons button {
+  justify-content: flex-start;
+  min-height: 29px;
+  gap: 4px;
+  padding: 0 7px;
+  border-radius: var(--radius-xs);
+  font-size: 9px;
+}
+
+.debug-note {
+  display: grid;
+  gap: 4px;
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.debug-note textarea {
+  min-height: 52px;
+  resize: vertical;
+}
+
+.debug-custom-marker {
+  justify-content: center;
+}
+
+.debug-paths {
+  display: grid;
+  gap: 4px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+
+.debug-paths span {
+  display: grid;
+  grid-template-columns: 55px minmax(0, 1fr);
+  gap: 5px;
+  color: var(--text-soft);
+  font-size: 8.5px;
+}
+
+.debug-paths code {
+  overflow: hidden;
+  color: var(--text-main);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-event-log {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.debug-event-log > div {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 2px 6px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+
+.debug-event-log > div[data-kind="marker"] {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+}
+
+.debug-event-log time {
+  color: var(--text-soft);
+  font-size: 8.5px;
+}
+
+.debug-event-log strong {
+  font-size: 9.5px;
+}
+
+.debug-event-log small {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 1250px) {
+  .debug-body {
+    grid-template-columns: minmax(0, 1fr) minmax(360px, 44vw);
+  }
+
+  .debug-metric-grid,
+  .debug-metric-grid.is-compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.pure-flag-current,
+.pure-algorithm-flags {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.pure-flag-current span,
+.pure-algorithm-flags span {
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.pure-flag-current strong,
+.pure-algorithm-flags strong {
+  overflow: hidden;
+  color: var(--text-main);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pure-flag-current small {
+  color: var(--text-muted);
+  font-size: 8.5px;
+}
+
+.pure-flag-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pure-flag-history span {
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--accent-strong);
+  font-size: 8.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1180px) {
+  .pure-rail,
+  .pure-rail-content {
+    width: clamp(360px, 38vw, 440px);
+  }
+
+  .pure-flag-panel {
+    grid-template-columns: minmax(120px, 0.8fr) minmax(120px, 0.7fr) minmax(180px, 1.2fr);
+  }
+}
+
 /* ============================================================
    纯波形模式 Pure Waveform View
    一屏无滚动：左 60% 波形 / 右 40% 分析
@@ -2563,7 +3323,7 @@ input::placeholder {
 /* —— 可折叠数据栏 —— */
 .pure-rail {
   min-height: 0;
-  width: clamp(300px, 26vw, 380px);
+  width: clamp(420px, 34vw, 560px);
   overflow: hidden;
   transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.22s ease;
 }
@@ -2579,11 +3339,23 @@ input::placeholder {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-content: start;
   gap: 8px;
-  width: clamp(300px, 26vw, 380px);
+  width: clamp(420px, 34vw, 560px);
   height: 100%;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
+}
+
+.pure-rail-content::-webkit-scrollbar {
+  width: 10px;
+}
+
+.pure-rail-content::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 45%, var(--text-soft));
+  background-clip: padding-box;
 }
 
 .pure-rail-content > section {
@@ -3018,7 +3790,7 @@ input::placeholder {
 
 .sleep-demo-calibration {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   grid-template-rows: auto 3px;
   align-items: center;
   gap: 3px 4px;
@@ -3026,11 +3798,7 @@ input::placeholder {
   grid-column: span 2;
 }
 
-.sleep-demo-calibration.is-blink {
-  grid-template-columns: minmax(0, 1fr) auto auto;
-}
-
-.sleep-demo-calibration.is-blink .sleep-demo-progress {
+.sleep-demo-calibration .sleep-demo-progress {
   grid-column: 1 / 4;
 }
 
@@ -3051,19 +3819,39 @@ input::placeholder {
 }
 
 .sleep-demo-progress {
-  grid-column: 1 / 3;
-  height: 3px;
+  grid-column: 1 / 4;
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 14px;
   overflow: hidden;
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--text-soft) 18%, transparent);
 }
 
 .sleep-demo-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
   display: block;
   height: 100%;
   border-radius: inherit;
   background: var(--phase-color);
   transition: width 280ms ease-out;
+}
+
+.sleep-demo-progress > em {
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  max-width: calc(100% - 6px);
+  color: var(--text-main);
+  font-size: 7px;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px var(--bg);
+  white-space: nowrap;
 }
 
 .sleep-demo-kpi {
@@ -3088,6 +3876,36 @@ input::placeholder {
   color: var(--text-soft);
   font-size: 8px;
   font-weight: 500;
+}
+
+.sleep-demo-kpi.is-alpha-threshold {
+  grid-column: span 2;
+}
+
+.sleep-alpha-threshold-track {
+  position: relative;
+  grid-column: 1 / -1;
+  height: 4px;
+  overflow: visible;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--border) 75%, transparent);
+}
+
+.sleep-alpha-threshold-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.sleep-alpha-threshold-track > i {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 10px;
+  transform: translateX(-1px);
+  border-radius: 2px;
+  background: var(--warning, #d97706);
 }
 
 .sleep-demo-telemetry.is-message {
@@ -3391,13 +4209,46 @@ button.sleep-track-slot.is-empty:hover {
 
 .pure-sleep-music {
   display: flex;
-  flex: 0 0 clamp(250px, 36%, 310px);
+  flex: 0 0 auto;
   min-width: 0;
-  min-height: 0;
+  min-height: 470px;
 }
 
 .pure-sleep-music > .sleep-music-panel {
   flex: 1 1 auto;
+}
+
+.sleep-guidance-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 25px;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--success) 52%, var(--control-border));
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--success) 14%, var(--surface-strong));
+  color: color-mix(in srgb, var(--success) 82%, var(--text-main));
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sleep-guidance-button:hover {
+  background: color-mix(in srgb, var(--success) 22%, var(--surface-strong));
+}
+
+.sleep-guidance-button.is-active {
+  border-color: color-mix(in srgb, var(--warning) 55%, var(--control-border));
+  background: color-mix(in srgb, var(--warning) 14%, var(--surface-strong));
+  color: color-mix(in srgb, var(--warning) 82%, var(--text-main));
+}
+
+.sleep-guidance-button.is-compact {
+  flex: 0 0 26px;
+  width: 26px;
+  min-height: 26px;
+  padding: 0;
 }
 
 .eeg-insight-stack {

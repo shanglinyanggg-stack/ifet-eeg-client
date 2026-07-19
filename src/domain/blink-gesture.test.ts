@@ -62,7 +62,7 @@ function gesture(detector: BlinkGestureDetector, startTimestamp: number, count: 
   return timestamp;
 }
 
-describe('v1.0.13 four-channel paired blink detector', () => {
+describe('v1.0.21 conservative four-channel fallback detector', () => {
   test('completes calibration with two enabled pairs and frozen threshold', () => {
     const detector = new BlinkGestureDetector();
     const timestamp = calibrate(detector);
@@ -113,6 +113,36 @@ describe('v1.0.13 four-channel paired blink detector', () => {
     const snapshot = detector.snapshot(timestamp + 2_500);
     expect(snapshot.count).toBe(0);
     expect(detector.poll(timestamp + 2_500)).toBeNull();
+  });
+
+  test('rejects an EEG3+EEG4-only five-pulse artifact without EEG1+EEG2 support', () => {
+    const detector = new BlinkGestureDetector();
+    let timestamp = calibrate(detector);
+    timestamp = pushRange(detector, timestamp, POST_CALIBRATION_GUARD_MS + 200);
+    for (let blinkIndex = 0; blinkIndex < 5; blinkIndex += 1) {
+      for (let index = 0; index < 75; index += 1) {
+        const pulse = pulseAt(index, 45, 80);
+        detector.push([noise(index), noise(index + 7), pulse, pulse * 0.9], timestamp, true, 0);
+        timestamp += STEP_MS;
+      }
+    }
+
+    expect(detector.poll(timestamp + 2_500)).toBeNull();
+    expect(detector.snapshot(timestamp + 2_500).count).toBe(0);
+  });
+
+  test('automatically recovers a stale baseline after three stable quiet checks', () => {
+    const detector = new BlinkGestureDetector();
+    let timestamp = calibrate(detector);
+    (detector as unknown as { baselineStale: boolean }).baselineStale = true;
+    // Let the causal filter tail from calibration leave the 8-second recovery
+    // window, then require three consecutive one-second stable checks.
+    timestamp = pushRange(detector, timestamp, 12_500);
+
+    const snapshot = detector.snapshot(timestamp);
+    expect(snapshot.baselineStale).toBe(false);
+    expect(snapshot.baselineRecoveries).toBe(1);
+    expect(snapshot.adaptiveBaselineUpdates).toBe(1);
   });
 
   test('fills invalid samples without creating a boundary blink', () => {

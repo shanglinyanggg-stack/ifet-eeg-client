@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   resolveAudioSource,
+  SYSTEM_DEFAULT_AUDIO_OUTPUT_ID,
+  type AudioOutputDevice,
   type MusicPlayerController,
   type MusicPlayerSnapshot
 } from '../domain/music-player';
@@ -15,6 +17,7 @@ interface UseMusicPlayerOptions {
   automationAction: SleepAutomationAction;
   targetVolume: number;
   stopFadeSeconds: number;
+  outputDeviceId: string;
   onSelectTrack: (trackId: string) => void;
 }
 
@@ -25,7 +28,15 @@ const INITIAL_SNAPSHOT: MusicPlayerSnapshot = {
   volume: 0.6,
   fadeRemainingSeconds: 0,
   error: null,
-  autoplayBlocked: false
+  autoplayBlocked: false,
+  outputDevices: [{ deviceId: SYSTEM_DEFAULT_AUDIO_OUTPUT_ID, label: '系统默认输出' }],
+  selectedOutputDeviceId: SYSTEM_DEFAULT_AUDIO_OUTPUT_ID,
+  outputDeviceSupported: false,
+  outputDeviceError: null
+};
+
+type RoutableAudioElement = HTMLAudioElement & {
+  setSinkId?: (sinkId: string) => Promise<void>;
 };
 
 export function useMusicPlayer({
@@ -36,19 +47,23 @@ export function useMusicPlayer({
   automationAction,
   targetVolume,
   stopFadeSeconds,
+  outputDeviceId,
   onSelectTrack
 }: UseMusicPlayerOptions): MusicPlayerController {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const testAudioRef = useRef<HTMLAudioElement | null>(null);
   const rampTimerRef = useRef<number | null>(null);
   const resumeAfterSelectionRef = useRef(false);
   const tracksRef = useRef(tracks);
   const selectedTrackIdRef = useRef(selectedTrackId);
   const onSelectTrackRef = useRef(onSelectTrack);
+  const outputDeviceIdRef = useRef(outputDeviceId);
   const [snapshot, setSnapshot] = useState(INITIAL_SNAPSHOT);
 
   tracksRef.current = tracks;
   selectedTrackIdRef.current = selectedTrackId;
   onSelectTrackRef.current = onSelectTrack;
+  outputDeviceIdRef.current = outputDeviceId;
 
   const selectedTrack = useMemo(
     () => tracks.find((track) => track.id === selectedTrackId) ?? tracks[0] ?? null,
@@ -127,6 +142,111 @@ export function useMusicPlayer({
     setSnapshot((value) => ({ ...value, currentTime: audio.currentTime }));
   }, []);
 
+  const refreshOutputDevices = useCallback(async (requestPermission = false) => {
+    const audio = audioRef.current as RoutableAudioElement | null;
+    const supported = typeof audio?.setSinkId === 'function';
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      setSnapshot((value) => ({
+        ...value,
+        outputDeviceSupported: supported,
+        outputDeviceError: '当前 WebView 无法枚举音频输出设备，将使用系统默认输出'
+      }));
+      return;
+    }
+    let permissionStream: MediaStream | null = null;
+    try {
+      if (requestPermission) {
+        permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const outputs: AudioOutputDevice[] = devices
+        .filter((device) => device.kind === 'audiooutput' && device.deviceId !== SYSTEM_DEFAULT_AUDIO_OUTPUT_ID)
+        .map((device, index) => ({
+          deviceId: device.deviceId,
+          label: device.label || `音频输出 ${index + 1}`
+        }));
+      const outputDevices = [
+        { deviceId: SYSTEM_DEFAULT_AUDIO_OUTPUT_ID, label: '系统默认输出' },
+        ...outputs
+      ];
+      const selectedOutputDeviceId = outputDevices.some((device) => device.deviceId === outputDeviceIdRef.current)
+        ? outputDeviceIdRef.current
+        : SYSTEM_DEFAULT_AUDIO_OUTPUT_ID;
+      setSnapshot((value) => ({
+        ...value,
+        outputDevices,
+        selectedOutputDeviceId,
+        outputDeviceSupported: supported,
+        outputDeviceError: supported ? null : '当前 WebView 不支持指定音频输出，音乐将使用系统默认设备'
+      }));
+    } catch (error) {
+      setSnapshot((value) => ({
+        ...value,
+        outputDeviceSupported: supported,
+        outputDeviceError: requestPermission
+          ? `未取得音频权限。请到“系统设置 → 隐私与安全性 → 麦克风”允许 iFET EEG Client Sleep 0.2.5，然后重新点击“授权刷新”。${String(error)}`
+          : '音频输出列表尚未授权，请点击“授权刷新”'
+      }));
+    } finally {
+      permissionStream?.getTracks().forEach((track) => track.stop());
+    }
+  }, []);
+
+  const setOutputDevice = useCallback(async (deviceId: string) => {
+    const audio = audioRef.current as RoutableAudioElement | null;
+    const normalized = deviceId || SYSTEM_DEFAULT_AUDIO_OUTPUT_ID;
+    if (!audio?.setSinkId) {
+      const isDefault = normalized === SYSTEM_DEFAULT_AUDIO_OUTPUT_ID;
+      setSnapshot((value) => ({
+        ...value,
+        selectedOutputDeviceId: SYSTEM_DEFAULT_AUDIO_OUTPUT_ID,
+        outputDeviceSupported: false,
+        outputDeviceError: isDefault ? null : '当前 WebView 不支持指定音频输出'
+      }));
+      return isDefault;
+    }
+    try {
+      await audio.setSinkId(normalized === SYSTEM_DEFAULT_AUDIO_OUTPUT_ID ? '' : normalized);
+      outputDeviceIdRef.current = normalized;
+      setSnapshot((value) => ({
+        ...value,
+        selectedOutputDeviceId: normalized,
+        outputDeviceSupported: true,
+        outputDeviceError: null
+      }));
+      return true;
+    } catch (error) {
+      setSnapshot((value) => ({
+        ...value,
+        outputDeviceError: `切换音频输出失败：${String(error)}`
+      }));
+      return false;
+    }
+  }, []);
+
+  const testOutput = useCallback(async () => {
+    testAudioRef.current?.pause();
+    const testAudio = new Audio(resolveAudioSource('/audio/output-test.wav')) as RoutableAudioElement;
+    testAudioRef.current = testAudio;
+    testAudio.volume = 0.7;
+    try {
+      const outputId = outputDeviceIdRef.current;
+      if (testAudio.setSinkId) {
+        await testAudio.setSinkId(outputId === SYSTEM_DEFAULT_AUDIO_OUTPUT_ID ? '' : outputId);
+      }
+      await testAudio.play();
+      setSnapshot((value) => ({ ...value, outputDeviceError: null }));
+      testAudio.addEventListener('ended', () => {
+        if (testAudioRef.current === testAudio) testAudioRef.current = null;
+      }, { once: true });
+    } catch (error) {
+      setSnapshot((value) => ({
+        ...value,
+        outputDeviceError: `测试声音播放失败：${String(error)}`
+      }));
+    }
+  }, []);
+
   const rampVolume = useCallback((volume: number, durationMs: number, pauseAtEnd: boolean) => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -176,6 +296,7 @@ export function useMusicPlayer({
     audio.preload = 'metadata';
     audio.volume = clamp01(targetVolume);
     audioRef.current = audio;
+    void refreshOutputDevices(false);
 
     const syncTime = () => setSnapshot((value) => ({
       ...value,
@@ -211,6 +332,8 @@ export function useMusicPlayer({
     return () => {
       clearRamp();
       audio.pause();
+      testAudioRef.current?.pause();
+      testAudioRef.current = null;
       audio.removeEventListener('timeupdate', syncTime);
       audio.removeEventListener('loadedmetadata', syncTime);
       audio.removeEventListener('volumechange', syncTime);
@@ -220,7 +343,19 @@ export function useMusicPlayer({
       audio.removeEventListener('ended', handleEnded);
       audioRef.current = null;
     };
-  }, [clearRamp]);
+  }, [clearRamp, refreshOutputDevices]);
+
+  useEffect(() => {
+    void setOutputDevice(outputDeviceId);
+  }, [outputDeviceId, setOutputDevice]);
+
+  useEffect(() => {
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.addEventListener) return;
+    const refresh = () => void refreshOutputDevices(false);
+    mediaDevices.addEventListener('devicechange', refresh);
+    return () => mediaDevices.removeEventListener('devicechange', refresh);
+  }, [refreshOutputDevices]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -285,7 +420,10 @@ export function useMusicPlayer({
     previous,
     next,
     seek,
-    setVolume
+    setVolume,
+    refreshOutputDevices,
+    setOutputDevice,
+    testOutput
   };
 }
 

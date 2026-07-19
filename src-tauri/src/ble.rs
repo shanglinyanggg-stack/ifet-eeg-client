@@ -37,6 +37,8 @@ struct BleRuntime {
 
 struct Recorder {
     writer: BufWriter<File>,
+    marker_writer: BufWriter<File>,
+    marker_path: PathBuf,
     last_flush: Instant,
 }
 
@@ -230,9 +232,24 @@ impl BleManagerState {
         )?;
         writer.flush()?;
 
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("ppg_eeg_log");
+        let marker_path = path.with_file_name(format!("{stem}_markers.csv"));
+        let marker_file = File::create(&marker_path)?;
+        let mut marker_writer = BufWriter::new(marker_file);
+        writeln!(
+            marker_writer,
+            "time,participantId,label,note,sampleCount,deviceFlag,algorithmAction,eeg1,eeg2,eeg3,eeg4"
+        )?;
+        marker_writer.flush()?;
+
         let mut recorder = self.recorder.lock().await;
         *recorder = Some(Recorder {
             writer,
+            marker_writer,
+            marker_path,
             last_flush: Instant::now(),
         });
         Ok(path.to_string_lossy().to_string())
@@ -242,9 +259,47 @@ impl BleManagerState {
         let mut recorder = self.recorder.lock().await;
         if let Some(recording) = recorder.as_mut() {
             recording.writer.flush()?;
+            recording.marker_writer.flush()?;
         }
         *recorder = None;
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append_debug_marker(
+        &self,
+        participant_id: String,
+        label: String,
+        note: String,
+        sample_count: u64,
+        device_flag: Option<u8>,
+        algorithm_action: String,
+        eeg1: Option<f64>,
+        eeg2: Option<f64>,
+        eeg3: Option<f64>,
+        eeg4: Option<f64>,
+    ) -> Result<String> {
+        let mut recorder = self.recorder.lock().await;
+        let recording = recorder
+            .as_mut()
+            .ok_or_else(|| anyhow!("请先开始记录，再添加调试标记"))?;
+        writeln!(
+            recording.marker_writer,
+            "{},{},{},{},{},{},{},{},{},{},{}",
+            Utc::now().to_rfc3339(),
+            csv_field(&participant_id),
+            csv_field(&label),
+            csv_field(&note),
+            sample_count,
+            device_flag.map(|value| value.to_string()).unwrap_or_default(),
+            csv_field(&algorithm_action),
+            optional_number(eeg1),
+            optional_number(eeg2),
+            optional_number(eeg3),
+            optional_number(eeg4),
+        )?;
+        recording.marker_writer.flush()?;
+        Ok(recording.marker_path.to_string_lossy().to_string())
     }
 
     async fn ensure_adapter(&self) -> Result<Adapter> {
@@ -358,6 +413,7 @@ async fn write_record(
     // 定时 flush，避免每个样本都触发系统调用拖垮采集线程
     if recording.last_flush.elapsed() >= FLUSH_INTERVAL {
         recording.writer.flush()?;
+        recording.marker_writer.flush()?;
         recording.last_flush = Instant::now();
     }
     Ok(())
@@ -367,6 +423,21 @@ async fn abort_recorder(recorder: &Arc<Mutex<Option<Recorder>>>) {
     let mut recorder = recorder.lock().await;
     if let Some(recording) = recorder.as_mut() {
         let _ = recording.writer.flush();
+        let _ = recording.marker_writer.flush();
     }
     *recorder = None;
+}
+
+fn csv_field(value: &str) -> String {
+    format!(
+        "\"{}\"",
+        value.replace('"', "\"\"").replace('\r', " ").replace('\n', " ")
+    )
+}
+
+fn optional_number(value: Option<f64>) -> String {
+    value
+        .filter(|number| number.is_finite())
+        .map(|number| number.to_string())
+        .unwrap_or_default()
 }

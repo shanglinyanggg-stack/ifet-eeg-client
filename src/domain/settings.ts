@@ -1,4 +1,4 @@
-export type DisplayMode = 'normal' | 'eeg';
+export type DisplayMode = 'normal' | 'eeg' | 'debug';
 export type ThemeName = 'neuro-dark' | 'clinical-light' | 'graphite' | 'amber-lab' | 'aurora-violet' | 'porcelain';
 export type EegChannel = 'eeg1' | 'eeg2' | 'eeg3' | 'eeg4';
 export type AutoNumber = 'auto' | number;
@@ -22,13 +22,17 @@ export interface SleepMusicTrack {
 export interface SleepMusicSettings {
   enabled: boolean;
   autoMode: boolean;
+  alphaVolumeControlEnabled: boolean;
+  sleepStopEnabled: boolean;
   libraryTracks: SleepMusicTrack[];
   tracks: SleepMusicTrack[];
   recentTrackIds: string[];
   selectedTrackId: string | null;
   baseVolume: number;
+  maximumVolume: number;
   transitionVolume: number;
   stopFadeSeconds: number;
+  audioOutputDeviceId: string;
   serviceEnabled: boolean;
   serviceEndpoint: string;
   alphaVolumeMode: AlphaVolumeMode;
@@ -74,6 +78,14 @@ export const eegTimeWindowOptions = [
   { value: '10', label: '10 s' },
   { value: '15', label: '15 s' },
   { value: '30', label: '30 s' }
+];
+
+export const displayDelayOptions = [
+  { value: '0', label: '实时' },
+  { value: '250', label: '0.25 s' },
+  { value: '500', label: '0.5 s' },
+  { value: '1000', label: '1.0 s' },
+  { value: '2000', label: '2.0 s' }
 ];
 
 export const builtInSleepTracks: SleepMusicTrack[] = [
@@ -141,6 +153,7 @@ export interface EegSettings {
 
 export interface AppSettings {
   displayMode: DisplayMode;
+  displayDelayMs: number;
   theme: ThemeName;
   autoReconnect: boolean;
   warmupDelaySeconds: number;
@@ -162,6 +175,7 @@ const STORAGE_KEY = 'ifet-eeg-client-settings';
 
 export const defaultSettings: AppSettings = {
   displayMode: 'normal',
+  displayDelayMs: 0,
   theme: 'neuro-dark',
   autoReconnect: false,
   warmupDelaySeconds: 5,
@@ -221,15 +235,19 @@ export const defaultSettings: AppSettings = {
   sleepMusic: {
     enabled: true,
     autoMode: true,
+    alphaVolumeControlEnabled: true,
+    sleepStopEnabled: true,
     libraryTracks: builtInSleepTracks.map((track) => ({ ...track })),
     tracks: [],
     recentTrackIds: [],
     selectedTrackId: null,
     baseVolume: 0.6,
+    maximumVolume: 0.8,
     transitionVolume: 0.18,
     stopFadeSeconds: 8,
+    audioOutputDeviceId: 'default',
     serviceEnabled: true,
-    serviceEndpoint: 'http://127.0.0.1:8765',
+    serviceEndpoint: 'http://127.0.0.1:8768',
     alphaVolumeMode: '3',
     blinkControlEnabled: false,
     blinkVolumeStep: 0.1,

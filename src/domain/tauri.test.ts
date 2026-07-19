@@ -20,10 +20,7 @@ describe('tauri windows entrypoint', () => {
       process.cwd(),
       'src-tauri/resources/SleepStagingAlgorithm_PC_v1.2.0/demo_signal_flags_contract.schema.json'
     ))).toBe(true);
-    expect(existsSync(resolve(
-      process.cwd(),
-      'src-tauri/resources/SleepStagingAlgorithm_PC_v1.2.0/runtime/ifet-sleep-service.exe'
-    ))).toBe(true);
+    expect(existsSync(resolve(process.cwd(), 'scripts/build-windows-algorithm.ps1'))).toBe(true);
     expect(capability.permissions).toContain('dialog:allow-open');
   });
 

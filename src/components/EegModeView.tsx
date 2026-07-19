@@ -11,6 +11,7 @@ import {
   type TimedValue
 } from '../domain/dsp';
 import { calculateSleepMetrics, type SleepMetrics } from '../domain/sleep-metrics';
+import { cleanSleepDeltaWave } from '../domain/delta-artifact-filter';
 import type { EegChannel, EegSettings } from '../domain/settings';
 import { WaveformCanvas, type WaveformSeries } from './WaveformCanvas';
 import { BandShareChart } from './BandShareChart';
@@ -18,6 +19,7 @@ import { SleepMetricsPanel } from './SleepMetricsPanel';
 import { SleepTrendChart } from './SleepTrendChart';
 import {
   SleepMusicPanel,
+  resolveRealtimeStage,
   type SleepMusicPanelProps
 } from './SleepMusicPanel';
 
@@ -51,6 +53,7 @@ export function EegModeView({ channel, values, settings, onSleepMetrics, musicPa
     })),
     spindleValues
   }), [bandSeries, spindleValues, values]);
+  const stagingResponse = musicPanel?.serviceStatus?.lastResponse ?? null;
 
   useEffect(() => {
     onSleepMetrics?.(sleepMetrics);
@@ -61,7 +64,11 @@ export function EegModeView({ channel, values, settings, onSleepMetrics, musicPa
       <WaveformCanvas title={`${channel.toUpperCase()} 原始波形`} series={[{ label: channel.toUpperCase(), color: 'var(--wave-raw)', values: rawValues, scale: rawScale }]} fill />
       <div className="eeg-overview-grid">
         <BandShareChart shares={shareValues} colors={bandColors} />
-        <SleepTrendChart metrics={sleepMetrics} />
+        <SleepTrendChart
+          metrics={sleepMetrics}
+          sleepProbability={stagingResponse?.decision_valid ? stagingResponse.selected_sleep_probability : null}
+          realtimeStage={resolveRealtimeStage(musicPanel?.serviceStatus?.phase, stagingResponse)}
+        />
       </div>
       <div className="eeg-band-stack" role="group" aria-label="频带分离">
         {bandSeries.map((band, index) => (
@@ -102,18 +109,21 @@ function useBandFilters(
     const range = settings.bandRanges[definition.key] ?? { low: definition.low, high: definition.high };
     const key = `${channel}|${definition.key}|${range.low}|${range.high}|${settings.notch}`;
     const cache = filters.current[index];
+    const filtered = cache.update(key, values, () =>
+      // Kaiser 窗 FIR：阻带 ~-61dB，相邻频带（如 δ/θ 的 4Hz）几乎不互相渗漏
+      FilterChain.firBandpass({
+        low: range.low,
+        high: range.high,
+        sampleRate: EEG_SAMPLE_RATE,
+        notch: settings.notch
+      })
+    );
     return {
       label: definition.label,
       color: definition.color,
-      values: cache.update(key, values, () =>
-        // Kaiser 窗 FIR：阻带 ~-61dB，相邻频带（如 δ/θ 的 4Hz）几乎不互相渗漏
-        FilterChain.firBandpass({
-          low: range.low,
-          high: range.high,
-          sampleRate: EEG_SAMPLE_RATE,
-          notch: settings.notch
-        })
-      )
+      values: definition.key === 'delta'
+        ? cleanSleepDeltaWave(filtered, values, EEG_SAMPLE_RATE)
+        : filtered
     };
   }), [channel, definitions, settings.bandRanges, settings.notch, values]);
 }
@@ -144,10 +154,11 @@ function useRawWaveformFilter(channel: EegChannel, values: TimedValue[], setting
     }
     const key = `${channel}|raw|${settings.bandpassLow}-${settings.bandpassHigh}`;
     return filter.current.update(key, values, () =>
-      FilterChain.firBandpass({
+      FilterChain.butterworthBandpass({
         low: settings.bandpassLow,
         high: settings.bandpassHigh,
-        sampleRate: EEG_SAMPLE_RATE
+        sampleRate: EEG_SAMPLE_RATE,
+        order: 2
       })
     );
   }, [channel, settings.bandpassEnabled, settings.bandpassLow, settings.bandpassHigh, values]);

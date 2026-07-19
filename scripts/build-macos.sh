@@ -39,12 +39,29 @@ fi
 
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
 
-python3 -m venv "$VENV_DIR"
+PYTHON_BOOTSTRAP="${PYTHON_BOOTSTRAP:-}"
+if [[ -z "$PYTHON_BOOTSTRAP" ]]; then
+  if command -v python3.12 >/dev/null 2>&1; then
+    PYTHON_BOOTSTRAP="$(command -v python3.12)"
+  else
+    PYTHON_BOOTSTRAP="$(command -v python3)"
+  fi
+fi
+"$PYTHON_BOOTSTRAP" - <<'PY'
+import sys
+if sys.version_info < (3, 10):
+    raise SystemExit("The algorithm sidecar requires Python 3.10 or newer")
+PY
+"$PYTHON_BOOTSTRAP" -m venv "$VENV_DIR"
 PYTHON="$VENV_DIR/bin/python3"
 "$PYTHON" -m pip install --disable-pip-version-check --upgrade pip
 "$PYTHON" -m pip install \
   -r "$ALGORITHM_DIR/requirements-runtime.txt" \
   pyinstaller
+
+PYTHONPATH="$ALGORITHM_DIR/sdk" "$PYTHON" "$ROOT/scripts/test_sleep_demo_v1021.py"
+PYTHONPATH="$ALGORITHM_DIR/sdk" "$PYTHON" \
+  "$ALGORITHM_DIR/validation/validate_adaptive_blink_v121.py" >/dev/null
 
 rm -rf "$DIST_DIR" "$WORK_DIR" "$SPEC_DIR"
 "$PYTHON" -m PyInstaller \
