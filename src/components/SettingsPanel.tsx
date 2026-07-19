@@ -382,7 +382,7 @@ export function SettingsPanel({
               <Eye size={13} />眨眼音量控制
             </label>
             <p className="algorithm-consistency-note">
-              在线模式沿用旧自制版算法：音乐开启阈值由当前 Alpha 相对睁眼基线自适应计算；困意值采用 PC 分期算法的保守睡眠概率。下方手动阈值只用于本地降级模式。
+              在线模式沿用旧自制版 Alpha 算法：音乐开启阈值由当前 Alpha 相对睁眼基线自适应计算。困意值可在 0.2.5 对照与可穿戴特征试验间切换；试验模式使用四通道中位参考、60 秒清醒基线、质量门控和跨窗口频带比值，并与 PC 睡眠概率融合。
             </p>
             <div className="field-control">
               <span className="field-label">Alpha 音量模式</span>
@@ -482,6 +482,21 @@ export function SettingsPanel({
               display={`${Math.round(settings.sleepMusic.blinkVolumeStep * 100)}%`}
               onChange={(blinkVolumeStep) => updateSleepMusic({ blinkVolumeStep })}
             />
+            <label>
+              困意值算法
+              <ThemedSelect
+                ariaLabel="困意值算法"
+                value={settings.sleepMusic.drowsinessMode}
+                options={[
+                  { value: 'wearable-trial', label: '可穿戴特征试验（推荐）' },
+                  { value: 'v025', label: '0.2.5 对照算法' }
+                ]}
+                onChange={(drowsinessMode) => updateSleepMusic({
+                  drowsinessMode: drowsinessMode as AppSettings['sleepMusic']['drowsinessMode']
+                })}
+              />
+              <small>试验模式先采集 60 秒高质量清醒基线，再融合频带比值与 PC 睡眠概率；低质量窗口保持上一结果。</small>
+            </label>
             <div className="two-col">
               <label>
                 本地降级 Alpha 阈值
@@ -574,7 +589,7 @@ export function SettingsPanel({
               <input
                 value={settings.sleepMusic.serviceEndpoint}
                 onChange={(event) => updateSleepMusic({ serviceEndpoint: event.target.value })}
-                placeholder="http://127.0.0.1:8768"
+                placeholder="http://127.0.0.1:8772"
               />
             </label>
             <div className="sleep-service-actions">

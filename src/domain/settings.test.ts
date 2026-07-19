@@ -18,7 +18,8 @@ describe('settings persistence', () => {
     expect(defaultSettings.sleepMusic.sleepStopEnabled).toBe(true);
     expect(defaultSettings.sleepMusic.maximumVolume).toBe(0.8);
     expect(defaultSettings.displayDelayMs).toBe(0);
-    expect(defaultSettings.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8768');
+    expect(defaultSettings.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8772');
+    expect(defaultSettings.sleepMusic.drowsinessMode).toBe('wearable-trial');
     expect(defaultSettings.sleepMusic.libraryTracks).toHaveLength(5);
     expect(defaultSettings.sleepMusic.tracks).toHaveLength(0);
   });
@@ -80,8 +81,13 @@ describe('settings persistence', () => {
 
   test('merges older saved settings with new sleep defaults', () => {
     localStorage.setItem('ifet-eeg-client-settings', JSON.stringify({
+      eeg: {
+        bandRanges: { delta: { low: 0.5, high: 4 } },
+        pure: { bandRanges: { delta: { low: 0.5, high: 4 } } }
+      },
       sleepMusic: {
         enabled: false,
+        serviceEndpoint: 'http://127.0.0.1:8771',
         tracks: Array.from({ length: 5 }, (_, index) => ({
           id: `track-${index}`,
           name: `Track ${index}`,
@@ -98,5 +104,8 @@ describe('settings persistence', () => {
     expect(loaded.sleepMusic.tracks).toHaveLength(5);
     expect(loaded.sleepMusic.libraryTracks).toHaveLength(10);
     expect(loaded.sleepMusic.libraryTracks.some((track) => track.id === 'builtin-star-alpha')).toBe(true);
+    expect(loaded.eeg.bandRanges.delta).toEqual({ low: 0.5, high: 2 });
+    expect(loaded.eeg.pure.bandRanges.delta).toEqual({ low: 0.5, high: 2 });
+    expect(loaded.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8772');
   });
 });

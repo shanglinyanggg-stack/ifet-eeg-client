@@ -9,6 +9,7 @@ export type SleepMusicCategory = 'brainwave' | 'nature' | 'white-noise' | 'medit
 export type SleepMusicCover = 'stars' | 'ocean' | 'forest' | 'rain' | 'dawn';
 export type SleepMusicSource = 'builtin' | 'local';
 export type AlphaVolumeMode = '3' | '10' | '20' | 'smooth';
+export type DrowsinessMode = 'v025' | 'wearable-trial';
 
 export interface SleepMusicTrack {
   id: string;
@@ -35,6 +36,7 @@ export interface SleepMusicSettings {
   audioOutputDeviceId: string;
   serviceEnabled: boolean;
   serviceEndpoint: string;
+  drowsinessMode: DrowsinessMode;
   alphaVolumeMode: AlphaVolumeMode;
   blinkControlEnabled: boolean;
   blinkVolumeStep: number;
@@ -212,14 +214,14 @@ export const defaultSettings: AppSettings = {
     bandpassHigh: 30,
     notch: 'off',
     bandRanges: {
-      delta: { low: 0.5, high: 4 },
+      delta: { low: 0.5, high: 2 },
       theta: { low: 4, high: 7 },
       alpha: { low: 8, high: 13 },
       beta: { low: 13, high: 30 }
     },
     pure: {
       bandRanges: {
-        delta: { low: 0.5, high: 4 },
+        delta: { low: 0.5, high: 2 },
         alpha: { low: 8, high: 13 },
         beta: { low: 13, high: 30 },
         gamma: { low: 30, high: 45 }
@@ -247,7 +249,8 @@ export const defaultSettings: AppSettings = {
     stopFadeSeconds: 8,
     audioOutputDeviceId: 'default',
     serviceEnabled: true,
-    serviceEndpoint: 'http://127.0.0.1:8768',
+    serviceEndpoint: 'http://127.0.0.1:8772',
+    drowsinessMode: 'wearable-trial',
     alphaVolumeMode: '3',
     blinkControlEnabled: false,
     blinkVolumeStep: 0.1,
@@ -299,6 +302,22 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
       .slice(0, 12)
     : base.sleepMusic.recentTrackIds;
   const requestedTrackId = value.sleepMusic?.selectedTrackId ?? base.sleepMusic.selectedTrackId;
+  const savedDeltaRange = value.eeg?.bandRanges?.delta;
+  const savedPureDeltaRange = value.eeg?.pure?.bandRanges?.delta;
+  // v0.2.5 and earlier stored 0.5-4 Hz as the default. Migrate only that
+  // legacy default; explicitly customised ranges remain untouched.
+  const migratedDeltaRange = savedDeltaRange?.low === 0.5 && savedDeltaRange.high === 4
+    ? base.eeg.bandRanges.delta
+    : savedDeltaRange;
+  const migratedPureDeltaRange = savedPureDeltaRange?.low === 0.5 && savedPureDeltaRange.high === 4
+    ? base.eeg.pure.bandRanges.delta
+    : savedPureDeltaRange;
+  const migratedServiceEndpoint = value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8768'
+    || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8769'
+    || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8770'
+    || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8771'
+    ? base.sleepMusic.serviceEndpoint
+    : value.sleepMusic?.serviceEndpoint;
   return {
     ...base,
     ...value,
@@ -311,12 +330,14 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
       ...value.eeg,
       bandRanges: {
         ...base.eeg.bandRanges,
-        ...value.eeg?.bandRanges
+        ...value.eeg?.bandRanges,
+        ...(migratedDeltaRange ? { delta: migratedDeltaRange } : {})
       },
       pure: {
         bandRanges: {
           ...base.eeg.pure.bandRanges,
-          ...value.eeg?.pure?.bandRanges
+          ...value.eeg?.pure?.bandRanges,
+          ...(migratedPureDeltaRange ? { delta: migratedPureDeltaRange } : {})
         },
         bandScales: {
           ...base.eeg.pure.bandScales,
@@ -327,6 +348,7 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
     sleepMusic: {
       ...base.sleepMusic,
       ...value.sleepMusic,
+      ...(migratedServiceEndpoint ? { serviceEndpoint: migratedServiceEndpoint } : {}),
       libraryTracks,
       tracks,
       recentTrackIds,

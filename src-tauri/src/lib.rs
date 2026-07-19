@@ -7,7 +7,7 @@ use ble::BleManagerState;
 use models::{DeviceInfo, StatusEvent};
 use serde_json::Value;
 use sleep_staging::SleepStagingClientState;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
 async fn scan_devices(state: State<'_, BleManagerState>) -> Result<Vec<DeviceInfo>, String> {
@@ -38,9 +38,21 @@ async fn send_command(state: State<'_, BleManagerState>, hex: String) -> Result<
 
 #[tauri::command]
 async fn start_recording(
+    app: AppHandle,
     state: State<'_, BleManagerState>,
     directory: Option<String>,
 ) -> Result<String, String> {
+    let directory = match directory.filter(|value| !value.trim().is_empty()) {
+        Some(value) => Some(value),
+        None => {
+            let path = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|error| format!("操作失败: 无法确定记录目录: {error}"))?
+                .join("recordings");
+            Some(path.to_string_lossy().to_string())
+        }
+    };
     state
         .start_recording(directory)
         .await

@@ -19,7 +19,9 @@ import {
   type TimedValue
 } from '../domain/dsp';
 import { calculateSleepMetrics, type SleepMetrics } from '../domain/sleep-metrics';
-import { cleanSleepDeltaWave } from '../domain/delta-artifact-filter';
+import { applySlowWaveGate, AdaptiveSlowWaveGate } from '../domain/adaptive-slow-wave';
+import { cleanSleepDeltaWave, type SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
+import { applyRobustMedianReference } from '../domain/eeg-reference';
 import { translateAlgorithmState } from '../domain/sleep-demo-signal';
 import {
   eegScaleOptions,
@@ -56,6 +58,7 @@ interface PureWaveformViewProps {
   musicPanel?: Omit<SleepMusicPanelProps, 'variant' | 'metrics'>;
   deviceFlags?: DeviceFlagRecord[];
   algorithmAction?: string | null;
+  deltaArtifactContext?: SleepDeltaArtifactContext;
 }
 
 const EEG_CHANNEL_OPTIONS = [
@@ -84,7 +87,8 @@ export function PureWaveformView({
   onSleepMetrics,
   musicPanel,
   deviceFlags = [],
-  algorithmAction = null
+  algorithmAction = null,
+  deltaArtifactContext
 }: PureWaveformViewProps) {
   const [bandPopoverOpen, setBandPopoverOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(true);
@@ -97,6 +101,14 @@ export function PureWaveformView({
   const sleepBandFilterCaches = useRef<StreamingFilterCache[]>([]);
   const spindleFilterCache = useRef(new StreamingFilterCache());
   const rawFilterCache = useRef(new StreamingFilterCache());
+  const pureSlowWaveGate = useRef(new AdaptiveSlowWaveGate());
+  const sleepSlowWaveGate = useRef(new AdaptiveSlowWaveGate());
+  const stagingResponse = musicPanel?.serviceStatus?.lastResponse ?? null;
+  const realtimeStage = resolveRealtimeStage(musicPanel?.serviceStatus?.phase, stagingResponse);
+  const analysisValues = useMemo(
+    () => applyRobustMedianReference(values, deltaArtifactContext?.eegChannels),
+    [deltaArtifactContext?.eegChannels, values]
+  );
   if (bandFilterCaches.current.length !== bands.length) {
     bandFilterCaches.current = bands.map(() => new StreamingFilterCache());
   }
@@ -128,16 +140,23 @@ export function PureWaveformView({
       const key = `${channel}|${band.key}|${range.low}|${range.high}|${eeg.notch}`;
       const filtered = bandFilterCaches.current[index].update(
         key,
-        values,
+        analysisValues,
         () => createBandFilter(range, eeg.notch)
       );
-      const displayValues = band.key === 'delta'
-        ? cleanSleepDeltaWave(filtered, values, EEG_SAMPLE_RATE)
+      const cleaned = band.key === 'delta'
+        ? cleanSleepDeltaWave(filtered, analysisValues, EEG_SAMPLE_RATE, deltaArtifactContext)
         : filtered;
+      const displayValues = band.key === 'delta'
+        ? applySlowWaveGate(cleaned, pureSlowWaveGate.current.update(cleaned, {
+          stage: realtimeStage,
+          quiet: !deltaArtifactContext?.blinkArtifactActive,
+          streamKey: `${channel}|pure|${range.low}|${range.high}`
+        }).weight)
+        : cleaned;
       const scale = resolveScale(eeg.pure.bandScales[band.key], displayValues.map((p) => p.value));
       return { ...band, values: displayValues, scale };
     });
-  }, [bands, channel, values, eeg.pure.bandRanges, eeg.pure.bandScales, eeg.notch]);
+  }, [analysisValues, bands, channel, deltaArtifactContext, eeg.pure.bandRanges, eeg.pure.bandScales, eeg.notch, realtimeStage]);
 
   // 原始波形的「EEG 带通」显示滤波：仅在设置开启时生效
   const rawValues = useMemo(() => {
@@ -166,31 +185,41 @@ export function PureWaveformView({
     return sleepBands.map((band, index) => {
       const range = eeg.bandRanges[band.key] ?? { low: band.low, high: band.high };
       const key = `${channel}|sleep|${band.key}|${range.low}|${range.high}|${eeg.notch}`;
+      const filtered = sleepBandFilterCaches.current[index].update(
+        key,
+        analysisValues,
+        () => createBandFilter(range, eeg.notch)
+      );
+      const cleaned = band.key === 'delta'
+        ? cleanSleepDeltaWave(filtered, analysisValues, EEG_SAMPLE_RATE, deltaArtifactContext)
+        : filtered;
       return {
         label: band.label,
-        values: sleepBandFilterCaches.current[index].update(
-          key,
-          values,
-          () => createBandFilter(range, eeg.notch)
-        )
+        values: band.key === 'delta'
+          ? applySlowWaveGate(cleaned, sleepSlowWaveGate.current.update(cleaned, {
+            stage: realtimeStage,
+            quiet: !deltaArtifactContext?.blinkArtifactActive,
+            streamKey: `${channel}|sleep|${range.low}|${range.high}`
+          }).weight)
+          : cleaned
       };
     });
-  }, [sleepBands, channel, values, eeg.bandRanges, eeg.notch]);
+  }, [analysisValues, channel, deltaArtifactContext, eeg.bandRanges, eeg.notch, realtimeStage, sleepBands]);
 
   const spindleValues = useMemo(() => {
     const key = `${channel}|sleep|sigma|11|16|${eeg.notch}`;
     return spindleFilterCache.current.update(
       key,
-      values,
+      analysisValues,
       () => createBandFilter({ low: 11, high: 16 }, eeg.notch)
     );
-  }, [channel, values, eeg.notch]);
+  }, [analysisValues, channel, eeg.notch]);
 
   const sleepMetrics = useMemo(() => calculateSleepMetrics({
-    rawValues: values,
+    rawValues: analysisValues,
     bands: sleepBandSeries,
     spindleValues
-  }), [values, sleepBandSeries, spindleValues]);
+  }), [analysisValues, sleepBandSeries, spindleValues]);
 
   useEffect(() => {
     onSleepMetrics?.(sleepMetrics);
@@ -206,12 +235,9 @@ export function PureWaveformView({
     const total = energies.reduce((sum, item) => sum + item.value, 0);
     return energies.map((item) => ({
       ...item,
-      percent: total > 1e-9 ? Math.round((item.value / total) * 100) : 0
+      percent: total > 1e-9 ? Math.round((item.value / total) * 10_000) / 100 : 0
     }));
   }, [bandSeries]);
-  const stagingResponse = musicPanel?.serviceStatus?.lastResponse ?? null;
-  const realtimeStage = resolveRealtimeStage(musicPanel?.serviceStatus?.phase, stagingResponse);
-
   return (
     <div className="pure-waveform-view" data-rail-open={railOpen}>
       <header className="pure-toolbar">
@@ -342,6 +368,8 @@ export function PureWaveformView({
               metrics={sleepMetrics}
               sleepProbability={stagingResponse?.decision_valid ? stagingResponse.selected_sleep_probability : null}
               realtimeStage={realtimeStage}
+              drowsinessMode={musicPanel?.settings.drowsinessMode}
+              drowsinessEstimate={musicPanel?.drowsinessEstimate}
             />
             {musicPanel && (
               <div className="pure-sleep-music">

@@ -40,6 +40,32 @@ export function filterDebugEegWindow(
   return centered.map((point) => ({ ...point, value: chain.process(point.value) }));
 }
 
+/**
+ * TD10 optical channels are unsigned 24-bit measurements with a large LED/DC
+ * baseline. Display the pulsatile AC component without modifying acquisition
+ * buffers or recorded CSV values.
+ */
+export function filterPpgDisplayWindow(
+  values: TimedValue[],
+  sampleRate = EEG_SAMPLE_RATE,
+  windowSeconds?: number
+): TimedValue[] {
+  const window = windowSeconds
+    ? values.slice(-Math.max(1, Math.round(sampleRate * windowSeconds)))
+    : values;
+  if (window.length === 0) return [];
+  const center = median(window.map((point) => point.value));
+  const centered = window.map((point) => ({ ...point, value: point.value - center }));
+  if (centered.length < 32) return centered;
+  const chain = FilterChain.butterworthBandpass({
+    low: 0.35,
+    high: 8,
+    sampleRate,
+    order: 2
+  });
+  return centered.map((point) => ({ ...point, value: chain.process(point.value) }));
+}
+
 export function resolveDebugScale(scale: DebugEegScale): number | undefined {
   return scale === 'auto' ? undefined : Number(scale);
 }

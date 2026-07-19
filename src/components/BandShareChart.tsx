@@ -1,4 +1,5 @@
 import type { BandShare } from '../domain/dsp';
+import { formatBandSharePercent } from '../domain/band-share-display';
 
 interface BandShareChartProps {
   shares: BandShare[];
@@ -20,6 +21,7 @@ export function BandShareChart({ shares, colors }: BandShareChartProps) {
     <section className="panel share-panel" aria-label="脑电频带占比">
       <div className="panel-header">
         <h2>频带占比</h2>
+        <span className="panel-meta">四通道中位参考</span>
       </div>
       <div className="share-body">
         <div className="donut" style={{ background }} aria-label="频带能量占比饼图">
@@ -30,7 +32,7 @@ export function BandShareChart({ shares, colors }: BandShareChartProps) {
             <li className="share-row" key={share.label}>
               <span className="legend-dot" style={{ backgroundColor: colors[share.label] }} />
               <span>{share.label}</span>
-              <strong>{share.percent}%</strong>
+              <strong>{formatBandSharePercent(share.label, share.percent)}</strong>
               <span className="share-meter" aria-hidden="true">
                 <span style={{ width: `${share.percent}%`, backgroundColor: colors[share.label] }} />
               </span>

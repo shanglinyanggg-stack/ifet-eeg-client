@@ -33,6 +33,7 @@ import type { SleepMetrics } from '../domain/sleep-metrics';
 import type { SleepPhase, SleepSessionState } from '../domain/sleep-session';
 import type { SleepMusicSettings } from '../domain/settings';
 import type { SleepStagingStepResponse } from '../domain/sleep-staging-client';
+import type { WearableDrowsinessSnapshot } from '../domain/wearable-drowsiness';
 
 export interface SleepMusicPanelProps {
   variant?: 'full' | 'compact';
@@ -41,6 +42,7 @@ export interface SleepMusicPanelProps {
   settings: SleepMusicSettings;
   player: MusicPlayerController;
   blink: BlinkGestureSnapshot;
+  drowsinessEstimate?: WearableDrowsinessSnapshot | null;
   serviceStatus?: {
     phase: 'local' | 'checking' | 'warming' | 'ready' | 'fallback';
     message: string;
@@ -111,6 +113,7 @@ export function SleepMusicPanel({
   settings,
   player,
   blink,
+  drowsinessEstimate,
   serviceStatus,
   demoSignalStatus,
   onSelectTrack,
@@ -149,9 +152,11 @@ export function SleepMusicPanel({
   const algorithmAlphaRatio = demoSignalStatus?.lastResponse?.telemetry.alpha_ratio ?? null;
   const algorithmAlphaThreshold = demoSignalStatus?.lastResponse?.telemetry.alpha_on_threshold ?? null;
   const stagingResponse = serviceStatus?.lastResponse ?? null;
-  const drowsiness = stagingResponse?.decision_valid && stagingResponse.selected_sleep_probability !== null
-    ? Math.round(stagingResponse.selected_sleep_probability * 100)
-    : null;
+  const drowsiness = settings.drowsinessMode === 'wearable-trial' && drowsinessEstimate
+    ? drowsinessEstimate.score
+    : stagingResponse?.decision_valid && stagingResponse.selected_sleep_probability !== null
+      ? Math.round(stagingResponse.selected_sleep_probability * 100)
+      : null;
   const realtimeStage = resolveRealtimeStage(serviceStatus?.phase, stagingResponse);
 
   useEffect(() => {

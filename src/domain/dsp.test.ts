@@ -25,6 +25,15 @@ describe('frontend dsp helpers', () => {
     expect(share.map((item) => item.percent)).toEqual([10, 20, 30, 40]);
   });
 
+  test('retains a sub-percent Delta residual for display', () => {
+    const share = computeShare([
+      { label: 'Delta', value: 2 },
+      { label: 'Alpha', value: 998 }
+    ]);
+
+    expect(share.map((item) => item.percent)).toEqual([0.2, 99.8]);
+  });
+
   test('resolves auto scale from visible values', () => {
     expect(resolveScale('auto', [-2, 4, 10])).toBe(12);
     expect(resolveScale(80, [-2, 4, 10])).toBe(80);
@@ -66,7 +75,7 @@ describe('frontend dsp helpers', () => {
 
   test('creates four EEG bands with sleep EEG default ranges', () => {
     expect(createEegBands().map((band) => [band.label, band.low, band.high])).toEqual([
-      ['Delta', 0.5, 4],
+      ['Delta', 0.5, 2],
       ['Theta', 4, 7],
       ['Alpha', 8, 13],
       ['Beta', 13, 30]

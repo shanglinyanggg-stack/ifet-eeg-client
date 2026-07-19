@@ -82,7 +82,7 @@ export class RingBuffer<T> {
 
 export function createEegBands(): EegBandDefinition[] {
   return [
-    { key: 'delta', label: 'Delta', low: 0.5, high: 4, color: '#60a5fa' },
+    { key: 'delta', label: 'Delta', low: 0.5, high: 2, color: '#60a5fa' },
     { key: 'theta', label: 'Theta', low: 4, high: 7, color: '#a78bfa' },
     { key: 'alpha', label: 'Alpha', low: 8, high: 13, color: '#22c55e' },
     { key: 'beta', label: 'Beta', low: 13, high: 30, color: '#f59e0b' }
@@ -103,7 +103,7 @@ export interface PureBandDefinition {
 
 export function createPureBands(): PureBandDefinition[] {
   return [
-    { key: 'delta', label: 'Delta', symbol: 'δ', low: 0.5, high: 4, color: '#60a5fa' },
+    { key: 'delta', label: 'Delta', symbol: 'δ', low: 0.5, high: 2, color: '#60a5fa' },
     { key: 'alpha', label: 'Alpha', symbol: 'α', low: 8, high: 13, color: '#34d399' },
     { key: 'beta', label: 'Beta', symbol: 'β', low: 13, high: 30, color: '#fbbf24' },
     { key: 'gamma', label: 'Gamma', symbol: 'γ', low: 30, high: 45, color: '#f472b6' }
@@ -120,7 +120,9 @@ export function computeShare(values: BandValue[]): BandShare[] {
   }
   return values.map((item) => ({
     ...item,
-    percent: Math.round((Math.max(0, item.value) / total) * 100)
+    // Retain enough precision for the deliberately attenuated awake Delta
+    // residual; presentation can still round normal bands to whole percent.
+    percent: Math.round((Math.max(0, item.value) / total) * 10_000) / 100
   }));
 }
 

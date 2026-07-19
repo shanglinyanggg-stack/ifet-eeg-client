@@ -11,7 +11,9 @@ import {
   type TimedValue
 } from '../domain/dsp';
 import { calculateSleepMetrics, type SleepMetrics } from '../domain/sleep-metrics';
-import { cleanSleepDeltaWave } from '../domain/delta-artifact-filter';
+import { applySlowWaveGate, AdaptiveSlowWaveGate } from '../domain/adaptive-slow-wave';
+import { cleanSleepDeltaWave, type SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
+import { applyRobustMedianReference } from '../domain/eeg-reference';
 import type { EegChannel, EegSettings } from '../domain/settings';
 import { WaveformCanvas, type WaveformSeries } from './WaveformCanvas';
 import { BandShareChart } from './BandShareChart';
@@ -29,13 +31,34 @@ interface EegModeViewProps {
   settings: EegSettings;
   onSleepMetrics?: (metrics: SleepMetrics) => void;
   musicPanel?: Omit<SleepMusicPanelProps, 'variant' | 'metrics'>;
+  deltaArtifactContext?: SleepDeltaArtifactContext;
 }
 
 const BAND_DEFINITIONS = createEegBands();
 
-export function EegModeView({ channel, values, settings, onSleepMetrics, musicPanel }: EegModeViewProps) {
-  const bandSeries = useBandFilters(BAND_DEFINITIONS, channel, values, settings);
-  const spindleValues = useSpindleFilter(channel, values, settings);
+export function EegModeView({
+  channel,
+  values,
+  settings,
+  onSleepMetrics,
+  musicPanel,
+  deltaArtifactContext
+}: EegModeViewProps) {
+  const stagingResponse = musicPanel?.serviceStatus?.lastResponse ?? null;
+  const realtimeStage = resolveRealtimeStage(musicPanel?.serviceStatus?.phase, stagingResponse);
+  const analysisValues = useMemo(
+    () => applyRobustMedianReference(values, deltaArtifactContext?.eegChannels),
+    [deltaArtifactContext?.eegChannels, values]
+  );
+  const bandSeries = useBandFilters(
+    BAND_DEFINITIONS,
+    channel,
+    analysisValues,
+    settings,
+    realtimeStage,
+    deltaArtifactContext
+  );
+  const spindleValues = useSpindleFilter(channel, analysisValues, settings);
   const rawValues = useRawWaveformFilter(channel, values, settings);
   const rawScale = resolveScale(settings.scale, rawValues.map((item) => item.value));
   const shareValues = computeShare(
@@ -46,14 +69,13 @@ export function EegModeView({ channel, values, settings, onSleepMetrics, musicPa
   );
   const bandColors = Object.fromEntries(bandSeries.map((band) => [band.label, band.color]));
   const sleepMetrics = useMemo(() => calculateSleepMetrics({
-    rawValues: values,
+    rawValues: analysisValues,
     bands: bandSeries.map((band) => ({
       label: band.label as BandShare['label'],
       values: band.values
     })),
     spindleValues
-  }), [bandSeries, spindleValues, values]);
-  const stagingResponse = musicPanel?.serviceStatus?.lastResponse ?? null;
+  }), [analysisValues, bandSeries, spindleValues]);
 
   useEffect(() => {
     onSleepMetrics?.(sleepMetrics);
@@ -67,7 +89,9 @@ export function EegModeView({ channel, values, settings, onSleepMetrics, musicPa
         <SleepTrendChart
           metrics={sleepMetrics}
           sleepProbability={stagingResponse?.decision_valid ? stagingResponse.selected_sleep_probability : null}
-          realtimeStage={resolveRealtimeStage(musicPanel?.serviceStatus?.phase, stagingResponse)}
+          realtimeStage={realtimeStage}
+          drowsinessMode={musicPanel?.settings.drowsinessMode}
+          drowsinessEstimate={musicPanel?.drowsinessEstimate}
         />
       </div>
       <div className="eeg-band-stack" role="group" aria-label="频带分离">
@@ -98,9 +122,12 @@ function useBandFilters(
   definitions: EegBandDefinition[],
   channel: EegChannel,
   values: TimedValue[],
-  settings: EegSettings
+  settings: EegSettings,
+  realtimeStage: string,
+  artifactContext?: SleepDeltaArtifactContext
 ): WaveformSeries[] {
   const filters = useRef<StreamingFilterCache[]>([]);
+  const slowWaveGate = useRef(new AdaptiveSlowWaveGate());
   if (filters.current.length !== definitions.length) {
     filters.current = definitions.map(() => new StreamingFilterCache());
   }
@@ -118,14 +145,22 @@ function useBandFilters(
         notch: settings.notch
       })
     );
+    const cleaned = definition.key === 'delta'
+      ? cleanSleepDeltaWave(filtered, values, EEG_SAMPLE_RATE, artifactContext)
+      : filtered;
+    const displayValues = definition.key === 'delta'
+      ? applySlowWaveGate(cleaned, slowWaveGate.current.update(cleaned, {
+        stage: realtimeStage,
+        quiet: !artifactContext?.blinkArtifactActive,
+        streamKey: `${channel}|${range.low}|${range.high}`
+      }).weight)
+      : cleaned;
     return {
       label: definition.label,
       color: definition.color,
-      values: definition.key === 'delta'
-        ? cleanSleepDeltaWave(filtered, values, EEG_SAMPLE_RATE)
-        : filtered
+      values: displayValues
     };
-  }), [channel, definitions, settings.bandRanges, settings.notch, values]);
+  }), [artifactContext, channel, definitions, realtimeStage, settings.bandRanges, settings.notch, values]);
 }
 
 function useSpindleFilter(channel: EegChannel, values: TimedValue[], settings: EegSettings): TimedValue[] {

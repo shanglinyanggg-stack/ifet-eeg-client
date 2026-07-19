@@ -21,6 +21,7 @@ import {
   debugEegFilterOptions,
   debugEegScaleOptions,
   filterDebugEegWindow,
+  filterPpgDisplayWindow,
   resolveDebugScale,
   type DebugEegFilterMode,
   type DebugEegScale,
@@ -36,6 +37,10 @@ import {
 import type { SleepSessionState } from '../domain/sleep-session';
 import type { EegChannel, SleepMusicSettings } from '../domain/settings';
 import type { SleepStagingStepResponse } from '../domain/sleep-staging-client';
+import {
+  createWearableDrowsinessSnapshot,
+  type WearableDrowsinessSnapshot
+} from '../domain/wearable-drowsiness';
 import { ThemedSelect } from './ThemedSelect';
 import { WaveformCanvas } from './WaveformCanvas';
 
@@ -73,6 +78,7 @@ interface DebugModeViewProps {
   invalidSampleCount: number;
   latestDeviceFlag: number | null;
   recording: boolean;
+  recordingPending?: boolean;
   recordPath: string;
   markerPath: string;
   markerStatus: string;
@@ -85,6 +91,7 @@ interface DebugModeViewProps {
   stagingResponse: SleepStagingStepResponse | null;
   stagingPhase: string;
   stagingMessage: string;
+  drowsinessEstimate?: WearableDrowsinessSnapshot;
   session: SleepSessionState;
   sleepSettings: SleepMusicSettings;
   player: MusicPlayerController;
@@ -114,7 +121,16 @@ const EEG_CHANNELS: Array<{ key: EegChannel; color: string }> = [
   { key: 'eeg4', color: '#f59e0b' }
 ];
 
-const MARKERS = ['单次眨眼', '眨眼误识别', '眨眼漏识别', '运动伪迹', '睁眼', '闭眼'];
+const MARKERS = [
+  '清醒 KSS≤3',
+  '困倦 KSS≥7',
+  '单次眨眼',
+  '眨眼误识别',
+  '眨眼漏识别',
+  '运动伪迹',
+  '睁眼',
+  '闭眼'
+];
 
 export function DebugModeView({
   eegBuffers,
@@ -126,6 +142,7 @@ export function DebugModeView({
   invalidSampleCount,
   latestDeviceFlag,
   recording,
+  recordingPending = false,
   recordPath,
   markerPath,
   markerStatus,
@@ -138,6 +155,7 @@ export function DebugModeView({
   stagingResponse,
   stagingPhase,
   stagingMessage,
+  drowsinessEstimate = createWearableDrowsinessSnapshot(),
   session,
   sleepSettings,
   player,
@@ -174,6 +192,12 @@ export function DebugModeView({
   const debugEeg = useMemo(() => Object.fromEntries(
     EEG_CHANNELS.map(({ key }) => [key, filterDebugEegWindow(eegBuffers[key], filterMode)])
   ) as Record<EegChannel, TimedValue[]>, [eegBuffers, filterMode]);
+  const debugPpg = useMemo(() => Object.fromEntries(
+    (Object.keys(ppgBuffers) as PpgChannel[]).map((key) => [
+      key,
+      filterPpgDisplayWindow(ppgBuffers[key], 100, 10)
+    ])
+  ) as Record<PpgChannel, TimedValue[]>, [ppgBuffers]);
 
   const telemetry = demoResponse?.telemetry;
   const state = demoResponse?.state;
@@ -202,9 +226,9 @@ export function DebugModeView({
           <span data-state={connected ? 'ready' : 'idle'}>{connected ? `已连接 ${deviceName}` : 'BLE 未连接'}</span>
           <span>{sampleCount} samples</span>
           <span>丢包 {formatPercent(lossRate)}</span>
-          <button type="button" className={recording ? 'is-recording' : ''} onClick={onToggleRecording}>
+          <button type="button" className={recording ? 'is-recording' : ''} onClick={onToggleRecording} disabled={recordingPending}>
             {recording ? <CircleStop size={15} /> : <Play size={15} />}
-            {recording ? '停止记录' : '开始记录'}
+            {recordingPending ? '处理中…' : recording ? '停止记录' : '开始记录'}
           </button>
         </div>
       </header>
@@ -262,20 +286,20 @@ export function DebugModeView({
           )) : (
             <>
               <WaveformCanvas
-                title="PPG1 · IR / Red / Green"
+                title="PPG1 · AC 0.35–8 Hz · IR / Red / Green"
                 series={[
-                  { label: 'IR1', color: '#8b5cf6', values: ppgBuffers.ir1.slice(-1000) },
-                  { label: 'Red1', color: '#ef4444', values: ppgBuffers.red1.slice(-1000) },
-                  { label: 'Green1', color: '#22c55e', values: ppgBuffers.green1.slice(-1000) }
+                  { label: 'IR1', color: '#8b5cf6', values: debugPpg.ir1 },
+                  { label: 'Red1', color: '#ef4444', values: debugPpg.red1 },
+                  { label: 'Green1', color: '#22c55e', values: debugPpg.green1 }
                 ]}
                 fill
               />
               <WaveformCanvas
-                title="PPG2 · IR / Red / Green"
+                title="PPG2 · AC 0.35–8 Hz · IR / Red / Green"
                 series={[
-                  { label: 'IR2', color: '#a855f7', values: ppgBuffers.ir2.slice(-1000) },
-                  { label: 'Red2', color: '#fb7185', values: ppgBuffers.red2.slice(-1000) },
-                  { label: 'Green2', color: '#84cc16', values: ppgBuffers.green2.slice(-1000) }
+                  { label: 'IR2', color: '#a855f7', values: debugPpg.ir2 },
+                  { label: 'Red2', color: '#fb7185', values: debugPpg.red2 },
+                  { label: 'Green2', color: '#84cc16', values: debugPpg.green2 }
                 ]}
                 fill
               />
@@ -363,6 +387,10 @@ export function DebugModeView({
 
           <DebugSection title="保守睡眠判定" icon={<MoonStar size={14} />}>
             <div className="debug-metric-grid">
+              <DebugMetric label="困意值试验" value={`${drowsinessEstimate.score}%`} />
+              <DebugMetric label="频谱特征分" value={drowsinessEstimate.featureScore === null ? '--' : `${drowsinessEstimate.featureScore}%`} />
+              <DebugMetric label="清醒基线" value={`${Math.round(drowsinessEstimate.baselineProgress * 100)}%`} />
+              <DebugMetric label="Theta/Beta" value={formatNumber(drowsinessEstimate.thetaBetaRatio, 2)} />
               <DebugMetric label="实时分期" value={stagingResponse?.model_stage_candidate ?? '--'} />
               <DebugMetric label="模型睡眠概率" value={formatPercent(stagingResponse?.model_sleep_probability)} />
               <DebugMetric label="控制分期" value={stagingResponse?.selected_stage ?? '--'} />
@@ -463,9 +491,9 @@ export function DebugModeView({
               />
             </label>
             <div className="debug-session-actions">
-              <button type="button" onClick={onStartSleepAndRecord}><Play size={12} />开始助眠并记录</button>
-              <button type="button" onClick={onStartBlinkValidation}><Eye size={12} />仅眨眼验证并记录</button>
-              <button type="button" onClick={onStopSession}><CircleStop size={12} />结束/停止记录</button>
+              <button type="button" disabled={recordingPending} onClick={onStartSleepAndRecord}><Play size={12} />开始助眠并记录</button>
+              <button type="button" disabled={recordingPending} onClick={onStartBlinkValidation}><Eye size={12} />仅眨眼验证并记录</button>
+              <button type="button" disabled={recordingPending} onClick={onStopSession}><CircleStop size={12} />结束/停止记录</button>
             </div>
             <div className="debug-trial-buttons">
               <button type="button" disabled={!recording || blinkTrial?.status === 'active'} onClick={() => onStartBlinkTrial(0)}>标记 10 秒无指令</button>

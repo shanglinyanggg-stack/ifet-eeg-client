@@ -7,6 +7,7 @@ interface DevicePanelProps {
   connected: boolean;
   scanning: boolean;
   recording: boolean;
+  recordingPending?: boolean;
   selectedDeviceId: string;
   commandText: string;
   status: string;
@@ -25,6 +26,7 @@ export function DevicePanel({
   connected,
   scanning,
   recording,
+  recordingPending = false,
   selectedDeviceId,
   commandText,
   status,
@@ -104,9 +106,10 @@ export function DevicePanel({
           className={`icon-button ${recording ? 'danger recording-active' : 'primary'}`}
           type="button"
           onClick={onToggleRecording}
+          disabled={recordingPending}
         >
           {recording ? <CircleStop size={18} /> : <Save size={18} />}
-          <span>{recording ? '停止' : '记录'}</span>
+          <span>{recordingPending ? '处理中' : recording ? '停止' : '记录'}</span>
         </button>
         {recordPath && <span className="record-path" title={recordPath}>{recordPath}</span>}
       </div>

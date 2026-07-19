@@ -1,3 +1,5 @@
+import { formatBandSharePercent } from '../domain/band-share-display';
+
 export interface DonutShare {
   symbol: string;
   label: string;
@@ -43,7 +45,7 @@ export function BandDonut({ shares }: BandDonutProps) {
       color: share.color,
       symbol: share.symbol,
       label: share.label,
-      percent: Math.round(share.percent),
+      percent: share.percent,
       path,
       // 扇区内符号：落在扇区中部约 0.62r 处
       innerX: cx + Math.cos(midRad) * r * 0.62,
@@ -61,6 +63,7 @@ export function BandDonut({ shares }: BandDonutProps) {
     <section className="panel fill-panel donut-panel" aria-label="频带占比">
       <div className="panel-header">
         <h2>频带占比</h2>
+        <span className="panel-meta">四通道中位参考</span>
       </div>
       <div className="donut-body">
         <svg viewBox={`0 0 ${size} ${size}`} className="band-donut" role="img" aria-label="频带能量占比饼图">
@@ -94,7 +97,7 @@ export function BandDonut({ shares }: BandDonutProps) {
                     textAnchor={seg.anchor}
                     dominantBaseline="central"
                   >
-                    {seg.percent}%
+                    {formatBandSharePercent(seg.label, seg.percent)}
                   </text>
                 )}
               </g>

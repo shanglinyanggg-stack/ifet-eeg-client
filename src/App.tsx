@@ -3,7 +3,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Activity, Palette, Settings2 } from 'lucide-react';
-import { appendSamples, FilterChain, KalmanFilter, StreamingFilterCache, type TimedValue } from './domain/dsp';
+import {
+  appendSamples,
+  createEegBands,
+  EEG_SAMPLE_RATE,
+  FilterChain,
+  KalmanFilter,
+  StreamingFilterCache,
+  type TimedValue
+} from './domain/dsp';
 import { BlinkGestureDetector, type BlinkGestureSnapshot } from './domain/blink-gesture';
 import { mergeAudioTracks, pickAudioTracks, revokeAudioTrack } from './domain/audio-tracks';
 import { createDemoSamples, DEMO_SAMPLE_RATE } from './domain/demo';
@@ -53,7 +61,13 @@ import {
   type SleepDemoStepRequest,
   type SleepStagingStepRequest
 } from './domain/sleep-staging-stream';
-import type { SleepMetrics } from './domain/sleep-metrics';
+import { calculateSleepMetrics, type SleepMetrics } from './domain/sleep-metrics';
+import { applyRobustMedianReference } from './domain/eeg-reference';
+import {
+  createWearableDrowsinessSnapshot,
+  QualityGatedWearableDrowsinessEstimator,
+  type WearableDrowsinessSnapshot
+} from './domain/wearable-drowsiness';
 import {
   loadSettings,
   saveSettings,
@@ -62,6 +76,8 @@ import {
   type ThemeName
 } from './domain/settings';
 import { SampleBatcher } from './domain/sample-batcher';
+import { filterPpgDisplayWindow } from './domain/debug-signal';
+import type { SleepDeltaArtifactContext } from './domain/delta-artifact-filter';
 import {
   channelColors,
   channelLabels,
@@ -88,6 +104,7 @@ import { useMusicPlayer } from './hooks/useMusicPlayer';
 const MAX_POINTS = 1200;
 const SAMPLE_FLUSH_INTERVAL_MS = 50;
 const allChannels = Object.keys(channelLabels) as ChannelKey[];
+const DROWSINESS_BANDS = createEegBands();
 
 type ChannelBuffers = Record<ChannelKey, TimedValue[]>;
 type AppStyle = CSSProperties & {
@@ -224,6 +241,10 @@ function blinkSnapshotFromResponse(
 
 export default function App() {
   const blinkDetector = useRef(new BlinkGestureDetector());
+  const wearableDrowsinessEstimator = useRef(new QualityGatedWearableDrowsinessEstimator());
+  const wearableBandFilters = useRef(
+    Array.from({ length: 2 }, () => DROWSINESS_BANDS.map(() => new StreamingFilterCache()))
+  );
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [viewport, setViewport] = useState(() => getViewportSize());
   const [buffers, setBuffers] = useState<ChannelBuffers>(() => createEmptyBuffers());
@@ -232,6 +253,7 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recordingPending, setRecordingPending] = useState(false);
   const [recordPath, setRecordPath] = useState('');
   const [status, setStatus] = useState('待机');
   const [commandText, setCommandText] = useState('AA 55 01 01');
@@ -248,6 +270,9 @@ export default function App() {
   const [debugMarkerStatus, setDebugMarkerStatus] = useState('请先开始记录，再添加眨眼或伪迹标记');
   const [warmupRemaining, setWarmupRemaining] = useState(0);
   const [sleepMetrics, setSleepMetrics] = useState<SleepMetrics | null>(null);
+  const [wearableDrowsiness, setWearableDrowsiness] = useState<WearableDrowsinessSnapshot>(
+    createWearableDrowsinessSnapshot
+  );
   const sleepConfig = useMemo(
     () => toSleepSessionConfig(settings),
     [settings.sleepMusic]
@@ -652,6 +677,97 @@ export default function App() {
     return result;
   }, [buffers, settings.displayDelayMs, settings.eeg.timeWindowSeconds]);
 
+  const deltaArtifactContext = useMemo<SleepDeltaArtifactContext>(() => {
+    const response = sleepDemoService.lastResponse;
+    const strength = response?.telemetry.blink_strength_z;
+    const threshold = response?.telemetry.blink_rearm_robust_z
+      ?? response?.telemetry.blink_threshold_robust_z;
+    const strengthTriggered = Number.isFinite(strength)
+      && Number(strength) >= Math.max(3, Number.isFinite(threshold) ? Number(threshold) * 0.75 : 5);
+    return {
+      eegChannels: [
+        visibleBuffers.eeg1,
+        visibleBuffers.eeg2,
+        visibleBuffers.eeg3,
+        visibleBuffers.eeg4
+      ],
+      accelerometer: {
+        x: visibleBuffers.accX,
+        y: visibleBuffers.accY,
+        z: visibleBuffers.accZ
+      },
+      blinkArtifactActive: response?.state_flags.includes('BLINK') || strengthTriggered,
+      blinkBaselineStale: response?.state.blink_baseline_stale ?? false
+    };
+  }, [sleepDemoService.lastResponse, visibleBuffers]);
+
+  const wearableMetrics = useMemo<SleepMetrics | null>(() => {
+    const referenceChannels = [buffers.eeg1, buffers.eeg2, buffers.eeg3, buffers.eeg4];
+    const priorityChannels = [buffers.eeg1, buffers.eeg2];
+    const channelMetrics = priorityChannels.flatMap((selected, channelIndex) => {
+      if (selected.length < 1_000) return [];
+      const referenced = applyRobustMedianReference(selected, referenceChannels).slice(-1_000);
+      const bands = DROWSINESS_BANDS.map((definition, bandIndex) => ({
+        label: definition.label,
+        values: wearableBandFilters.current[channelIndex][bandIndex].update(
+          `wearable|eeg${channelIndex + 1}|${definition.low}|${definition.high}|${settings.eeg.notch}`,
+          referenced,
+          () => FilterChain.firBandpass({
+            low: definition.low,
+            high: definition.high,
+            sampleRate: EEG_SAMPLE_RATE,
+            notch: settings.eeg.notch
+          })
+        )
+      }));
+      return [calculateSleepMetrics({
+        rawValues: referenced,
+        bands,
+        spindleValues: []
+      })];
+    });
+    return channelMetrics.length > 0 ? averageDrowsinessMetrics(channelMetrics) : null;
+  }, [buffers, settings.eeg.notch]);
+
+  useEffect(() => {
+    wearableDrowsinessEstimator.current.reset();
+    setWearableDrowsiness(createWearableDrowsinessSnapshot());
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    if (!wearableMetrics) return;
+    const timestampMs = Math.max(
+      buffers.eeg1[buffers.eeg1.length - 1]?.timestamp ?? 0,
+      buffers.eeg2[buffers.eeg2.length - 1]?.timestamp ?? 0
+    );
+    if (!Number.isFinite(timestampMs)) return;
+    const staging = sleepService.lastResponse;
+    const modelProbability = staging?.decision_valid
+      ? staging.selected_sleep_probability
+      : null;
+    const quality = staging?.coverage
+      ?? sleepDemoService.lastResponse?.telemetry.signal_quality
+      ?? (connected ? 1 : 0);
+    const allowAlertBaselineUpdate = !sleepGuidanceActive
+      && (!staging?.decision_valid || staging.selected_stage === 'W'
+        || (modelProbability !== null && modelProbability < 0.45));
+    setWearableDrowsiness(wearableDrowsinessEstimator.current.update({
+      metrics: wearableMetrics,
+      timestampMs: Number(timestampMs),
+      modelProbability,
+      quality,
+      allowAlertBaselineUpdate
+    }));
+  }, [
+    connected,
+    buffers.eeg1,
+    buffers.eeg2,
+    sleepDemoService.lastResponse?.telemetry.signal_quality,
+    sleepGuidanceActive,
+    sleepService.lastResponse,
+    wearableMetrics
+  ]);
+
   const scanDevices = async () => {
     setScanning(true);
     setStatus('正在扫描 BLE 设备');
@@ -706,14 +822,20 @@ export default function App() {
     }
   };
 
-  const toggleRecording = async () => {
+  const toggleRecording = useCallback(async (): Promise<boolean> => {
+    if (recordingPending) return false;
+    setRecordingPending(true);
     try {
       if (recording) {
+        setStatus('正在停止记录…');
+        setDebugMarkerStatus('正在写入并关闭记录文件…');
         await invokeCommand('stop_recording');
         setRecording(false);
         setStatus('记录已停止');
         setDebugMarkerStatus('记录已停止，数据与标记文件已保存');
       } else {
+        setStatus('正在创建记录文件…');
+        setDebugMarkerStatus('正在创建数据与标记文件…');
         const path = await invokeCommand<string>('start_recording', { directory: settings.recordDir || null });
         setRecordPath(path);
         setRecording(true);
@@ -722,10 +844,16 @@ export default function App() {
         setDebugMarkerPath(markerPathFromRecordPath(path));
         setDebugMarkerStatus('记录中：点击按钮即可写入同步标记');
       }
+      return true;
     } catch (error) {
-      setStatus(String(error));
+      const message = `记录操作失败：${String(error)}`;
+      setStatus(message);
+      setDebugMarkerStatus(message);
+      return false;
+    } finally {
+      setRecordingPending(false);
     }
-  };
+  }, [recording, recordingPending, settings.recordDir]);
 
   const handleDebugMarker = useCallback(async (label: string, note: string) => {
     if (!recording) {
@@ -1159,15 +1287,15 @@ export default function App() {
 
   const handleDebugStartSleepAndRecord = useCallback(() => {
     void (async () => {
-      if (!recording) await toggleRecording();
+      if (!recording && !await toggleRecording()) return;
       handleStartSleepGuidance();
       setDebugMarkerStatus('助眠调试会话已启动；可写入眨眼与伪迹真值标记');
     })();
-  }, [handleStartSleepGuidance, recording]);
+  }, [handleStartSleepGuidance, recording, toggleRecording]);
 
   const handleDebugStartBlinkValidation = useCallback(() => {
     void (async () => {
-      if (!recording) await toggleRecording();
+      if (!recording && !await toggleRecording()) return;
       setSettings((current) => ({
         ...current,
         sleepMusic: { ...current.sleepMusic, blinkControlEnabled: true }
@@ -1176,13 +1304,13 @@ export default function App() {
       musicPlayer.pause();
       setDebugMarkerStatus('仅眨眼验证会话：先完成眨眼基线，再使用 0/3/5 次真值测试');
     })();
-  }, [musicPlayer.pause, recording]);
+  }, [musicPlayer.pause, recording, toggleRecording]);
 
   const handleDebugStopSession = useCallback(() => {
     handleStopSleepGuidance();
     setDebugBlinkTrial(null);
     if (recording) void toggleRecording();
-  }, [handleStopSleepGuidance, recording]);
+  }, [handleStopSleepGuidance, recording, toggleRecording]);
 
   useEffect(() => {
     setBlinkVolumeOffset((current) => {
@@ -1561,6 +1689,7 @@ export default function App() {
     settings: settings.sleepMusic,
     player: musicPlayer,
     blink: blinkSnapshot,
+    drowsinessEstimate: wearableDrowsiness,
     serviceStatus: {
       phase: sleepService.phase,
       message: sleepService.message,
@@ -1625,6 +1754,7 @@ export default function App() {
           musicPanel={musicPanel}
           deviceFlags={deviceFlags}
           algorithmAction={lastAlgorithmAction}
+          deltaArtifactContext={deltaArtifactContext}
         />
         {musicLibrary}
       </main>
@@ -1675,6 +1805,7 @@ export default function App() {
           connected={connected}
           scanning={scanning}
           recording={recording}
+          recordingPending={recordingPending}
           selectedDeviceId={selectedDeviceId}
           commandText={commandText}
           status={status}
@@ -1714,6 +1845,7 @@ export default function App() {
               invalidSampleCount={invalidSampleCount}
               latestDeviceFlag={deviceFlags[deviceFlags.length - 1]?.value ?? null}
               recording={recording}
+              recordingPending={recordingPending}
               recordPath={recordPath}
               markerPath={debugMarkerPath}
               markerStatus={debugMarkerStatus}
@@ -1726,6 +1858,7 @@ export default function App() {
               stagingResponse={sleepService.lastResponse}
               stagingPhase={sleepService.phase}
               stagingMessage={sleepService.message}
+              drowsinessEstimate={wearableDrowsiness}
               session={sleepSession}
               sleepSettings={settings.sleepMusic}
               player={musicPlayer}
@@ -1757,6 +1890,7 @@ export default function App() {
               settings={settings.eeg}
               onSleepMetrics={handleSleepMetrics}
               musicPanel={musicPanel}
+              deltaArtifactContext={deltaArtifactContext}
             />
           ) : (
             <div className="normal-grid">
@@ -1851,14 +1985,14 @@ function applyNormalFilters(
   if (!bandpassOn && !kalmanOn) {
     // 滤波全关时清空缓存：否则下次再开时，关闭期间的样本永远不会被处理，输出出现断档
     cache.reset();
-    return values;
+    return isPpgChannel(channel) ? filterPpgDisplayWindow(values) : values;
   }
   const key = [
     channel,
     bandpassOn ? `${settings.filterLow}-${settings.filterHigh}` : 'off',
     kalmanOn ? `${settings.kalmanQ}|${settings.kalmanR}` : 'off'
   ].join('|');
-  return cache.update(key, values, () => {
+  const filtered = cache.update(key, values, () => {
     const chain = bandpassOn
       ? FilterChain.butterworthBandpass({
         low: settings.filterLow,
@@ -1881,6 +2015,16 @@ function applyNormalFilters(
       }
     };
   });
+  return isPpgChannel(channel) ? filterPpgDisplayWindow(filtered) : filtered;
+}
+
+function isPpgChannel(channel: ChannelKey): boolean {
+  return channel === 'ir1'
+    || channel === 'red1'
+    || channel === 'green1'
+    || channel === 'ir2'
+    || channel === 'red2'
+    || channel === 'green2';
 }
 
 async function toggleFullscreen(): Promise<void> {
@@ -1976,10 +2120,42 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8768;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8772;
   } catch {
-    return 8768;
+    return 8772;
   }
+}
+
+function averageDrowsinessMetrics(metrics: SleepMetrics[]): SleepMetrics {
+  const base = metrics[0];
+  const average = (pick: (item: SleepMetrics) => number) =>
+    metrics.reduce((sum, item) => sum + pick(item), 0) / metrics.length;
+  const deltaRelative = average((item) => item.deltaRelative);
+  const thetaRelative = average((item) => item.thetaRelative);
+  const alphaRelative = average((item) => item.alphaRelative);
+  const betaRelative = average((item) => item.betaRelative);
+  const sleepOnsetScore = Math.round(average((item) => item.sleepOnsetScore));
+  return {
+    ...base,
+    deltaRelative,
+    thetaRelative,
+    alphaRelative,
+    betaRelative,
+    thetaAlphaRatio: thetaRelative / Math.max(alphaRelative, 1e-9),
+    sleepOnsetScore,
+    solTrend: sleepOnsetScore >= 65
+      ? 'sleep-onset'
+      : sleepOnsetScore >= 38
+        ? 'transition'
+        : 'awake',
+    solSeconds: null,
+    vertexWave: metrics.some((item) => item.vertexWave),
+    spindlePower: average((item) => item.spindlePower),
+    spindleRelative: average((item) => item.spindleRelative),
+    spindleCandidate: metrics.some((item) => item.spindleCandidate),
+    kComplexCandidate: metrics.some((item) => item.kComplexCandidate),
+    n2Candidate: metrics.some((item) => item.n2Candidate)
+  };
 }
 
 function markerPathFromRecordPath(path: string): string {

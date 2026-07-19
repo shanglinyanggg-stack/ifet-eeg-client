@@ -109,8 +109,8 @@ describe('DebugModeView', () => {
     expect(screen.getByText('保守睡眠判定')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /6 路 PPG/ }));
-    expect(screen.getByLabelText('PPG1 · IR / Red / Green')).toBeInTheDocument();
-    expect(screen.getByLabelText('PPG2 · IR / Red / Green')).toBeInTheDocument();
+    expect(screen.getByLabelText('PPG1 · AC 0.35–8 Hz · IR / Red / Green')).toBeInTheDocument();
+    expect(screen.getByLabelText('PPG2 · AC 0.35–8 Hz · IR / Red / Green')).toBeInTheDocument();
   });
 
   test('enables truth trials and manual markers only while recording', () => {
