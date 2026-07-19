@@ -36,6 +36,8 @@ if ($LASTEXITCODE -ne 0) {
 
 $BuiltRuntime = Join-Path $DistDir "ifet-sleep-service.exe"
 $BundledRuntime = Join-Path $AlgorithmDir "runtime\ifet-sleep-service.exe"
+# 全新克隆中 runtime/ 目录不存在（被 gitignore），先创建
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $BundledRuntime) | Out-Null
 Copy-Item -LiteralPath $BuiltRuntime -Destination $BundledRuntime -Force
 
 & $Python (Join-Path $Root "scripts\update_algorithm_runtime_manifest.py") `
