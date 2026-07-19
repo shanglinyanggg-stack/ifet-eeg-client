@@ -1,0 +1,86 @@
+openapi: 3.0.3
+info:
+  title: Causal Sleep Staging Local API
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8765
+paths:
+  /health:
+    get:
+      summary: Read service and stream status
+      responses:
+        "200":
+          description: Service is ready
+  /reset:
+    post:
+      summary: Start a new subject/session and clear all causal history
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_id]
+              properties:
+                session_id: {type: string}
+      responses:
+        "200": {description: Stream reset}
+  /step:
+    post:
+      summary: Submit exactly five seconds of new causal data
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StepRequest"
+      responses:
+        "200":
+          description: Current causal prediction
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StepResponse"
+        "400": {description: Invalid shape or value}
+components:
+  schemas:
+    Float500:
+      type: array
+      minItems: 500
+      maxItems: 500
+      items: {type: number, format: float}
+    Bool500:
+      type: array
+      minItems: 500
+      maxItems: 500
+      items: {type: boolean}
+    StepRequest:
+      type: object
+      required: [session_id, eeg_5s, imu_5s, valid_5s]
+      properties:
+        session_id: {type: string}
+        timestamp: {type: string, format: date-time}
+        eeg_5s:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: {$ref: "#/components/schemas/Float500"}
+        imu_5s:
+          type: array
+          minItems: 3
+          maxItems: 6
+          items: {$ref: "#/components/schemas/Float500"}
+        valid_5s: {$ref: "#/components/schemas/Bool500"}
+    StepResponse:
+      type: object
+      properties:
+        decision_valid: {type: boolean}
+        selected_prediction3: {type: integer, nullable: true, description: "0=W, 1=NREM, 2=REM"}
+        selected_stage: {type: string, nullable: true, enum: [W, NREM, REM]}
+        selected_sleep_probability: {type: number, nullable: true}
+        sleep_detected: {type: boolean, nullable: true}
+        intervention_action_candidate: {type: string, enum: [play_music, stop_music, hold_previous_state]}
+        intervention_action: {type: string, enum: [play_music, stop_music, hold_previous_state]}
+        autonomous_music_allowed: {type: boolean}
+        coverage: {type: number}
+        maximum_contiguous_gap_seconds: {type: number}

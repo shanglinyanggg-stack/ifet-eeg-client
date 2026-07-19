@@ -1,0 +1,146 @@
+{
+  "package": "SleepStagingAlgorithm_PC_v1.2.0",
+  "version": "1.2.0+blink.1.0.13",
+  "target": "Windows x64 desktop App",
+  "delivery_mode": "localhost HTTP sidecar",
+  "model_format": "ONNX FP32",
+  "execution_provider": "CPUExecutionProvider",
+  "bundled_runtime": {
+    "path": "runtime/ifet-sleep-service.exe",
+    "platform": "Windows",
+    "arch": "x86_64",
+    "format": "PyInstaller 6.21.0 one-file Windows",
+    "python_version": "3.12.10",
+    "numpy_version": "2.5.1",
+    "scipy_version": "1.18.0",
+    "onnxruntime_version": "1.27.0",
+    "bytes": 70103238,
+    "sha256": "361331509e8c07358b09e7ae5c8089b6b2a83cd9cb9f3123a42a3db9df05fd96"
+  },
+  "strictly_causal": true,
+  "future_samples_used": false,
+  "input": {
+    "interval_seconds": 5,
+    "sample_rate_hz": 100,
+    "eeg_5s": [
+      4,
+      500
+    ],
+    "imu_5s": [
+      "3 or 6",
+      500
+    ],
+    "valid_5s": [
+      500
+    ]
+  },
+  "classes": {
+    "0": "W",
+    "1": "NREM",
+    "2": "REM"
+  },
+  "demo_signal_flags": {
+    "implementation": "sdk/realtime_sleep_staging/demo_signal_flags.py",
+    "contract": "demo_signal_flags_contract.schema.json",
+    "documentation": "DEMO_SIGNAL_FLAGS_ENGINEER.md",
+    "schema_version": "headset-demo-flags/v7",
+    "blink_algorithm_version": "1.0.13",
+    "decision_channels": [
+      "EEG1",
+      "EEG2"
+    ],
+    "blink_channels": [
+      "EEG1",
+      "EEG2",
+      "EEG3",
+      "EEG4"
+    ],
+    "blink_fixed_channel_pairs": [
+      [
+        "EEG1",
+        "EEG2"
+      ],
+      [
+        "EEG3",
+        "EEG4"
+      ]
+    ],
+    "blink_quiet_baseline_seconds": 3,
+    "blink_calibration_seconds": 10,
+    "blink_calibration_requires_explicit_start": true,
+    "blink_gestures": {
+      "volume_down": 3,
+      "volume_up": 5,
+      "five_has_priority": true
+    },
+    "dual_channel_hard_gate": true,
+    "adaptive_blink_baseline": false,
+    "blink_toggle": "persistent until App/user or sleep-onset flag disables it",
+    "alpha_and_blink_state_machines_independent": true,
+    "alpha_window_seconds": 4.0,
+    "alpha_update_seconds": 0.25,
+    "adaptive_quality_weighted_channels": true,
+    "continuous_volume_telemetry": "telemetry.recommended_volume"
+  },
+  "timing": {
+    "first_valid_decision_seconds": 30,
+    "decision_interval_seconds": 5,
+    "full_context_seconds_after_reset": 240
+  },
+  "selected_algorithm": "five-seed raw EEG CNN 60% + causal SleepTransformer 40% + causal hierarchical W/sleep then NREM/REM decoder",
+  "pilot_metrics": {
+    "protocol": "six-subject nested LOSO, five seeds, subject-equal",
+    "wake_sleep_balanced_accuracy": 0.7735366707570154,
+    "wake_recall": 0.6794631886361157,
+    "sleep_recall": 0.8676101528779149,
+    "macro_f1": 0.6185558875053024
+  },
+  "models": [
+    {
+      "path": "models/seed_20260714_branches_fp32.onnx",
+      "bytes": 1637109,
+      "sha256": "b42e710b1808879772af5ce3067028c97ee3a8ebb9960f897efe12dc97907e8f"
+    },
+    {
+      "path": "models/seed_20260715_branches_fp32.onnx",
+      "bytes": 1637109,
+      "sha256": "9c9f60b2f80667488a20b890c7ca2363beda1a9feab0fa1d4f6b217230debf94"
+    },
+    {
+      "path": "models/seed_20260716_branches_fp32.onnx",
+      "bytes": 1637109,
+      "sha256": "3d724289b489a23ba3094f96691c47dd4c5029b1162c32582a7c40261b468d73"
+    },
+    {
+      "path": "models/seed_20260717_branches_fp32.onnx",
+      "bytes": 1637109,
+      "sha256": "3e9201eae5cc63ef83c0959726ec3f4ccd6b3c2fd4186c6f0a91107a9fe470a6"
+    },
+    {
+      "path": "models/seed_20260718_branches_fp32.onnx",
+      "bytes": 1637109,
+      "sha256": "53b5d46adfa2bca05c4c005dcdbe5c67cb72e61984c6fa688a375555338b1063"
+    }
+  ],
+  "synthetic_test_expected": {
+    "decision_valid": true,
+    "end_seconds": 30,
+    "selected_prediction3": 1,
+    "selected_stage": "NREM",
+    "selected_sleep_probability": 0.7842459746762255,
+    "sleep_detected": true,
+    "p3": [
+      0.21575402532377463,
+      0.765592073475742,
+      0.01865390120048348
+    ],
+    "stage_decoder_probability3": [
+      0.21575402532377463,
+      0.765592073475742,
+      0.01865390120048348
+    ],
+    "intervention_action": "hold_previous_state",
+    "autonomous_music_allowed": false
+  },
+  "research_only": true
+}

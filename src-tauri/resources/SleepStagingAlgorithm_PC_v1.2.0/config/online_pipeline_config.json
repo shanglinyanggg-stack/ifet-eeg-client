@@ -1,0 +1,184 @@
+{
+  "schema_version": 2,
+  "pipeline": "five-seed raw CNN60% + causal SleepTransformer40% + causal hierarchical stage decoder",
+  "sample_rate_hz": 100,
+  "decision_interval_seconds": 5,
+  "signal_window_seconds": 30,
+  "startup": {
+    "filter_initialization": "steady_first_sample",
+    "causal_filter_warmup_seconds": 0,
+    "signal_window_seconds": 30,
+    "first_valid_decision_seconds": 30,
+    "reason": "Initialize every SOS section with scipy.signal.sosfilt_zi scaled by the first raw sample, then fill one causal 30-second model window.",
+    "compatibility_validation": {
+      "old_windows_preserved": 36185,
+      "added_doctor_labeled_startup_windows": 18,
+      "added_labels": "18/18 W",
+      "raw_wake_correct": "15/18",
+      "frozen_stage_decoder_wake_correct": "18/18",
+      "frozen_music_controller_awake_correct": "18/18",
+      "five_seed_subject_equal_macro_f1_difference": -9.453358929345512e-05,
+      "five_seed_wake_sleep_balanced_accuracy_difference": -3.748855225371717e-05,
+      "limitation": "No doctor-labeled startup NREM or REM window is available."
+    }
+  },
+  "preprocessing": {
+    "timestamp_bin_seconds": 0.01,
+    "wearable_eeg_bandpass_hz": [
+      0.3,
+      35.0
+    ],
+    "filter": "fourth-order causal Butterworth with persistent SOS state initialized as sosfilt_zi * first_sample",
+    "cnn": "per-window per-channel EEG standardization clipped to [-8,8], plus standardized acceleration magnitude",
+    "sleeptransformer": "four-channel causal 2 s log-power frames with 1 s hop; current and seven past windows spaced 30 s apart",
+    "sleeptransformer_frozen_feature_compatibility": {
+      "spectral_token_storage": "float16 round-trip, then float32 ONNX input",
+      "auxiliary_eeg_amplitude": "historical checkpoint convention: computed from the normalized temporary spectral batch",
+      "rolling_buffer_mutation": "prohibited; feature extraction must operate on a copy"
+    },
+    "minimum_window_coverage": 0.6,
+    "maximum_contiguous_gap_seconds": 2.0
+  },
+  "models": [
+    {
+      "seed": 20260714,
+      "cnn_weight": 0.6,
+      "sleeptransformer_weight": 0.4,
+      "onnx_fp32_branches": "../models/seed_20260714_branches_fp32.onnx"
+    },
+    {
+      "seed": 20260715,
+      "cnn_weight": 0.6,
+      "sleeptransformer_weight": 0.4,
+      "onnx_fp32_branches": "../models/seed_20260715_branches_fp32.onnx"
+    },
+    {
+      "seed": 20260716,
+      "cnn_weight": 0.6,
+      "sleeptransformer_weight": 0.4,
+      "onnx_fp32_branches": "../models/seed_20260716_branches_fp32.onnx"
+    },
+    {
+      "seed": 20260717,
+      "cnn_weight": 0.6,
+      "sleeptransformer_weight": 0.4,
+      "onnx_fp32_branches": "../models/seed_20260717_branches_fp32.onnx"
+    },
+    {
+      "seed": 20260718,
+      "cnn_weight": 0.6,
+      "sleeptransformer_weight": 0.4,
+      "onnx_fp32_branches": "../models/seed_20260718_branches_fp32.onnx"
+    }
+  ],
+  "seed_ensemble": "arithmetic mean of five three-class probability vectors",
+  "stream_context": {
+    "phase_count": 6,
+    "reason": "5-second decisions need six independent phase histories so every Transformer context remains exactly 30 seconds apart",
+    "contexts_per_phase": 8,
+    "maximum_context_age_seconds": 210,
+    "current_phase_first_full_seconds_after_reset": 240,
+    "future_context": false
+  },
+  "fusion_policy": {
+    "standard_continuous": {
+      "cnn_weight": 0.6,
+      "sleeptransformer_weight": 0.4,
+      "use": "raw_prediction3, stage_decoder_prediction3, and music_sleep_state"
+    },
+    "cold_restart_recovery_stage": {
+      "output": "recovery_stage_prediction3",
+      "transformer_weight": "0.0 while context_valid_count < 8; 0.4 when context_valid_count == 8",
+      "cnn_weight": "1 - transformer_weight",
+      "low_confidence_until_seconds_after_restart": 240,
+      "music_control_input": false,
+      "prospective_status": "research output only"
+    },
+    "cold_restart_music": {
+      "probability_source": "standard fixed CNN60% + SleepTransformer40%",
+      "controller": "music_controller",
+      "new_cold_specific_controller": "rejected because outer wake-event protection was below 0.80",
+      "autonomous_intervention_allowed_without_restored_state": false
+    }
+  },
+  "stage_decoder": {
+    "ema_alpha": 0.25,
+    "sleep_on_threshold": 0.75,
+    "wake_on_threshold": 0.25,
+    "sleep_confirm_updates": 1,
+    "wake_confirm_updates": 1,
+    "rem_on_threshold": 0.55,
+    "rem_off_threshold": 0.3,
+    "rem_confirm_updates": 3,
+    "nrem_confirm_updates": 1
+  },
+  "music_controller": {
+    "ema_alpha": 0.25,
+    "sleep_on_threshold": 0.75,
+    "wake_on_threshold": 0.35,
+    "sleep_confirm_updates": 1,
+    "wake_confirm_updates": 3
+  },
+  "balanced_music_controller_alternative": {
+    "ema_alpha": 0.25,
+    "sleep_on_threshold": 0.75,
+    "wake_on_threshold": 0.35,
+    "sleep_confirm_updates": 1,
+    "wake_confirm_updates": 3
+  },
+  "outputs": {
+    "raw_prediction3": "unfiltered five-seed probability argmax",
+    "stage_decoder_prediction3": "strictly causal W/sleep then NREM/REM hysteresis output",
+    "recovery_stage_prediction3": "context-completeness-gated secondary output after unrecoverable state loss",
+    "recovery_low_confidence": "true until eight 30-second-spaced contexts are available",
+    "music_sleep_state": "separate conservative sound-intervention state",
+    "autonomous_music_allowed": "false after unrecoverable state loss until the current phase has eight valid contexts",
+    "raw_probabilities": [
+      "p_W",
+      "p_NREM",
+      "p_REM"
+    ]
+  },
+  "state_reset": [
+    "subject change",
+    "session/night change",
+    "sensor interruption longer than the accepted gap",
+    "explicit user restart"
+  ],
+  "state_persistence": {
+    "required": true,
+    "persist": [
+      "causal SOS filter state",
+      "30-second raw rolling buffer",
+      "six 5-second phases, each with eight 30-second-spaced SleepTransformer token and auxiliary contexts",
+      "standard and recovery stage decoder EMA and counters",
+      "music controller EMA, state, and counters"
+    ],
+    "ordinary_app_backgrounding": "restore state; do not cold reset",
+    "unrecoverable_state_loss": "enter cold_restart_recovery_stage, preserve last music state when available, and prohibit autonomous switching until policy validation",
+    "full_context_recovery_seconds": 240,
+    "270_second_validation": {
+      "prediction_disagreements_vs_continuous": 0,
+      "probability_max_abs_difference": 0.00037753
+    }
+  },
+  "reference_runtime": {
+    "implementation": "sdk/realtime_sleep_staging/mobile_stream_runtime.py",
+    "service": "service.py",
+    "api": "openapi.yaml",
+    "input": "each call receives exactly five new seconds",
+    "output_interval_seconds": 5
+  },
+  "validation_warning": "Six-subject research pilot. Prospective synchronized PSG validation is required.",
+  "deployment_target": "desktop_upper_computer",
+  "runtime_precision": "ONNX FP32",
+  "onnx_execution_provider": "CPUExecutionProvider",
+  "selected_algorithm": "five-seed raw EEG CNN 60% + causal SleepTransformer 40% + causal hierarchical W/sleep then NREM/REM decoder",
+  "selection_metric": {
+    "protocol": "six-subject nested LOSO, five seeds, subject-equal",
+    "wake_sleep_balanced_accuracy": 0.7735366707570154,
+    "wake_recall": 0.6794631886361157,
+    "sleep_recall": 0.8676101528779149,
+    "macro_f1": 0.6185558875053024
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "device": {
+    "name_prefix": "",
+    "address": null
+  },
+  "gatt": {
+    "device_information_service_uuid": "0000180a-0000-1000-8000-00805f9b34fb",
+    "read_characteristic_uuids": [
+      "00002a29-0000-1000-8000-00805f9b34fb",
+      "00002a24-0000-1000-8000-00805f9b34fb",
+      "00002a26-0000-1000-8000-00805f9b34fb",
+      "00002a27-0000-1000-8000-00805f9b34fb",
+      "00002a28-0000-1000-8000-00805f9b34fb"
+    ],
+    "service_uuid": "0000fff0-0000-1000-8000-00805f9b34fb",
+    "notify_characteristic_uuids": [
+      "0000fff9-0000-1000-8000-00805f9b34fb"
+    ],
+    "write_characteristic_uuid": "0000fff5-0000-1000-8000-00805f9b34fb",
+    "start_command_hex": "AA 55 01 01",
+    "stop_command_hex": "",
+    "write_with_response": false
+  },
+  "stream": {
+    "sample_rate_hz": 100,
+    "step_seconds": 5,
+    "discontinuity_seconds": 10.0
+  },
+  "queue_size": 4096,
+  "reconnect_seconds": 2.0,
+  "packet": {
+    "enabled": true,
+    "note": "Verified with legacy appav8 APK and a real TD10 FFF9 capture: 01 29 header, one 43-byte PpgPacket6 record, and a trailing 4-byte device clock.",
+    "byteorder": "big",
+    "exact_notification_bytes": 43,
+    "ignore_non_data_frames": true,
+    "header": {
+      "offset": 0,
+      "hex": "01 29"
+    },
+    "payload_offset_bytes": 0,
+    "samples_per_notification": 1,
+    "sample_stride_bytes": 43,
+    "sequence": {
+      "scope": "sample",
+      "offset": 2,
+      "bytes": 1,
+      "signed": false,
+      "modulus": 256,
+      "clock_hz": 125,
+      "nominal_ticks_per_notification": 4,
+      "resample_to_stream_rate": true
+    },
+    "channels": [
+      {"name": "ir1", "offset": 3, "bytes": 3, "signed": false, "scale": 1.0},
+      {"name": "red1", "offset": 6, "bytes": 3, "signed": false, "scale": 1.0},
+      {"name": "green1", "offset": 9, "bytes": 3, "signed": false, "scale": 1.0},
+      {"name": "ir2", "offset": 12, "bytes": 3, "signed": false, "scale": 1.0},
+      {"name": "red2", "offset": 15, "bytes": 3, "signed": false, "scale": 1.0},
+      {"name": "green2", "offset": 18, "bytes": 3, "signed": false, "scale": 1.0},
+      {"name": "accX", "offset": 21, "bytes": 2, "signed": true, "scale": 1.0},
+      {"name": "accY", "offset": 23, "bytes": 2, "signed": true, "scale": 1.0},
+      {"name": "accZ", "offset": 25, "bytes": 2, "signed": true, "scale": 1.0},
+      {"name": "eeg1", "offset": 27, "bytes": 3, "signed": true, "scale": 1.0},
+      {"name": "eeg2", "offset": 30, "bytes": 3, "signed": true, "scale": 1.0},
+      {"name": "eeg3", "offset": 33, "bytes": 3, "signed": true, "scale": 1.0},
+      {"name": "eeg4", "offset": 36, "bytes": 3, "signed": true, "scale": 1.0}
+    ]
+  }
+}

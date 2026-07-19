@@ -27,9 +27,19 @@ interface ThemedSelectProps {
 
 interface MenuPosition {
   left: number;
-  top: number;
+  top?: number;
+  bottom?: number;
   width: number;
+  maxHeight: number;
+  placement: 'above' | 'below';
 }
+
+const MENU_GAP = 6;
+const MENU_VIEWPORT_PADDING = 8;
+const MENU_MAX_HEIGHT = 260;
+const MENU_MIN_HEIGHT = 36;
+const MENU_OPTION_HEIGHT = 34;
+const MENU_VERTICAL_PADDING = 12;
 
 export function ThemedSelect({
   value,
@@ -68,10 +78,30 @@ export function ThemedSelect({
     const updatePosition = () => {
       const rect = buttonRef.current?.getBoundingClientRect();
       if (!rect) return;
+      const estimatedHeight = Math.min(
+        MENU_MAX_HEIGHT,
+        options.length * MENU_OPTION_HEIGHT + MENU_VERTICAL_PADDING
+      );
+      const availableBelow = Math.max(
+        0,
+        window.innerHeight - rect.bottom - MENU_GAP - MENU_VIEWPORT_PADDING
+      );
+      const availableAbove = Math.max(
+        0,
+        rect.top - MENU_GAP - MENU_VIEWPORT_PADDING
+      );
+      const placement = availableBelow < estimatedHeight && availableAbove > availableBelow
+        ? 'above'
+        : 'below';
+      const availableHeight = placement === 'above' ? availableAbove : availableBelow;
+
       setMenuPosition({
         left: rect.left,
-        top: rect.bottom + 6,
-        width: rect.width
+        top: placement === 'below' ? rect.bottom + MENU_GAP : undefined,
+        bottom: placement === 'above' ? window.innerHeight - rect.top + MENU_GAP : undefined,
+        width: rect.width,
+        maxHeight: Math.max(MENU_MIN_HEIGHT, Math.min(MENU_MAX_HEIGHT, availableHeight)),
+        placement
       });
     };
 
@@ -82,7 +112,7 @@ export function ThemedSelect({
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [open]);
+  }, [open, options.length]);
 
   useEffect(() => {
     if (!open) return;
@@ -171,11 +201,14 @@ export function ThemedSelect({
             className="themed-select-menu"
             role="listbox"
             aria-label={ariaLabel}
+            data-placement={menuPosition.placement}
             style={
               {
                 '--select-left': `${menuPosition.left}px`,
-                '--select-top': `${menuPosition.top}px`,
-                '--select-width': `${menuPosition.width}px`
+                '--select-top': menuPosition.top === undefined ? undefined : `${menuPosition.top}px`,
+                '--select-bottom': menuPosition.bottom === undefined ? undefined : `${menuPosition.bottom}px`,
+                '--select-width': `${menuPosition.width}px`,
+                '--select-max-height': `${menuPosition.maxHeight}px`
               } as CSSProperties
             }
           >

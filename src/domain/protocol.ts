@@ -26,6 +26,8 @@ export interface DecodedPacket {
 
 export interface SampleEvent {
   timestamp: string;
+  valid?: boolean;
+  deviceSequence?: number | null;
   packet: DecodedPacket;
 }
 

@@ -32,10 +32,10 @@ pub struct PpgSample {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EegSample {
-    pub eeg1: i32,
-    pub eeg2: i32,
-    pub eeg3: i32,
-    pub eeg4: i32,
+    pub eeg1: u32,
+    pub eeg2: u32,
+    pub eeg3: u32,
+    pub eeg4: u32,
     pub flag: Option<u8>,
 }
 
@@ -51,5 +51,7 @@ pub struct DecodedPacket {
 #[serde(rename_all = "camelCase")]
 pub struct SampleEvent {
     pub timestamp: String,
+    pub valid: bool,
+    pub device_sequence: Option<u8>,
     pub packet: DecodedPacket,
 }

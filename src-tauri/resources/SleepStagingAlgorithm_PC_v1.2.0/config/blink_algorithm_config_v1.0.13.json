@@ -1,0 +1,130 @@
+{
+  "schema_version": "eegsleep-blink-algorithm/v3",
+  "algorithm_version": "1.0.13",
+  "sample_rate_hz": 100,
+  "blink_channels_zero_based": [0, 1, 2, 3],
+  "fixed_channel_pairs_zero_based": [[0, 1], [2, 3]],
+  "alpha_and_sleep_channels_zero_based": [0, 1],
+  "causal_filter": {
+    "type": "butterworth_bandpass",
+    "order": 3,
+    "low_hz": 0.5,
+    "high_hz": 8.0,
+    "sos": true,
+    "preserve_state_across_chunks": true,
+    "future_context": false
+  },
+  "calibration": {
+    "quiet_baseline_seconds": 3.0,
+    "continuous_blink_seconds": 10.0,
+    "instruction": "Keep head and jaw still; keep eyes open without blinking for 3 seconds, then blink naturally every 0.5-1.0 seconds for 10 seconds.",
+    "robust_center": "median",
+    "robust_scale": "max(1.4826*MAD,(Q90-Q10)/2.5631,minimum_scale)",
+    "candidate_fused_height_z": 2.0,
+    "candidate_prominence_z": 0.8,
+    "candidate_min_distance_seconds": 0.32,
+    "candidate_width_seconds": [0.025, 0.8],
+    "pair_secondary_floor_z": 2.0,
+    "pair_fused_floor_z": 2.0,
+    "minimum_peaks_per_enabled_pair": 5,
+    "minimum_overall_paired_candidate_fraction": 0.65,
+    "minimum_median_paired_strength_z": 3.0,
+    "threshold_formula": "if EEG3/EEG4 pair is enabled: clip(Q25*0.30,2.5,3.25); otherwise EEG1/EEG2-only legacy rule: clip(Q25*0.45,2.5,6.0)",
+    "rearm_diagnostic_formula": "clip(threshold*0.45,0.8,1.8)",
+    "freeze_center_and_scale_after_success": true,
+    "recalibrate_after_reposition_or_major_contact_change": true
+  },
+  "pair_fusion": {
+    "pair_1": [0, 1],
+    "pair_2": [2, 3],
+    "pair_primary": "max(abs(z_a),abs(z_b))",
+    "pair_secondary": "min(abs(z_a),abs(z_b))",
+    "pair_fused": "sqrt(pair_primary*pair_secondary)",
+    "runtime_winner": "enabled pair with maximum pair_fused at that sample",
+    "secondary_minimum_fraction_of_threshold": 0.60,
+    "fused_minimum_fraction_of_threshold": 1.0,
+    "single_channel_fallback_allowed": false,
+    "same_polarity_required": false,
+    "peak_timing_signal": "winning paired fused envelope"
+  },
+  "transport_gap_policy": {
+    "combine_transport_validity_and_finite_check": true,
+    "invalid_fill": "last_valid_raw_eeg_sample",
+    "never_fill_raw_with_filtered_value": true,
+    "causal_post_gap_guard_seconds": 0.20,
+    "reject_peak_before_a_future_gap": false,
+    "full_gesture_reset_after_continuous_invalid_seconds": 0.35,
+    "short_gap_does_not_clear_prior_valid_blinks": true,
+    "one_missing_blink_recovery": {
+      "enabled": true,
+      "requires_at_least_two_prior_valid_blinks": true,
+      "requires_invalid_sample_between_neighboring_blinks": true,
+      "interval_over_calibrated_median_range": [1.65, 2.60],
+      "maximum_recovered_blinks_per_gap": 1,
+      "recovered_amplitude": "sqrt(previous_amplitude*current_amplitude)"
+    }
+  },
+  "gesture": {
+    "down_count": 3,
+    "up_count": 5,
+    "window_seconds": 7.0,
+    "minimum_interval_seconds": 0.16,
+    "adaptive_minimum_interval": "max(0.16,min(0.65*calibrated_median_interval,0.50))",
+    "default_maximum_interval_seconds": 1.40,
+    "adaptive_maximum_interval": "max(1.40,min(2.25*calibrated_median_interval,1.80))",
+    "maximum_interval_jitter_seconds": 0.45,
+    "amplitude_ratio_range": [0.05, 25.0],
+    "weak_fourth_tail_ratio": 0.55,
+    "weak_fourth_tail_policy": "if a group ends at four and peak 4 is below 0.55 of median peaks 1-3, report the preserved three-blink gesture; if peak 5 arrives first, five always wins",
+    "three_confirmation_gap": "max(2.05,adaptive_maximum_interval+0.25)",
+    "cooldown_seconds": 0.60,
+    "five_has_priority_over_three": true,
+    "reset_state_at_explicit_marker_start_and_result": true
+  },
+  "motion_gate": {
+    "window_seconds": 1.5,
+    "default_minimum_acceleration_std": 250.0,
+    "calibration_quantile": 0.90,
+    "calibration_multiplier": 2.5,
+    "clip": [250.0, 2000.0]
+  },
+  "frozen_baseline_health": {
+    "adaptive_center_or_scale": false,
+    "memory_seconds": 90.0,
+    "minimum_background_seconds": 15.0,
+    "update_seconds": 5.0,
+    "scale_ratio_limits": [0.10, 2.50],
+    "center_shift_z_max": 2.50,
+    "consecutive_failures_before_stale": 3,
+    "on_stale": "suspend blink control and require explicit recalibration"
+  },
+  "output_and_control": {
+    "single_blink_flag": "BLINK",
+    "three_blink_flag": "BLINK_3",
+    "five_blink_flag": "BLINK_5",
+    "three_blinks_volume_delta": -0.10,
+    "five_blinks_volume_delta": 0.10,
+    "clip_to_user_maximum": true,
+    "synchronize_offset_after_clipping": true
+  },
+  "validation_mode": {
+    "explicit_counts": [0, 3, 5],
+    "trial_seconds": 10.0,
+    "zero_count_meaning": "no deliberate continuous blink command; natural isolated blinks allowed",
+    "overlapping_marker_rejected": true,
+    "requires_music": false,
+    "requires_alpha_baseline": false,
+    "requires_frozen_blink_baseline": true,
+    "audio_actions_enabled": false,
+    "recommended_minimum_trials_per_class": 20
+  },
+  "current_evidence": {
+    "labelled_session": "20260718_161609_fdae23df877c",
+    "overall": "10/12",
+    "zero_command": "1/1",
+    "three_blink": "2/4",
+    "five_blink": "7/7",
+    "wrong_commands": 0,
+    "limitation": "EEG3/EEG4 baseline was estimated retrospectively because v1.0.11 stored only EEG1/EEG2 calibration; fresh v1.0.13 prospective trials remain required."
+  }
+}

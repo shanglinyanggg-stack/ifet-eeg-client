@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from 'vitest';
-import { defaultSettings, loadSettings, saveSettings, themeOptions } from './settings';
+import { defaultSettings, eegScaleOptions, eegTimeWindowOptions, loadSettings, saveSettings, themeOptions } from './settings';
 
 describe('settings persistence', () => {
   beforeEach(() => {
@@ -13,6 +13,10 @@ describe('settings persistence', () => {
     expect(defaultSettings.eeg.scale).toBe('auto');
     expect(defaultSettings.eeg.timeWindowSeconds).toBe('auto');
     expect(defaultSettings.eeg.bandpassEnabled).toBe(false);
+    expect(defaultSettings.sleepMusic.autoMode).toBe(true);
+    expect(defaultSettings.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8765');
+    expect(defaultSettings.sleepMusic.libraryTracks).toHaveLength(5);
+    expect(defaultSettings.sleepMusic.tracks).toHaveLength(0);
   });
 
   test('offers four dashboard themes', () => {
@@ -26,6 +30,13 @@ describe('settings persistence', () => {
     ]);
   });
 
+  test('offers preset EEG scale and time window choices with auto defaults', () => {
+    expect(eegScaleOptions[0]).toEqual({ value: 'auto', label: 'auto' });
+    expect(eegScaleOptions.map((option) => option.value)).toContain('100');
+    expect(eegTimeWindowOptions[0]).toEqual({ value: 'auto', label: 'auto' });
+    expect(eegTimeWindowOptions.map((option) => option.value)).toContain('10');
+  });
+
   test('round-trips settings through localStorage', () => {
     saveSettings({
       ...defaultSettings,
@@ -37,6 +48,14 @@ describe('settings persistence', () => {
         selectedChannel: 'eeg3',
         scale: 120,
         timeWindowSeconds: 8
+      },
+      sleepMusic: {
+        ...defaultSettings.sleepMusic,
+        tracks: [
+          { id: 'track-1', name: 'Sleep One', path: 'C:\\Music\\sleep-one.mp3' }
+        ],
+        selectedTrackId: 'track-1',
+        baseVolume: 0.5
       }
     });
 
@@ -48,5 +67,30 @@ describe('settings persistence', () => {
     expect(loaded.eeg.selectedChannel).toBe('eeg3');
     expect(loaded.eeg.scale).toBe(120);
     expect(loaded.eeg.timeWindowSeconds).toBe(8);
+    expect(loaded.sleepMusic.selectedTrackId).toBe('track-1');
+    expect(loaded.sleepMusic.tracks).toHaveLength(1);
+    expect(loaded.sleepMusic.baseVolume).toBe(0.5);
+  });
+
+  test('merges older saved settings with new sleep defaults', () => {
+    localStorage.setItem('ifet-eeg-client-settings', JSON.stringify({
+      sleepMusic: {
+        enabled: false,
+        tracks: Array.from({ length: 5 }, (_, index) => ({
+          id: `track-${index}`,
+          name: `Track ${index}`,
+          path: `C:\\Music\\track-${index}.mp3`
+        }))
+      }
+    }));
+
+    const loaded = loadSettings();
+
+    expect(loaded.sleepMusic.enabled).toBe(false);
+    expect(loaded.sleepMusic.autoMode).toBe(true);
+    expect(loaded.sleepMusic.minimumCoverage).toBe(0.6);
+    expect(loaded.sleepMusic.tracks).toHaveLength(5);
+    expect(loaded.sleepMusic.libraryTracks).toHaveLength(10);
+    expect(loaded.sleepMusic.libraryTracks.some((track) => track.id === 'builtin-star-alpha')).toBe(true);
   });
 });

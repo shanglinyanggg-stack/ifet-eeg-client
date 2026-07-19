@@ -1,9 +1,11 @@
 use crate::models::{DeviceInfo, SampleEvent};
-use crate::protocol::parse_packet;
+use crate::protocol::PacketStreamDecoder;
 use anyhow::{anyhow, Result};
-use btleplug::api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType};
+use btleplug::api::{
+    Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
+};
 use btleplug::platform::{Adapter, Manager, Peripheral};
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use futures::StreamExt;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -53,7 +55,9 @@ impl BleManagerState {
             let Some(props) = peripheral.properties().await? else {
                 continue;
             };
-            let name = props.local_name.unwrap_or_else(|| "(未命名设备)".to_string());
+            let name = props
+                .local_name
+                .unwrap_or_else(|| "(未命名设备)".to_string());
             // 0 dBm 会被误认为信号极强，未上报时用 i16::MIN 占位
             let rssi = props.rssi.unwrap_or(i16::MIN);
             devices.push(DeviceInfo {
@@ -100,18 +104,43 @@ impl BleManagerState {
         let recorder = Arc::clone(&self.recorder);
         let task_app = app.clone();
         let notify_task = tokio::spawn(async move {
+            let mut decoder = PacketStreamDecoder::default();
+            let mut next_sample_timestamp: Option<chrono::DateTime<Utc>> = None;
             while let Some(notification) = notifications.next().await {
                 if notification.uuid != PPG_TX_UUID {
                     continue;
                 }
-                if let Some(packet) = parse_packet(&notification.value) {
-                    let timestamp = Utc::now().to_rfc3339();
+                let rows = decoder.push(&notification.value);
+                if rows.is_empty() {
+                    continue;
+                }
+                let now = Utc::now();
+                if next_sample_timestamp.as_ref().is_some_and(|next| {
+                    now.signed_duration_since(next.clone()).num_milliseconds() > 2_000
+                }) {
+                    next_sample_timestamp = Some(now);
+                }
+                for row in rows {
+                    let sample_timestamp = next_sample_timestamp.clone().unwrap_or(now);
+                    next_sample_timestamp =
+                        Some(sample_timestamp + ChronoDuration::milliseconds(10));
+                    let timestamp = sample_timestamp.to_rfc3339();
                     let event = SampleEvent {
                         timestamp: timestamp.clone(),
-                        packet: packet.clone(),
+                        valid: row.valid,
+                        device_sequence: row.device_sequence,
+                        packet: row.packet.clone(),
                     };
                     let _ = task_app.emit("ble://sample", &event);
-                    if let Err(error) = write_record(&recorder, &timestamp, &packet).await {
+                    if let Err(error) = write_record(
+                        &recorder,
+                        &timestamp,
+                        row.valid,
+                        row.device_sequence,
+                        &row.packet,
+                    )
+                    .await
+                    {
                         let _ = task_app.emit(
                             "ble://status",
                             crate::models::StatusEvent {
@@ -168,11 +197,19 @@ impl BleManagerState {
         let (peripheral, write_char) = {
             let inner = self.inner.lock().await;
             (
-                inner.peripheral.clone().ok_or_else(|| anyhow!("尚未连接设备"))?,
-                inner.write_char.clone().ok_or_else(|| anyhow!("设备缺少写入特征"))?,
+                inner
+                    .peripheral
+                    .clone()
+                    .ok_or_else(|| anyhow!("尚未连接设备"))?,
+                inner
+                    .write_char
+                    .clone()
+                    .ok_or_else(|| anyhow!("设备缺少写入特征"))?,
             )
         };
-        peripheral.write(&write_char, &bytes, WriteType::WithoutResponse).await?;
+        peripheral
+            .write(&write_char, &bytes, WriteType::WithoutResponse)
+            .await?;
         Ok(())
     }
 
@@ -189,7 +226,7 @@ impl BleManagerState {
         let mut writer = BufWriter::new(file);
         writeln!(
             writer,
-            "time,seq,ir1,red1,green1,ir2,red2,green2,accX,accY,accZ,eeg1,eeg2,eeg3,eeg4,flag"
+            "time,seq,ir1,red1,green1,ir2,red2,green2,accX,accY,accZ,eeg1,eeg2,eeg3,eeg4,flag,valid,deviceSeq"
         )?;
         writer.flush()?;
 
@@ -266,7 +303,8 @@ fn parse_hex(raw: &str) -> Result<Vec<u8>> {
         if part.is_empty() {
             continue;
         }
-        let value = u8::from_str_radix(part, 16).map_err(|_| anyhow!("命令包含非法十六进制字节"))?;
+        let value =
+            u8::from_str_radix(part, 16).map_err(|_| anyhow!("命令包含非法十六进制字节"))?;
         bytes.push(value);
     }
     if bytes.is_empty() {
@@ -278,6 +316,8 @@ fn parse_hex(raw: &str) -> Result<Vec<u8>> {
 async fn write_record(
     recorder: &Arc<Mutex<Option<Recorder>>>,
     timestamp: &str,
+    valid: bool,
+    device_sequence: Option<u8>,
     packet: &crate::models::DecodedPacket,
 ) -> Result<()> {
     let mut recorder = recorder.lock().await;
@@ -288,9 +328,12 @@ async fn write_record(
     let eeg = packet.eeg.as_ref();
     writeln!(
         recording.writer,
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         timestamp,
-        packet.sequence.map(|value| value.to_string()).unwrap_or_default(),
+        packet
+            .sequence
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
         packet.ppg.ir1,
         packet.ppg.red1,
         packet.ppg.green1,
@@ -304,7 +347,13 @@ async fn write_record(
         eeg.map(|value| value.eeg2.to_string()).unwrap_or_default(),
         eeg.map(|value| value.eeg3.to_string()).unwrap_or_default(),
         eeg.map(|value| value.eeg4.to_string()).unwrap_or_default(),
-        eeg.and_then(|value| value.flag).map(|value| value.to_string()).unwrap_or_default()
+        eeg.and_then(|value| value.flag)
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        valid,
+        device_sequence
+            .map(|value| value.to_string())
+            .unwrap_or_default()
     )?;
     // 定时 flush，避免每个样本都触发系统调用拖垮采集线程
     if recording.last_flush.elapsed() >= FLUSH_INTERVAL {

@@ -9,6 +9,9 @@ dist-ssr/
 src-tauri/target/
 src-tauri/target-codex/
 
+# 算法 exe 构建产物（可用 scripts/build-windows-algorithm.ps1 重新生成，不入库）
+src-tauri/resources/*/runtime/
+
 # vite cache
 *.tsbuildinfo
 .vite/
@@ -37,3 +40,7 @@ Thumbs.db
 
 # Codex isolated worktrees
 .worktrees/
+
+# Python bytecode
+__pycache__/
+*.pyc

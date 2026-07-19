@@ -22,8 +22,8 @@ export function BandShareChart({ shares, colors }: BandShareChartProps) {
         <h2>频带占比</h2>
       </div>
       <div className="share-body">
-        <div className="donut" style={{ background }}>
-          <div className="donut-core">{hasEnergy ? 'EEG' : '0%'}</div>
+        <div className="donut" style={{ background }} aria-label="频带能量占比饼图">
+          <span className="donut-core">EEG</span>
         </div>
         <ul className="share-list" aria-label="频带占比明细">
           {shares.map((share) => (

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "iFET EEG Client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.ifet.eeg-client",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -20,12 +20,19 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; img-src 'self' data:; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "resources/SleepStagingAlgorithm_PC_v1.2.0/**/*"
+    ],
     "icon": [
       "icons/icon.ico"
     ]

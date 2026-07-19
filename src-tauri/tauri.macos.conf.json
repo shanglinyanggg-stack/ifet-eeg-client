@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "title": "iFET EEG Client",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1080,
+        "minHeight": 720
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "category": "HealthcareAndFitness",
+    "resources": {
+      "target/macos-resources/SleepStagingAlgorithm_PC_v1.2.0/": "resources/SleepStagingAlgorithm_PC_v1.2.0/"
+    },
+    "icon": ["icons/icon.icns"],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "bundleName": "iFET EEG Client",
+      "hardenedRuntime": true,
+      "infoPlist": "Info.plist"
+    }
+  }
+}

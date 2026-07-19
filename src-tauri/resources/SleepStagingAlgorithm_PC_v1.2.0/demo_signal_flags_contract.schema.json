@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "headset-demo-flags/v7",
+  "title": "Headset demo signal flags v7",
+  "type": "object",
+  "required": ["schema_version", "timestamp_ms", "action_flags", "state_flags", "state", "telemetry", "events"],
+  "properties": {
+    "schema_version": {"const": "headset-demo-flags/v7"},
+    "timestamp_ms": {"type": "integer", "minimum": 0},
+    "session_id": {"type": ["string", "null"]},
+    "source_timestamp": {"type": ["string", "null"]},
+    "action_flags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "PLAY_MUSIC_ALPHA",
+          "LOWER_VOLUME_ALPHA_DECAY",
+          "BLINK_3",
+          "BLINK_5",
+          "VOLUME_DOWN_3_BLINKS",
+          "VOLUME_UP_5_BLINKS"
+        ]
+      }
+    },
+    "state_flags": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "state": {
+      "type": "object",
+      "required": [
+        "alpha_present",
+        "calibration_complete",
+        "calibration_progress",
+        "closed_eye_calibration_complete",
+        "closed_eye_calibration_progress",
+        "blink_calibration_complete",
+        "blink_calibration_progress",
+        "blink_interaction_enabled",
+        "blink_count_pending",
+        "blink_dual_channel_required",
+        "blink_baseline_stale"
+      ],
+      "properties": {
+        "alpha_present": {"type": "boolean"},
+        "calibration_complete": {"type": "boolean"},
+        "calibration_progress": {"type": "number", "minimum": 0, "maximum": 1},
+        "closed_eye_calibration_complete": {"type": "boolean"},
+        "closed_eye_calibration_progress": {"type": "number", "minimum": 0, "maximum": 1},
+        "blink_calibration_complete": {"type": "boolean"},
+        "blink_calibration_progress": {"type": "number", "minimum": 0, "maximum": 1},
+        "blink_calibration_status": {"enum": ["idle", "running", "complete", "failed"]},
+        "blink_calibration_failure_reason": {"type": ["string", "null"]},
+        "blink_interaction_enabled": {"type": "boolean"},
+        "blink_count_pending": {"type": "integer", "minimum": 0, "maximum": 5},
+        "blink_dual_channel_required": {"const": true},
+        "blink_baseline_stale": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "telemetry": {
+      "type": "object",
+      "required": [
+        "alpha_ratio",
+        "alpha_score",
+        "alpha_level",
+        "alpha_step",
+        "alpha_step_count",
+        "alpha_volume_mode",
+        "recommended_volume",
+        "adaptive_baseline_updates",
+        "signal_quality",
+        "selected_alpha_channels",
+        "alpha_channel_weights",
+        "alpha_channel_switches",
+        "blink_adaptive_baseline_updates",
+        "blink_single_channel_rejections",
+        "blink_enabled_channel_pairs",
+        "blink_invalid_gap_rejections",
+        "blink_baseline_health_checks",
+        "blink_gap_recoveries"
+      ],
+      "properties": {
+        "alpha_ratio": {"type": ["number", "null"], "minimum": 0},
+        "alpha_score": {"type": ["number", "null"]},
+        "alpha_level": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "alpha_step": {"type": "integer", "minimum": 0},
+        "alpha_step_count": {"type": "integer", "minimum": 0},
+        "alpha_volume_mode": {"enum": ["3", "10", "20", "smooth"]},
+        "recommended_volume": {"type": "number", "minimum": 0, "maximum": 1},
+        "open_eye_alpha_baseline": {"type": ["number", "null"]},
+        "closed_eye_alpha_reference": {"type": ["number", "null"]},
+        "adaptive_baseline_updates": {"type": "integer", "minimum": 0},
+        "signal_quality": {"type": "number", "minimum": 0, "maximum": 1},
+        "selected_alpha_channels": {"type": "array", "maxItems": 2, "items": {"type": "integer", "minimum": 1, "maximum": 2}},
+        "alpha_channel_weights": {"type": "array", "maxItems": 2, "items": {"type": "number", "minimum": 0, "maximum": 1}},
+        "alpha_channel_switches": {"type": "integer", "minimum": 0},
+        "blink_strength_z": {"type": ["number", "null"]},
+        "blink_width_seconds": {"type": ["number", "null"], "minimum": 0},
+        "blink_adaptive_baseline_updates": {"type": "integer", "minimum": 0},
+        "blink_single_channel_rejections": {"type": "integer", "minimum": 0},
+        "blink_calibration_peak_count": {"type": "integer", "minimum": 0},
+        "blink_calibration_consensus_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+        "blink_threshold_robust_z": {"type": ["number", "null"], "minimum": 0},
+        "blink_rearm_robust_z": {"type": ["number", "null"], "minimum": 0},
+        "blink_motion_std_threshold": {"type": ["number", "null"], "minimum": 0},
+        "blink_enabled_channel_pairs": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {"type": "integer", "minimum": 1, "maximum": 4}
+          }
+        },
+        "blink_invalid_gap_rejections": {"type": "integer", "minimum": 0},
+        "blink_baseline_health_checks": {"type": "integer", "minimum": 0},
+        "blink_gap_recoveries": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["flag", "time_seconds", "value"],
+        "properties": {
+          "flag": {"type": "string"},
+          "time_seconds": {"type": "number", "minimum": 0},
+          "value": {"type": ["number", "integer", "null"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -11,6 +11,7 @@ const options = [
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe('ThemedSelect', () => {
@@ -53,5 +54,30 @@ describe('ThemedSelect', () => {
     fireEvent.keyDown(trigger, { key: 'Enter' });
 
     expect(onChange).toHaveBeenCalledWith('clinical-light');
+  });
+
+  test('opens above the trigger when there is not enough room below', () => {
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 720 });
+    render(<ThemedSelect ariaLabel="界面主题" value="neuro-dark" options={options} onChange={vi.fn()} />);
+
+    const trigger = screen.getByRole('combobox', { name: '界面主题' });
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      x: 760,
+      y: 650,
+      top: 650,
+      right: 940,
+      bottom: 688,
+      left: 760,
+      width: 180,
+      height: 38,
+      toJSON: () => ({})
+    } as DOMRect);
+
+    fireEvent.click(trigger);
+
+    const menu = screen.getByRole('listbox', { name: '界面主题' });
+    expect(menu).toHaveAttribute('data-placement', 'above');
+    expect(menu.style.getPropertyValue('--select-bottom')).toBe('76px');
+    expect(menu.style.getPropertyValue('--select-max-height')).toBe('260px');
   });
 });
