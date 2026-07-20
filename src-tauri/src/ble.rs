@@ -54,8 +54,10 @@ impl BleManagerState {
         let peripherals = adapter.peripherals().await?;
         let mut devices = Vec::new();
         for peripheral in peripherals {
-            let Some(props) = peripheral.properties().await? else {
-                continue;
+            let props = match peripheral.properties().await {
+                Ok(Some(props)) => props,
+                // 系统缓存中偶尔会残留已离线外设，不能让单个读取错误终止持续扫描。
+                Ok(None) | Err(_) => continue,
             };
             let name = props
                 .local_name
@@ -86,23 +88,40 @@ impl BleManagerState {
 
         let adapter = self.ensure_adapter().await?;
         let peripheral = self.find_peripheral(&adapter, &device_id).await?;
-        peripheral.connect().await?;
-        peripheral.discover_services().await?;
+        let setup = async {
+            tokio::time::timeout(Duration::from_secs(12), peripheral.connect())
+                .await
+                .map_err(|_| anyhow!("连接设备超时"))??;
+            peripheral.discover_services().await?;
 
-        let chars = peripheral.characteristics();
-        let write_char = chars
-            .iter()
-            .find(|ch| ch.service_uuid == PPG_SERVICE_UUID && ch.uuid == PPG_RX_UUID)
-            .cloned()
-            .ok_or_else(|| anyhow!("设备缺少写入特征 0xFFF5"))?;
-        let notify_char = chars
-            .iter()
-            .find(|ch| ch.service_uuid == PPG_SERVICE_UUID && ch.uuid == PPG_TX_UUID)
-            .cloned()
-            .ok_or_else(|| anyhow!("设备缺少通知特征 0xFFF9"))?;
+            let chars = peripheral.characteristics();
+            let write_char = chars
+                .iter()
+                .find(|ch| ch.service_uuid == PPG_SERVICE_UUID && ch.uuid == PPG_RX_UUID)
+                .cloned()
+                .ok_or_else(|| anyhow!("设备缺少写入特征 0xFFF5"))?;
+            let notify_char = chars
+                .iter()
+                .find(|ch| ch.service_uuid == PPG_SERVICE_UUID && ch.uuid == PPG_TX_UUID)
+                .cloned()
+                .ok_or_else(|| anyhow!("设备缺少通知特征 0xFFF9"))?;
 
-        peripheral.subscribe(&notify_char).await?;
-        let mut notifications = peripheral.notifications().await?;
+            peripheral.subscribe(&notify_char).await?;
+            let notifications = peripheral.notifications().await?;
+            Ok::<_, anyhow::Error>((write_char, notifications))
+        }
+        .await;
+
+        let (write_char, mut notifications) = match setup {
+            Ok(value) => value,
+            Err(error) => {
+                // 持续扫描会反复尝试候选设备，失败时必须释放半连接状态。
+                if peripheral.is_connected().await.unwrap_or(false) {
+                    let _ = peripheral.disconnect().await;
+                }
+                return Err(error);
+            }
+        };
         let recorder = Arc::clone(&self.recorder);
         let task_app = app.clone();
         let notify_task = tokio::spawn(async move {

@@ -79,6 +79,7 @@ import { SampleBatcher } from './domain/sample-batcher';
 import { filterPpgDisplayWindow } from './domain/debug-signal';
 import type { SleepDeltaArtifactContext } from './domain/delta-artifact-filter';
 import { matchedFilterSleepTheta } from './domain/theta-matched-filter';
+import { connectionCandidates, mergeDiscoveredDevices } from './domain/ble-discovery';
 import {
   channelColors,
   channelLabels,
@@ -306,6 +307,10 @@ export default function App() {
   });
   const [sleepRuntime, setSleepRuntime] = useState<SleepStagingRuntimeInfo | null>(null);
   const lastConnectedDevice = useRef('');
+  const selectedDeviceIdRef = useRef('');
+  const connectedRef = useRef(false);
+  const scanSession = useRef(0);
+  const scanActive = useRef(false);
   const reconnectAttempt = useRef(0);
   const settingsRef = useRef(settings);
   const lastBlinkSampleTimestamp = useRef(0);
@@ -324,6 +329,24 @@ export default function App() {
     settingsRef.current = settings;
     saveSettings(settings);
   }, [settings]);
+
+  useEffect(() => {
+    selectedDeviceIdRef.current = selectedDeviceId;
+  }, [selectedDeviceId]);
+
+  useEffect(() => {
+    connectedRef.current = connected;
+    if (connected && scanActive.current) {
+      scanActive.current = false;
+      scanSession.current += 1;
+      setScanning(false);
+    }
+  }, [connected]);
+
+  useEffect(() => () => {
+    scanActive.current = false;
+    scanSession.current += 1;
+  }, []);
 
   useEffect(() => {
     const handleResize = () => setViewport(getViewportSize());
@@ -800,30 +823,105 @@ export default function App() {
     wearableMetrics
   ]);
 
+  const stopContinuousScan = (message?: string) => {
+    if (!scanActive.current) return;
+    scanActive.current = false;
+    scanSession.current += 1;
+    setScanning(false);
+    if (message) setStatus(message);
+  };
+
+  const finishConnection = (device: DeviceInfo) => {
+    scanActive.current = false;
+    scanSession.current += 1;
+    selectedDeviceIdRef.current = device.id;
+    connectedRef.current = true;
+    lastConnectedDevice.current = device.id;
+    reconnectAttempt.current = 0;
+    setSelectedDeviceId(device.id);
+    setConnected(true);
+    setScanning(false);
+    setStatus(`设备已连接：${device.name}`);
+    startWarmup();
+  };
+
   const scanDevices = async () => {
+    if (scanActive.current) {
+      stopContinuousScan('已停止扫描');
+      return;
+    }
+    if (connectedRef.current) {
+      setStatus('设备已连接，无需扫描');
+      return;
+    }
+
+    scanActive.current = true;
+    const session = ++scanSession.current;
     setScanning(true);
-    setStatus('正在扫描 BLE 设备');
+    setStatus('正在持续扫描 BLE 设备，连接成功后自动停止');
     try {
-      const result = await invokeCommand<DeviceInfo[]>('scan_devices');
-      setDevices(result);
-      setStatus(`发现 ${result.length} 个设备`);
-    } catch (error) {
-      setStatus(String(error));
+      while (scanActive.current && scanSession.current === session && !connectedRef.current) {
+        let discovered: DeviceInfo[];
+        try {
+          discovered = await invokeCommand<DeviceInfo[]>('scan_devices');
+        } catch (error) {
+          if (!scanActive.current || scanSession.current !== session) break;
+          setStatus(`扫描暂时失败：${String(error)}；1 秒后自动重试`);
+          await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+          continue;
+        }
+        if (!scanActive.current || scanSession.current !== session || connectedRef.current) break;
+
+        setDevices((current) => mergeDiscoveredDevices(current, discovered));
+        const selectedId = selectedDeviceIdRef.current;
+        const candidates = connectionCandidates(discovered, selectedId);
+
+        if (candidates.length === 0) {
+          setStatus(discovered.length > 1
+            ? `发现 ${discovered.length} 个设备，请选择目标设备；扫描将继续`
+            : '尚未发现头戴设备，正在继续扫描');
+          continue;
+        }
+
+        let lastError: unknown = null;
+        for (const device of candidates) {
+          if (!scanActive.current || scanSession.current !== session || connectedRef.current) break;
+          setStatus(`发现 ${device.name}，正在自动连接`);
+          try {
+            await invokeCommand('connect_device', { deviceId: device.id });
+            // 后端已经完成连接时，即便用户恰好点击“停止扫描”，也必须同步真实连接状态。
+            finishConnection(device);
+            return;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+
+        if (scanActive.current && scanSession.current === session && !connectedRef.current) {
+          const reason = lastError ? `：${String(lastError)}` : '';
+          setStatus(`连接未成功${reason}；正在继续扫描`);
+        }
+      }
     } finally {
-      setScanning(false);
+      if (scanSession.current === session) {
+        scanActive.current = false;
+        setScanning(false);
+      }
     }
   };
 
   const connectDevice = async () => {
     if (!selectedDeviceId) return;
+    stopContinuousScan();
     try {
       setStatus('正在连接设备');
       await invokeCommand('connect_device', { deviceId: selectedDeviceId });
-      lastConnectedDevice.current = selectedDeviceId;
-      reconnectAttempt.current = 0;
-      setConnected(true);
-      setStatus('设备已连接');
-      startWarmup();
+      const device = devices.find((item) => item.id === selectedDeviceId) ?? {
+        id: selectedDeviceId,
+        name: selectedDeviceId,
+        rssi: Number.MIN_SAFE_INTEGER
+      };
+      finishConnection(device);
     } catch (error) {
       setStatus(String(error));
     }
@@ -831,6 +929,7 @@ export default function App() {
 
   const disconnectDevice = async () => {
     try {
+      stopContinuousScan();
       // 用户主动断开时清除自动重连上下文
       lastConnectedDevice.current = '';
       if (reconnectTimer.current) {
@@ -1843,7 +1942,13 @@ export default function App() {
           status={status}
           recordPath={recordPath}
           onCommandTextChange={setCommandText}
-          onSelectedDeviceChange={setSelectedDeviceId}
+          onSelectedDeviceChange={(deviceId) => {
+            selectedDeviceIdRef.current = deviceId;
+            setSelectedDeviceId(deviceId);
+            if (scanActive.current && deviceId) {
+              setStatus('已选择目标设备，将在本轮扫描后自动连接');
+            }
+          }}
           onScan={scanDevices}
           onConnect={connectDevice}
           onDisconnect={disconnectDevice}

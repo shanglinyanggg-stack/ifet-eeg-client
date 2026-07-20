@@ -66,9 +66,14 @@ export function DevicePanel({
         </div>
       </div>
       <div className="device-group">
-        <button className="icon-button" type="button" onClick={onScan} disabled={scanning} title="扫描 BLE">
+        <button
+          className={`icon-button ${scanning ? 'danger' : ''}`}
+          type="button"
+          onClick={onScan}
+          title={scanning ? '停止持续扫描' : '持续扫描并连接 BLE'}
+        >
           {scanning ? <RefreshCcw size={18} className="spin" /> : <Bluetooth size={18} />}
-          <span>{scanning ? '扫描中' : '扫描'}</span>
+          <span>{scanning ? '停止扫描' : '扫描'}</span>
         </button>
         <ThemedSelect
           className="device-select"
@@ -79,7 +84,7 @@ export function DevicePanel({
         />
       </div>
       <div className="device-group">
-        <button className="icon-button primary" type="button" onClick={onConnect} disabled={!selectedDeviceId || connected}>
+        <button className="icon-button primary" type="button" onClick={onConnect} disabled={!selectedDeviceId || connected || scanning}>
           <Radio size={18} />
           <span>连接</span>
         </button>

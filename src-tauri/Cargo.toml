@@ -1,6 +1,6 @@
 [package]
 name = "ifet-eeg-client"
-version = "0.2.11"
+version = "0.2.12"
 description = "iFET EEG desktop BLE client"
 authors = ["iFET"]
 edition = "2021"

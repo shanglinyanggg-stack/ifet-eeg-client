@@ -30,4 +30,32 @@ describe('DevicePanel connection identity', () => {
     expect(screen.getByText('已连接：iFET Headset')).toBeInTheDocument();
     expect(screen.getByText('AA:BB:CC:DD · 设备已连接')).toBeInTheDocument();
   });
+
+  test('lets the user stop an active continuous scan', () => {
+    const onScan = vi.fn();
+    render(
+      <DevicePanel
+        devices={[]}
+        connected={false}
+        scanning
+        recording={false}
+        selectedDeviceId=""
+        commandText=""
+        status="正在持续扫描"
+        recordPath=""
+        onCommandTextChange={vi.fn()}
+        onSelectedDeviceChange={vi.fn()}
+        onScan={onScan}
+        onConnect={vi.fn()}
+        onDisconnect={vi.fn()}
+        onSend={vi.fn()}
+        onToggleRecording={vi.fn()}
+      />
+    );
+
+    const stopButton = screen.getByRole('button', { name: '停止扫描' });
+    expect(stopButton).toBeEnabled();
+    stopButton.click();
+    expect(onScan).toHaveBeenCalledTimes(1);
+  });
 });
