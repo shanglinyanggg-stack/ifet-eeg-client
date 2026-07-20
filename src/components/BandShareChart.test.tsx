@@ -11,10 +11,10 @@ const shares = [
 ];
 
 const colors = {
-  Delta: '#60a5fa',
-  Theta: '#a78bfa',
-  Alpha: '#22c55e',
-  Beta: '#f59e0b'
+  Delta: '#1d4ed8',
+  Theta: '#7dd3fc',
+  Alpha: '#f59e0b',
+  Beta: '#ef4444'
 };
 
 afterEach(() => {

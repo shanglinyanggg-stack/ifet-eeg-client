@@ -82,10 +82,10 @@ export class RingBuffer<T> {
 
 export function createEegBands(): EegBandDefinition[] {
   return [
-    { key: 'delta', label: 'Delta', low: 0.5, high: 2, color: '#60a5fa' },
-    { key: 'theta', label: 'Theta', low: 4, high: 7, color: '#a78bfa' },
-    { key: 'alpha', label: 'Alpha', low: 8, high: 13, color: '#22c55e' },
-    { key: 'beta', label: 'Beta', low: 13, high: 30, color: '#f59e0b' }
+    { key: 'delta', label: 'Delta', low: 0.5, high: 2, color: '#1d4ed8' },
+    { key: 'theta', label: 'Theta', low: 4, high: 7, color: '#7dd3fc' },
+    { key: 'alpha', label: 'Alpha', low: 8, high: 13, color: '#f59e0b' },
+    { key: 'beta', label: 'Beta', low: 13, high: 30, color: '#ef4444' }
   ];
 }
 
@@ -103,9 +103,9 @@ export interface PureBandDefinition {
 
 export function createPureBands(): PureBandDefinition[] {
   return [
-    { key: 'delta', label: 'Delta', symbol: 'δ', low: 0.5, high: 2, color: '#60a5fa' },
-    { key: 'alpha', label: 'Alpha', symbol: 'α', low: 8, high: 13, color: '#34d399' },
-    { key: 'beta', label: 'Beta', symbol: 'β', low: 13, high: 30, color: '#fbbf24' },
+    { key: 'delta', label: 'Delta', symbol: 'δ', low: 0.5, high: 2, color: '#1d4ed8' },
+    { key: 'alpha', label: 'Alpha', symbol: 'α', low: 8, high: 13, color: '#f59e0b' },
+    { key: 'beta', label: 'Beta', symbol: 'β', low: 13, high: 30, color: '#ef4444' },
     { key: 'gamma', label: 'Gamma', symbol: 'γ', low: 30, high: 45, color: '#f472b6' }
   ];
 }
