@@ -22,7 +22,7 @@ import { calculateSleepMetrics, type SleepMetrics } from '../domain/sleep-metric
 import { applySlowWaveGate, AdaptiveSlowWaveGate } from '../domain/adaptive-slow-wave';
 import { cleanSleepDeltaWave, type SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
 import { applyRobustMedianReference } from '../domain/eeg-reference';
-import { cleanSleepThetaWave } from '../domain/theta-artifact-filter';
+import { matchedFilterSleepTheta } from '../domain/theta-matched-filter';
 import { translateAlgorithmState } from '../domain/sleep-demo-signal';
 import {
   eegScaleOptions,
@@ -194,13 +194,13 @@ export function PureWaveformView({
       const cleaned = band.key === 'delta'
         ? cleanSleepDeltaWave(filtered, analysisValues, EEG_SAMPLE_RATE, deltaArtifactContext)
         : band.key === 'theta'
-          ? cleanSleepThetaWave(
+          ? matchedFilterSleepTheta(
             filtered,
             analysisValues,
             EEG_SAMPLE_RATE,
             deltaArtifactContext,
-            { lowHz: range.low }
-          )
+            { lowHz: range.low, highHz: range.high }
+          ).values
           : filtered;
       return {
         label: band.label,

@@ -78,7 +78,7 @@ import {
 import { SampleBatcher } from './domain/sample-batcher';
 import { filterPpgDisplayWindow } from './domain/debug-signal';
 import type { SleepDeltaArtifactContext } from './domain/delta-artifact-filter';
-import { cleanSleepThetaWave } from './domain/theta-artifact-filter';
+import { matchedFilterSleepTheta } from './domain/theta-matched-filter';
 import {
   channelColors,
   channelLabels,
@@ -698,7 +698,9 @@ export default function App() {
         z: visibleBuffers.accZ
       },
       blinkArtifactActive: response?.state_flags.includes('BLINK') || strengthTriggered,
-      blinkBaselineStale: response?.state.blink_baseline_stale ?? false
+      blinkBaselineStale: response?.state.blink_baseline_stale ?? false,
+      blinkTemplateReady: response?.telemetry.blink_template_ready ?? false,
+      blinkTemplateCorrelation: response?.telemetry.blink_template_correlation ?? null
     };
   }, [sleepDemoService.lastResponse, visibleBuffers]);
 
@@ -713,7 +715,9 @@ export default function App() {
       eegChannels: [buffers.eeg1, buffers.eeg2, buffers.eeg3, buffers.eeg4],
       accelerometer: { x: buffers.accX, y: buffers.accY, z: buffers.accZ },
       blinkArtifactActive: response?.state_flags.includes('BLINK') || strengthTriggered,
-      blinkBaselineStale: response?.state.blink_baseline_stale ?? false
+      blinkBaselineStale: response?.state.blink_baseline_stale ?? false,
+      blinkTemplateReady: response?.telemetry.blink_template_ready ?? false,
+      blinkTemplateCorrelation: response?.telemetry.blink_template_correlation ?? null
     };
   }, [buffers, sleepDemoService.lastResponse]);
 
@@ -737,13 +741,13 @@ export default function App() {
         return {
           label: definition.label,
           values: definition.key === 'theta'
-            ? cleanSleepThetaWave(
+            ? matchedFilterSleepTheta(
               filtered,
               referenced,
               EEG_SAMPLE_RATE,
               spectralArtifactContext,
-              { lowHz: definition.low }
-            )
+              { lowHz: definition.low, highHz: definition.high }
+            ).values
             : filtered
         };
       });
@@ -2148,9 +2152,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8773;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8774;
   } catch {
-    return 8773;
+    return 8774;
   }
 }
 

@@ -38,7 +38,8 @@ interface FeatureVector {
 
 // First complete 10 s window, then ten 5 s updates: ready at about 60 s.
 const BASELINE_WINDOWS = 11;
-const UPDATE_INTERVAL_MS = 5_000;
+const UPDATE_INTERVAL_MS = 1_000;
+const BASELINE_UPDATE_INTERVAL_MS = 5_000;
 const MINIMUM_QUALITY = 0.6;
 const ALERT_MODEL_LIMIT = 0.45;
 const ALERT_SCORE_CEILING = 19;
@@ -58,6 +59,7 @@ export class QualityGatedWearableDrowsinessEstimator {
   private baseline: FeatureVector[] = [];
   private recentEvidence: number[] = [];
   private lastTimestamp = -Infinity;
+  private lastBaselineTimestamp = -Infinity;
   private lastSnapshot: WearableDrowsinessSnapshot | null = null;
 
   update(input: WearableDrowsinessInput): WearableDrowsinessSnapshot {
@@ -93,8 +95,10 @@ export class QualityGatedWearableDrowsinessEstimator {
     const mayLearnAlert = input.allowAlertBaselineUpdate === true
       || (input.allowAlertBaselineUpdate !== false
         && (modelProbability === null || modelProbability < ALERT_MODEL_LIMIT));
-    if (this.baseline.length < BASELINE_WINDOWS && mayLearnAlert) {
+    const baselineSampleDue = input.timestampMs - this.lastBaselineTimestamp >= BASELINE_UPDATE_INTERVAL_MS;
+    if (this.baseline.length < BASELINE_WINDOWS && mayLearnAlert && baselineSampleDue) {
       this.baseline.push(features);
+      this.lastBaselineTimestamp = input.timestampMs;
     }
 
     const baselineReady = this.baseline.length >= BASELINE_WINDOWS;
@@ -133,9 +137,10 @@ export class QualityGatedWearableDrowsinessEstimator {
       : Math.round(clamp01(combinedProbability) * 100);
 
     // Only clearly alert, high-quality windows may slowly refresh the baseline.
-    if (mayLearnAlert && featureProbability < 0.35) {
+    if (mayLearnAlert && featureProbability < 0.35 && baselineSampleDue) {
       this.baseline.push(features);
       if (this.baseline.length > 60) this.baseline.shift();
+      this.lastBaselineTimestamp = input.timestampMs;
     }
 
     return this.save({
@@ -156,6 +161,7 @@ export class QualityGatedWearableDrowsinessEstimator {
     this.baseline = [];
     this.recentEvidence = [];
     this.lastTimestamp = -Infinity;
+    this.lastBaselineTimestamp = -Infinity;
     this.lastSnapshot = null;
   }
 

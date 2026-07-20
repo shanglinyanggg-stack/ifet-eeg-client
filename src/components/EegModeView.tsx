@@ -14,7 +14,8 @@ import { calculateSleepMetrics, type SleepMetrics } from '../domain/sleep-metric
 import { applySlowWaveGate, AdaptiveSlowWaveGate } from '../domain/adaptive-slow-wave';
 import { cleanSleepDeltaWave, type SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
 import { applyRobustMedianReference } from '../domain/eeg-reference';
-import { cleanSleepThetaWave } from '../domain/theta-artifact-filter';
+import { compensateAwakeAperiodicSlope } from '../domain/band-share-compensation';
+import { matchedFilterSleepTheta } from '../domain/theta-matched-filter';
 import type { EegChannel, EegSettings } from '../domain/settings';
 import { WaveformCanvas, type WaveformSeries } from './WaveformCanvas';
 import { BandShareChart } from './BandShareChart';
@@ -36,6 +37,10 @@ interface EegModeViewProps {
 }
 
 const BAND_DEFINITIONS = createEegBands();
+
+interface AnalysisWaveformSeries extends WaveformSeries {
+  analysisValues?: TimedValue[];
+}
 
 export function EegModeView({
   channel,
@@ -62,18 +67,25 @@ export function EegModeView({
   const spindleValues = useSpindleFilter(channel, analysisValues, settings);
   const rawValues = useRawWaveformFilter(channel, values, settings);
   const rawScale = resolveScale(settings.scale, rawValues.map((item) => item.value));
-  const shareValues = computeShare(
-    bandSeries.map((band) => ({
-      label: band.label as BandShare['label'],
-      value: averageAbs(band.values)
-    }))
-  );
+  const shareValues = computeShare(compensateAwakeAperiodicSlope(
+    bandSeries.map((band, index) => {
+      const definition = BAND_DEFINITIONS[index];
+      const range = settings.bandRanges[definition.key] ?? definition;
+      return {
+        label: band.label as BandShare['label'],
+        value: averageAbs(band.analysisValues ?? band.values),
+        lowHz: range.low,
+        highHz: range.high
+      };
+    }),
+    realtimeStage
+  ));
   const bandColors = Object.fromEntries(bandSeries.map((band) => [band.label, band.color]));
   const sleepMetrics = useMemo(() => calculateSleepMetrics({
     rawValues: analysisValues,
     bands: bandSeries.map((band) => ({
       label: band.label as BandShare['label'],
-      values: band.values
+      values: band.analysisValues ?? band.values
     })),
     spindleValues
   }), [analysisValues, bandSeries, spindleValues]);
@@ -126,7 +138,7 @@ function useBandFilters(
   settings: EegSettings,
   realtimeStage: string,
   artifactContext?: SleepDeltaArtifactContext
-): WaveformSeries[] {
+): AnalysisWaveformSeries[] {
   const filters = useRef<StreamingFilterCache[]>([]);
   const slowWaveGate = useRef(new AdaptiveSlowWaveGate());
   if (filters.current.length !== definitions.length) {
@@ -146,22 +158,27 @@ function useBandFilters(
         notch: settings.notch
       })
     );
-    const cleaned = definition.key === 'delta'
+    const deltaCleaned = definition.key === 'delta'
       ? cleanSleepDeltaWave(filtered, values, EEG_SAMPLE_RATE, artifactContext)
-      : definition.key === 'theta'
-        ? cleanSleepThetaWave(filtered, values, EEG_SAMPLE_RATE, artifactContext, { lowHz: range.low })
-        : filtered;
+      : filtered;
     const displayValues = definition.key === 'delta'
-      ? applySlowWaveGate(cleaned, slowWaveGate.current.update(cleaned, {
+      ? applySlowWaveGate(deltaCleaned, slowWaveGate.current.update(deltaCleaned, {
         stage: realtimeStage,
         quiet: !artifactContext?.blinkArtifactActive,
         streamKey: `${channel}|${range.low}|${range.high}`
       }).weight)
-      : cleaned;
+      : filtered;
+    const analysisValues = definition.key === 'theta'
+      ? matchedFilterSleepTheta(filtered, values, EEG_SAMPLE_RATE, artifactContext, {
+        lowHz: range.low,
+        highHz: range.high
+      }).values
+      : displayValues;
     return {
       label: definition.label,
       color: definition.color,
-      values: displayValues
+      values: displayValues,
+      analysisValues
     };
   }), [artifactContext, channel, definitions, realtimeStage, settings.bandRanges, settings.notch, values]);
 }

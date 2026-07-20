@@ -9,6 +9,8 @@ export interface SleepDeltaArtifactContext {
   };
   blinkArtifactActive?: boolean;
   blinkBaselineStale?: boolean;
+  blinkTemplateReady?: boolean;
+  blinkTemplateCorrelation?: number | null;
 }
 
 /**

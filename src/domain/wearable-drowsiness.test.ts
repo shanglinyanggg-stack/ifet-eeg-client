@@ -90,4 +90,19 @@ describe('quality-gated wearable drowsiness trial', () => {
     expect(rejected.score).toBe(accepted.score);
     expect(rejected.source).toBe('quality-hold');
   });
+
+  test('refreshes the displayed score every second without shortening the sixty-second baseline', () => {
+    const estimator = new QualityGatedWearableDrowsinessEstimator();
+    const first = estimator.update({
+      metrics: metrics(0.15, 0.25, 0.35), timestampMs: 1_000,
+      modelProbability: 0.2, quality: 0.95
+    });
+    const refreshed = estimator.update({
+      metrics: metrics(0.2, 0.24, 0.3), timestampMs: 2_000,
+      modelProbability: 0.3, quality: 0.95
+    });
+
+    expect(refreshed).not.toBe(first);
+    expect(refreshed.baselineProgress).toBeCloseTo(1 / 11);
+  });
 });

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { applyRobustMedianReference } from '../src/domain/eeg-reference';
 import { createEegBands, FilterChain, type TimedValue } from '../src/domain/dsp';
-import { cleanSleepThetaWave } from '../src/domain/theta-artifact-filter';
+import { matchedFilterSleepTheta } from '../src/domain/theta-matched-filter';
 
 const recording = process.argv[2];
 if (!recording) throw new Error('Usage: vite-node scripts/replay-theta-recording.ts <recording.csv>');
@@ -64,7 +64,11 @@ const results = channels.slice(0, 2).map((selected, index) => {
   });
   const theta = bandOutputs.find((band) => band.key === 'theta');
   if (!theta) throw new Error('Theta band missing');
-  const cleanedTheta = cleanSleepThetaWave(theta.values, visibleRaw, 100, context, { lowHz: theta.low });
+  const matched = matchedFilterSleepTheta(theta.values, visibleRaw, 100, context, {
+    lowHz: theta.low,
+    highHz: theta.high
+  });
+  const cleanedTheta = matched.values;
   const powersBefore = Object.fromEntries(bandOutputs.map((band) => [band.key, power(band.values)]));
   const powersAfter = { ...powersBefore, theta: power(cleanedTheta) };
   const changed = cleanedTheta.filter((point, sample) => point.value !== theta.values[sample].value).length;
@@ -73,7 +77,10 @@ const results = channels.slice(0, 2).map((selected, index) => {
     thetaShareBefore: share(powersBefore.theta, powersBefore),
     thetaShareAfter: share(powersAfter.theta, powersAfter),
     thetaPowerReduction: percent(1 - powersAfter.theta / Math.max(powersBefore.theta, 1e-9)),
-    samplesBridged: `${changed}/${cleanedTheta.length}`
+    samplesAttenuated: `${changed}/${cleanedTheta.length}`,
+    rhythmicity: matched.rhythmicity.toFixed(3),
+    retainedAmplitude: percent(matched.retainedFraction),
+    artifactFraction: percent(matched.artifactFraction)
   };
 });
 

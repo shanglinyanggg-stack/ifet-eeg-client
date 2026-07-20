@@ -382,7 +382,7 @@ export function SettingsPanel({
               <Eye size={13} />眨眼音量控制
             </label>
             <p className="algorithm-consistency-note">
-              在线模式沿用旧自制版 Alpha 算法：音乐开启阈值由当前 Alpha 相对睁眼基线自适应计算。困意值可在 0.2.5 对照与可穿戴特征试验间切换；试验模式使用四通道中位参考、Theta IQR 伪迹抑制、60 秒清醒基线、质量门控和跨窗口频带比值，并与 PC 睡眠概率融合。清醒证据稳定时显示压缩在 0–19，连续困倦证据出现后恢复 20–100 的动态范围。
+              在线模式沿用旧自制版 Alpha 算法：音乐开启阈值由当前 Alpha 相对睁眼基线自适应计算。困意值可在 0.2.5 对照与可穿戴特征试验间切换；试验模式使用四通道中位参考、Theta 模板匹配伪迹抑制、60 秒清醒基线、质量门控和跨窗口频带比值，并与 PC 睡眠概率融合。清醒证据稳定时显示压缩在 0–19，连续困倦证据出现后恢复 20–100 的动态范围。
             </p>
             <div className="field-control">
               <span className="field-label">Alpha 音量模式</span>
@@ -589,7 +589,7 @@ export function SettingsPanel({
               <input
                 value={settings.sleepMusic.serviceEndpoint}
                 onChange={(event) => updateSleepMusic({ serviceEndpoint: event.target.value })}
-                placeholder="http://127.0.0.1:8773"
+                placeholder="http://127.0.0.1:8774"
               />
             </label>
             <div className="sleep-service-actions">
