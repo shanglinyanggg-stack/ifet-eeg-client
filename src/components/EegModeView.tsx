@@ -14,6 +14,7 @@ import { calculateSleepMetrics, type SleepMetrics } from '../domain/sleep-metric
 import { applySlowWaveGate, AdaptiveSlowWaveGate } from '../domain/adaptive-slow-wave';
 import { cleanSleepDeltaWave, type SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
 import { applyRobustMedianReference } from '../domain/eeg-reference';
+import { cleanSleepThetaWave } from '../domain/theta-artifact-filter';
 import type { EegChannel, EegSettings } from '../domain/settings';
 import { WaveformCanvas, type WaveformSeries } from './WaveformCanvas';
 import { BandShareChart } from './BandShareChart';
@@ -147,7 +148,9 @@ function useBandFilters(
     );
     const cleaned = definition.key === 'delta'
       ? cleanSleepDeltaWave(filtered, values, EEG_SAMPLE_RATE, artifactContext)
-      : filtered;
+      : definition.key === 'theta'
+        ? cleanSleepThetaWave(filtered, values, EEG_SAMPLE_RATE, artifactContext, { lowHz: range.low })
+        : filtered;
     const displayValues = definition.key === 'delta'
       ? applySlowWaveGate(cleaned, slowWaveGate.current.update(cleaned, {
         stage: realtimeStage,

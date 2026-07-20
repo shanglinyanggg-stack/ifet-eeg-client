@@ -184,7 +184,7 @@ export function useMusicPlayer({
         ...value,
         outputDeviceSupported: supported,
         outputDeviceError: requestPermission
-          ? `未取得音频权限。请到“系统设置 → 隐私与安全性 → 麦克风”允许 iFET EEG Client Sleep 0.2.9，然后重新点击“授权刷新”。${String(error)}`
+          ? `未取得音频权限。请到“系统设置 → 隐私与安全性 → 麦克风”允许 iFET EEG Client Sleep 0.2.10，然后重新点击“授权刷新”。${String(error)}`
           : '音频输出列表尚未授权，请点击“授权刷新”'
       }));
     } finally {

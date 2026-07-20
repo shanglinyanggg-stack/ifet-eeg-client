@@ -27,6 +27,7 @@ interface WearableDrowsinessInput {
   modelProbability?: number | null;
   quality?: number | null;
   allowAlertBaselineUpdate?: boolean;
+  awakeConfirmed?: boolean;
 }
 
 interface FeatureVector {
@@ -39,6 +40,8 @@ interface FeatureVector {
 const BASELINE_WINDOWS = 11;
 const UPDATE_INTERVAL_MS = 5_000;
 const MINIMUM_QUALITY = 0.6;
+const ALERT_MODEL_LIMIT = 0.45;
+const ALERT_SCORE_CEILING = 19;
 
 /**
  * Experimental wearable drowsiness estimator.
@@ -72,7 +75,7 @@ export class QualityGatedWearableDrowsinessEstimator {
 
     if (!qualityAccepted) {
       const fallback = this.lastSnapshot?.score
-        ?? computeDrowsinessScore(input.metrics, modelProbability);
+        ?? calibrationScore(input.metrics, modelProbability);
       return this.save({
         score: fallback,
         featureScore: this.lastSnapshot?.featureScore ?? null,
@@ -87,8 +90,9 @@ export class QualityGatedWearableDrowsinessEstimator {
       });
     }
 
-    const mayLearnAlert = input.allowAlertBaselineUpdate !== false
-      && (modelProbability === null || modelProbability < 0.45);
+    const mayLearnAlert = input.allowAlertBaselineUpdate === true
+      || (input.allowAlertBaselineUpdate !== false
+        && (modelProbability === null || modelProbability < ALERT_MODEL_LIMIT));
     if (this.baseline.length < BASELINE_WINDOWS && mayLearnAlert) {
       this.baseline.push(features);
     }
@@ -96,7 +100,7 @@ export class QualityGatedWearableDrowsinessEstimator {
     const baselineReady = this.baseline.length >= BASELINE_WINDOWS;
     if (!baselineReady) {
       return this.save({
-        score: computeDrowsinessScore(input.metrics, modelProbability),
+        score: calibrationScore(input.metrics, modelProbability),
         featureScore: null,
         modelScore: modelProbability === null ? null : Math.round(modelProbability * 100),
         baselineProgress: Math.min(1, this.baseline.length / BASELINE_WINDOWS),
@@ -114,9 +118,19 @@ export class QualityGatedWearableDrowsinessEstimator {
     if (this.recentEvidence.length > 3) this.recentEvidence.shift();
     const persistentEvidence = median(this.recentEvidence);
     const featureProbability = sigmoid((persistentEvidence - 1.5) * 1.2);
+    const modelDrowsinessProbability = modelProbability === null
+      ? null
+      : calibrateModelProbability(modelProbability);
     const combinedProbability = modelProbability === null
       ? featureProbability
-      : modelProbability * 0.6 + featureProbability * 0.4;
+      : Number(modelDrowsinessProbability) * 0.45 + featureProbability * 0.55;
+    const alertEvidence = persistentEvidence < 0.75
+      && (input.awakeConfirmed === true
+        || modelProbability === null
+        || modelProbability < ALERT_MODEL_LIMIT);
+    const score = alertEvidence
+      ? Math.min(ALERT_SCORE_CEILING, Math.round(clamp01(combinedProbability) * 100))
+      : Math.round(clamp01(combinedProbability) * 100);
 
     // Only clearly alert, high-quality windows may slowly refresh the baseline.
     if (mayLearnAlert && featureProbability < 0.35) {
@@ -125,7 +139,7 @@ export class QualityGatedWearableDrowsinessEstimator {
     }
 
     return this.save({
-      score: Math.round(clamp01(combinedProbability) * 100),
+      score,
       featureScore: Math.round(featureProbability * 100),
       modelScore: modelProbability === null ? null : Math.round(modelProbability * 100),
       baselineProgress: 1,
@@ -155,6 +169,26 @@ export class QualityGatedWearableDrowsinessEstimator {
     this.lastSnapshot = snapshot;
     return snapshot;
   }
+}
+
+/**
+ * Compress the staging model's expected awake range into 0-18%, then retain
+ * the rest of the display range for genuine drowsiness transitions. This
+ * avoids presenting an ordinary 30-40% model uncertainty as drowsiness.
+ */
+function calibrateModelProbability(probability: number): number {
+  const value = clamp01(probability);
+  if (value <= ALERT_MODEL_LIMIT) {
+    return value / ALERT_MODEL_LIMIT * 0.18;
+  }
+  return 0.18 + (value - ALERT_MODEL_LIMIT) / (1 - ALERT_MODEL_LIMIT) * 0.82;
+}
+
+function calibrationScore(metrics: SleepMetrics, modelProbability: number | null): number {
+  if (modelProbability !== null) {
+    return Math.min(ALERT_SCORE_CEILING, Math.round(calibrateModelProbability(modelProbability) * 100));
+  }
+  return Math.min(ALERT_SCORE_CEILING, computeDrowsinessScore(metrics, null));
 }
 
 export function createWearableDrowsinessSnapshot(): WearableDrowsinessSnapshot {

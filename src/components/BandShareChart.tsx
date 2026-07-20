@@ -21,7 +21,7 @@ export function BandShareChart({ shares, colors }: BandShareChartProps) {
     <section className="panel share-panel" aria-label="脑电频带占比">
       <div className="panel-header">
         <h2>频带占比</h2>
-        <span className="panel-meta">四通道中位参考</span>
+        <span className="panel-meta">中位参考 · IQR 伪迹抑制</span>
       </div>
       <div className="share-body">
         <div className="donut" style={{ background }} aria-label="频带能量占比饼图">

@@ -78,6 +78,7 @@ import {
 import { SampleBatcher } from './domain/sample-batcher';
 import { filterPpgDisplayWindow } from './domain/debug-signal';
 import type { SleepDeltaArtifactContext } from './domain/delta-artifact-filter';
+import { cleanSleepThetaWave } from './domain/theta-artifact-filter';
 import {
   channelColors,
   channelLabels,
@@ -701,15 +702,29 @@ export default function App() {
     };
   }, [sleepDemoService.lastResponse, visibleBuffers]);
 
+  const spectralArtifactContext = useMemo<SleepDeltaArtifactContext>(() => {
+    const response = sleepDemoService.lastResponse;
+    const strength = response?.telemetry.blink_strength_z;
+    const threshold = response?.telemetry.blink_rearm_robust_z
+      ?? response?.telemetry.blink_threshold_robust_z;
+    const strengthTriggered = Number.isFinite(strength)
+      && Number(strength) >= Math.max(3, Number.isFinite(threshold) ? Number(threshold) * 0.75 : 5);
+    return {
+      eegChannels: [buffers.eeg1, buffers.eeg2, buffers.eeg3, buffers.eeg4],
+      accelerometer: { x: buffers.accX, y: buffers.accY, z: buffers.accZ },
+      blinkArtifactActive: response?.state_flags.includes('BLINK') || strengthTriggered,
+      blinkBaselineStale: response?.state.blink_baseline_stale ?? false
+    };
+  }, [buffers, sleepDemoService.lastResponse]);
+
   const wearableMetrics = useMemo<SleepMetrics | null>(() => {
     const referenceChannels = [buffers.eeg1, buffers.eeg2, buffers.eeg3, buffers.eeg4];
     const priorityChannels = [buffers.eeg1, buffers.eeg2];
     const channelMetrics = priorityChannels.flatMap((selected, channelIndex) => {
       if (selected.length < 1_000) return [];
       const referenced = applyRobustMedianReference(selected, referenceChannels).slice(-1_000);
-      const bands = DROWSINESS_BANDS.map((definition, bandIndex) => ({
-        label: definition.label,
-        values: wearableBandFilters.current[channelIndex][bandIndex].update(
+      const bands = DROWSINESS_BANDS.map((definition, bandIndex) => {
+        const filtered = wearableBandFilters.current[channelIndex][bandIndex].update(
           `wearable|eeg${channelIndex + 1}|${definition.low}|${definition.high}|${settings.eeg.notch}`,
           referenced,
           () => FilterChain.firBandpass({
@@ -718,8 +733,20 @@ export default function App() {
             sampleRate: EEG_SAMPLE_RATE,
             notch: settings.eeg.notch
           })
-        )
-      }));
+        );
+        return {
+          label: definition.label,
+          values: definition.key === 'theta'
+            ? cleanSleepThetaWave(
+              filtered,
+              referenced,
+              EEG_SAMPLE_RATE,
+              spectralArtifactContext,
+              { lowHz: definition.low }
+            )
+            : filtered
+        };
+      });
       return [calculateSleepMetrics({
         rawValues: referenced,
         bands,
@@ -727,7 +754,7 @@ export default function App() {
       })];
     });
     return channelMetrics.length > 0 ? averageDrowsinessMetrics(channelMetrics) : null;
-  }, [buffers, settings.eeg.notch]);
+  }, [buffers, settings.eeg.notch, spectralArtifactContext]);
 
   useEffect(() => {
     wearableDrowsinessEstimator.current.reset();
@@ -756,7 +783,8 @@ export default function App() {
       timestampMs: Number(timestampMs),
       modelProbability,
       quality,
-      allowAlertBaselineUpdate
+      allowAlertBaselineUpdate,
+      awakeConfirmed: staging?.decision_valid && staging.selected_stage === 'W'
     }));
   }, [
     connected,
@@ -2120,9 +2148,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8772;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8773;
   } catch {
-    return 8772;
+    return 8773;
   }
 }
 

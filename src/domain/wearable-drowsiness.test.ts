@@ -54,6 +54,28 @@ describe('quality-gated wearable drowsiness trial', () => {
     expect(drowsy.score).toBeGreaterThan(alert.score + 40);
   });
 
+  test('keeps accepted awake windows below twenty percent', () => {
+    const estimator = new QualityGatedWearableDrowsinessEstimator();
+    let snapshot = estimator.update({
+      metrics: metrics(0.15, 0.25, 0.35, 35), timestampMs: 5_000,
+      modelProbability: 0.35, quality: 0.95
+    });
+    expect(snapshot.score).toBeLessThan(20);
+
+    for (let index = 2; index <= 14; index += 1) {
+      snapshot = estimator.update({
+        metrics: metrics(0.15, 0.25, 0.35, 35), timestampMs: index * 5_000,
+        modelProbability: index > 11 ? 0.55 : 0.35,
+        quality: 0.95,
+        allowAlertBaselineUpdate: true,
+        awakeConfirmed: true
+      });
+    }
+
+    expect(snapshot.baselineReady).toBe(true);
+    expect(snapshot.score).toBeLessThan(20);
+  });
+
   test('holds the last accepted score when signal quality is poor', () => {
     const estimator = new QualityGatedWearableDrowsinessEstimator();
     let accepted = estimator.update({
