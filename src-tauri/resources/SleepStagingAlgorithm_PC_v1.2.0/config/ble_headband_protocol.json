@@ -23,7 +23,7 @@
     "write_with_response": false
   },
   "stream": {
-    "sample_rate_hz": 100,
+    "sample_rate_hz": 125,
     "step_seconds": 5,
     "discontinuity_seconds": 10.0
   },

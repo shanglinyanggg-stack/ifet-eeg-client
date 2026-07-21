@@ -23,12 +23,15 @@ interface StagingSample {
   valid: boolean;
 }
 
-const STAGING_STEP_SAMPLES = 500;
-const DEMO_STEP_SAMPLES = 50;
+const ACQUISITION_SAMPLE_RATE = 125;
+const MODEL_SAMPLE_RATE = 100;
+const STAGING_STEP_SAMPLES = MODEL_SAMPLE_RATE * 5;
+const DEMO_STEP_SAMPLES = MODEL_SAMPLE_RATE / 2;
 
 abstract class AlgorithmChunkAssembler<TRequest> {
   private samples: StagingSample[] = [];
   private previousSequence: number | null = null;
+  private resampler = new FixedRateResampler(ACQUISITION_SAMPLE_RATE, MODEL_SAMPLE_RATE);
 
   protected constructor(private sessionId: string, private readonly chunkSamples: number) {}
 
@@ -47,13 +50,13 @@ abstract class AlgorithmChunkAssembler<TRequest> {
       if (delta === 0) return [];
       if (delta <= 128) {
         for (let missing = 1; missing < delta; missing += 1) {
-          this.samples.push(invalidSample(event.timestamp));
+          this.pushAcquisitionSample(invalidSample(event.timestamp));
         }
       }
     }
 
     if (sequence !== null) this.previousSequence = sequence;
-    this.samples.push(sampleFromEvent(event));
+    this.pushAcquisitionSample(sampleFromEvent(event));
     return this.takeReadyChunks();
   }
 
@@ -67,9 +70,14 @@ abstract class AlgorithmChunkAssembler<TRequest> {
     this.sessionId = sessionId;
     this.samples = [];
     this.previousSequence = null;
+    this.resampler = new FixedRateResampler(ACQUISITION_SAMPLE_RATE, MODEL_SAMPLE_RATE);
   }
 
   protected abstract createRequest(sessionId: string, samples: StagingSample[]): TRequest;
+
+  private pushAcquisitionSample(sample: StagingSample): void {
+    this.samples.push(...this.resampler.push(sample));
+  }
 
   private takeReadyChunks(): TRequest[] {
     const chunks: TRequest[] = [];
@@ -80,6 +88,42 @@ abstract class AlgorithmChunkAssembler<TRequest> {
       ));
     }
     return chunks;
+  }
+}
+
+/**
+ * The headset is acquired and recorded at its native 125 Hz. The deployed
+ * sleep models remain fixed at their validated 100 Hz input contract, so the
+ * conversion lives only at this boundary. Linear time-grid interpolation is
+ * deterministic for the 4:5 ratio; invalid transport gaps stay invalid and
+ * are never filled with apparently valid EEG.
+ */
+class FixedRateResampler {
+  private previous: StagingSample | null = null;
+  private inputIndex = -1;
+  private nextOutputPosition = 0;
+  private readonly inputSamplesPerOutput: number;
+
+  constructor(inputRate: number, outputRate: number) {
+    this.inputSamplesPerOutput = inputRate / outputRate;
+  }
+
+  push(sample: StagingSample): StagingSample[] {
+    this.inputIndex += 1;
+    if (this.previous === null) {
+      this.previous = sample;
+      this.nextOutputPosition += this.inputSamplesPerOutput;
+      return [sample];
+    }
+
+    const output: StagingSample[] = [];
+    while (this.nextOutputPosition <= this.inputIndex + 1e-9) {
+      const fraction = this.nextOutputPosition - (this.inputIndex - 1);
+      output.push(interpolateSample(this.previous, sample, fraction));
+      this.nextOutputPosition += this.inputSamplesPerOutput;
+    }
+    this.previous = sample;
+    return output;
   }
 }
 
@@ -158,6 +202,34 @@ function invalidSample(timestamp: string): StagingSample {
     imu: [0, 0, 0],
     valid: false
   };
+}
+
+function interpolateSample(
+  left: StagingSample,
+  right: StagingSample,
+  fraction: number
+): StagingSample {
+  if (fraction <= 1e-9) return left;
+  if (fraction >= 1 - 1e-9) return right;
+  const timestamp = interpolateTimestamp(left.timestamp, right.timestamp, fraction);
+  if (!left.valid || !right.valid) return invalidSample(timestamp);
+  return {
+    timestamp,
+    eeg: left.eeg.map(
+      (value, channel) => value + (right.eeg[channel] - value) * fraction
+    ) as [number, number, number, number],
+    imu: left.imu.map(
+      (value, channel) => value + (right.imu[channel] - value) * fraction
+    ) as [number, number, number],
+    valid: true
+  };
+}
+
+function interpolateTimestamp(left: string, right: string, fraction: number): string {
+  const leftMs = Date.parse(left);
+  const rightMs = Date.parse(right);
+  if (!Number.isFinite(leftMs) || !Number.isFinite(rightMs)) return right;
+  return new Date(leftMs + (rightMs - leftMs) * fraction).toISOString();
 }
 
 export function signedU24(value: number): number {

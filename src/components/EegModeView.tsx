@@ -87,7 +87,8 @@ export function EegModeView({
       label: band.label as BandShare['label'],
       values: band.analysisValues ?? band.values
     })),
-    spindleValues
+    spindleValues,
+    sampleRate: EEG_SAMPLE_RATE
   }), [analysisValues, bandSeries, spindleValues]);
 
   useEffect(() => {

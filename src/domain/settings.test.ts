@@ -18,7 +18,7 @@ describe('settings persistence', () => {
     expect(defaultSettings.sleepMusic.sleepStopEnabled).toBe(true);
     expect(defaultSettings.sleepMusic.maximumVolume).toBe(0.8);
     expect(defaultSettings.displayDelayMs).toBe(0);
-    expect(defaultSettings.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8774');
+    expect(defaultSettings.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8775');
     expect(defaultSettings.sleepMusic.drowsinessMode).toBe('wearable-trial');
     expect(defaultSettings.sleepMusic.libraryTracks).toHaveLength(5);
     expect(defaultSettings.sleepMusic.tracks).toHaveLength(0);
@@ -106,6 +106,6 @@ describe('settings persistence', () => {
     expect(loaded.sleepMusic.libraryTracks.some((track) => track.id === 'builtin-star-alpha')).toBe(true);
     expect(loaded.eeg.bandRanges.delta).toEqual({ low: 0.5, high: 2 });
     expect(loaded.eeg.pure.bandRanges.delta).toEqual({ low: 0.5, high: 2 });
-    expect(loaded.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8774');
+    expect(loaded.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8775');
   });
 });

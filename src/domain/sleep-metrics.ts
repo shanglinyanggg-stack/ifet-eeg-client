@@ -1,4 +1,4 @@
-import type { BandValue, TimedValue } from './dsp';
+import { EEG_SAMPLE_RATE, type BandValue, type TimedValue } from './dsp';
 
 export type SleepTrend = 'awake' | 'transition' | 'sleep-onset';
 
@@ -32,7 +32,7 @@ interface CalculateSleepMetricsInput {
 }
 
 const EPSILON = 1e-9;
-const DEFAULT_SAMPLE_RATE = 100;
+const DEFAULT_SAMPLE_RATE = EEG_SAMPLE_RATE;
 
 export function calculateSleepMetrics({
   rawValues,

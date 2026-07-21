@@ -1,4 +1,4 @@
-import type { TimedValue } from './dsp';
+import { EEG_SAMPLE_RATE, type TimedValue } from './dsp';
 
 export interface SleepDeltaArtifactContext {
   eegChannels?: TimedValue[][];
@@ -24,7 +24,7 @@ export interface SleepDeltaArtifactContext {
 export function cleanSleepDeltaWave(
   deltaValues: TimedValue[],
   rawValues: TimedValue[],
-  sampleRate = 100,
+  sampleRate = EEG_SAMPLE_RATE,
   context?: SleepDeltaArtifactContext
 ): TimedValue[] {
   if (deltaValues.length < 12 || rawValues.length < 12) return deltaValues;

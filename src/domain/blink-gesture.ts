@@ -1,7 +1,7 @@
 // v1.0.21 四通道配对眨眼算法（仅作 PC 服务不可用时的保守降级路径）：
 // - EEG1+EEG2 为主配对；EEG3+EEG4 只在主配对同步响应且自身质量正常时补充
 // - 校准 = 3 秒安静背景 + 10 秒连续自然眨眼；中心/尺度校准后冻结
-// - 因果 3 阶 Butterworth 0.5-8Hz SOS（与 scipy butter(3, bandpass, fs=100) 系数一致）
+// - 因果 3 阶 Butterworth 0.5-8Hz SOS（与 scipy butter(3, bandpass, fs=125) 系数一致）
 // - 丢包：invalid 后 0.20s 保护窗不追溯，连续 0.35s 才清空手势，可按节律补偿 1 次
 // - 手势：3 次降音量 / 5 次升音量，五次优先，冷却 0.60s
 // - 基线健康监测：连续 3 次超限置 stale；稳定安静窗连续 3 次通过后自动重建并恢复
@@ -35,7 +35,7 @@ interface PendingCandidate {
   amplitude: number;
 }
 
-const SAMPLE_RATE = 100;
+const SAMPLE_RATE = 125;
 const PAIRS: Array<readonly [number, number]> = [[0, 1], [2, 3]];
 const AUXILIARY_PAIR_INDEX = 1;
 
@@ -88,11 +88,11 @@ const HEALTH_RECOVERY_OUTLIER_FRACTION_MAX = 0.08;
 const AUXILIARY_NOISE_RATIO_MAX = 1.75;
 const AUXILIARY_RELATIVE_NOISE_RATIO = 1.5;
 
-// scipy.signal.butter(3, (0.5, 8.0), btype="bandpass", fs=100, output="sos")
+// scipy.signal.butter(3, (0.5, 8.0), btype="bandpass", fs=125, output="sos")
 const BLINK_SOS: ReadonlyArray<readonly [number, number, number, number, number, number]> = [
-  [0.0085986860863219, 0.0171973721726439, 0.0085986860863219, 1, -1.4543775493164128, 0.6486481863763403],
-  [1, 0, -1, 1, -1.5998427471499066, 0.6128007881399319],
-  [1, -2, 1, 1, -1.9702236431403235, 0.9712478559942448]
+  [0.004750523610980865, 0.009501047221961731, 0.004750523610980865, 1, -1.57595375909213, 0.7053619134919527],
+  [1, 0, -1, 1, -1.671017162550656, 0.6795992982245267],
+  [1, -2, 1, 1, -1.976288153119703, 0.9769457809751023]
 ];
 
 class SosFilter {

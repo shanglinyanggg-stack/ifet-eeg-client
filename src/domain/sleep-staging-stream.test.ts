@@ -4,7 +4,7 @@ import { SleepDemoChunkAssembler, SleepStagingChunkAssembler } from './sleep-sta
 
 function sample(sequence: number, eeg1 = 0x000101): SampleEvent {
   return {
-    timestamp: new Date(1_700_000_000_000 + sequence * 10).toISOString(),
+    timestamp: new Date(1_700_000_000_000 + sequence * 8).toISOString(),
     packet: {
       sequence: sequence & 0xff,
       ppg: {
@@ -31,7 +31,7 @@ function sample(sequence: number, eeg1 = 0x000101): SampleEvent {
 describe('SleepStagingChunkAssembler', () => {
   test('emits exact 4x500 EEG and 3x500 IMU chunks', () => {
     const assembler = new SleepStagingChunkAssembler('session-one');
-    const chunks = assembler.pushMany(Array.from({ length: 500 }, (_, index) => sample(index)));
+    const chunks = assembler.pushMany(Array.from({ length: 625 }, (_, index) => sample(index)));
 
     expect(chunks).toHaveLength(1);
     expect(chunks[0].session_id).toBe('session-one');
@@ -44,7 +44,7 @@ describe('SleepStagingChunkAssembler', () => {
 
   test('converts unsigned U24 EEG to signed values only for the algorithm input', () => {
     const assembler = new SleepStagingChunkAssembler('session-signed');
-    const chunk = assembler.pushMany(Array.from({ length: 500 }, (_, index) => sample(index)))[0];
+    const chunk = assembler.pushMany(Array.from({ length: 625 }, (_, index) => sample(index)))[0];
 
     expect(chunk.eeg_5s[0][0]).toBe(0x000101);
     expect(chunk.eeg_5s[1][0]).toBe(-0x7fffff);
@@ -54,7 +54,7 @@ describe('SleepStagingChunkAssembler', () => {
 
   test('fills sequence gaps with invalid zero samples', () => {
     const assembler = new SleepStagingChunkAssembler('session-gap');
-    const events = [sample(0), ...Array.from({ length: 498 }, (_, index) => sample(index + 2))];
+    const events = [sample(0), ...Array.from({ length: 623 }, (_, index) => sample(index + 2))];
     const chunk = assembler.pushMany(events)[0];
 
     expect(chunk.valid_5s).toHaveLength(500);
@@ -72,7 +72,7 @@ describe('SleepStagingChunkAssembler', () => {
     expect(assembler.pendingSamples).toBe(1);
 
     assembler.reset('session-new');
-    const chunks = assembler.pushMany(Array.from({ length: 500 }, (_, index) => sample(index)));
+    const chunks = assembler.pushMany(Array.from({ length: 625 }, (_, index) => sample(index)));
     expect(chunks[0].session_id).toBe('session-new');
   });
 });
@@ -80,7 +80,7 @@ describe('SleepStagingChunkAssembler', () => {
 describe('SleepDemoChunkAssembler', () => {
   test('emits consecutive 500 ms chunks for the DemoSignalFlagger', () => {
     const assembler = new SleepDemoChunkAssembler('demo-session');
-    const chunks = assembler.pushMany(Array.from({ length: 100 }, (_, index) => sample(index)));
+    const chunks = assembler.pushMany(Array.from({ length: 125 }, (_, index) => sample(index)));
 
     expect(chunks).toHaveLength(2);
     expect(chunks[0].session_id).toBe('demo-session');
@@ -92,7 +92,7 @@ describe('SleepDemoChunkAssembler', () => {
 
   test('keeps missing samples invalid in the 500 ms stream', () => {
     const assembler = new SleepDemoChunkAssembler('demo-gap');
-    const events = [sample(0), ...Array.from({ length: 48 }, (_, index) => sample(index + 2))];
+    const events = [sample(0), ...Array.from({ length: 61 }, (_, index) => sample(index + 2))];
     const chunk = assembler.pushMany(events)[0];
 
     expect(chunk.valid[1]).toBe(false);
@@ -102,9 +102,9 @@ describe('SleepDemoChunkAssembler', () => {
 
   test('preserves transport invalidity from the TD10 clock normalizer', () => {
     const assembler = new SleepDemoChunkAssembler('demo-transport-validity');
-    const events = Array.from({ length: 50 }, (_, index) => ({
+    const events = Array.from({ length: 63 }, (_, index) => ({
       ...sample(index),
-      valid: index !== 12,
+      valid: index !== 15,
       deviceSequence: index
     }));
     const chunk = assembler.pushMany(events)[0];

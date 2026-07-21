@@ -1,4 +1,4 @@
-import type { TimedValue } from './dsp';
+import { EEG_SAMPLE_RATE, type TimedValue } from './dsp';
 
 export interface SlowWaveGateSnapshot {
   weight: number;
@@ -33,7 +33,7 @@ export class AdaptiveSlowWaveGate {
       return { weight: 0, currentLevel: 0, awakeBaseline: this.awakeBaseline };
     }
 
-    const recent = values.slice(-500);
+    const recent = values.slice(-EEG_SAMPLE_RATE * 5);
     const currentLevel = robustLevel(recent.map((point) => point.value));
     const timestamp = recent[recent.length - 1].timestamp;
     const stage = (options.stage ?? '').trim().toUpperCase();

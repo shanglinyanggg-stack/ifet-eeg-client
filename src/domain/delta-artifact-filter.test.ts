@@ -1,11 +1,14 @@
 import { describe, expect, test } from 'vitest';
 import { cleanSleepDeltaWave } from './delta-artifact-filter';
 
+const SAMPLE_RATE = 125;
+const STEP_MS = 1000 / SAMPLE_RATE;
+
 describe('cleanSleepDeltaWave', () => {
   test('preserves a continuous sleep slow wave', () => {
-    const delta = Array.from({ length: 600 }, (_, index) => ({
-      timestamp: index * 10,
-      value: Math.sin(2 * Math.PI * 1.2 * index / 100) * 40
+    const delta = Array.from({ length: 750 }, (_, index) => ({
+      timestamp: index * STEP_MS,
+      value: Math.sin(2 * Math.PI * 1.2 * index / SAMPLE_RATE) * 40
     }));
     const cleaned = cleanSleepDeltaWave(delta, delta);
     const error = cleaned.reduce((sum, point, index) => sum + Math.abs(point.value - delta[index].value), 0) / delta.length;
@@ -13,38 +16,38 @@ describe('cleanSleepDeltaWave', () => {
   });
 
   test('bridges a steep blink-like transient without flattening the surrounding slow wave', () => {
-    const delta = Array.from({ length: 600 }, (_, index) => ({
-      timestamp: index * 10,
-      value: Math.sin(2 * Math.PI * index / 100) * 35 + (index === 300 ? 900 : 0)
+    const delta = Array.from({ length: 750 }, (_, index) => ({
+      timestamp: index * STEP_MS,
+      value: Math.sin(2 * Math.PI * index / SAMPLE_RATE) * 35 + (index === 375 ? 900 : 0)
     }));
     const raw = delta.map((point, index) => ({
       ...point,
-      value: Math.sin(2 * Math.PI * index / 100) * 35 + (index >= 299 && index <= 302 ? 4_000 : 0)
+      value: Math.sin(2 * Math.PI * index / SAMPLE_RATE) * 35 + (index >= 374 && index <= 378 ? 4_000 : 0)
     }));
     const cleaned = cleanSleepDeltaWave(delta, raw);
 
-    expect(Math.abs(cleaned[300].value)).toBeLessThan(100);
-    expect(Math.abs(cleaned[180].value - delta[180].value)).toBeLessThan(0.5);
-    expect(Math.abs(cleaned[420].value - delta[420].value)).toBeLessThan(0.5);
+    expect(Math.abs(cleaned[375].value)).toBeLessThan(100);
+    expect(Math.abs(cleaned[225].value - delta[225].value)).toBeLessThan(0.5);
+    expect(Math.abs(cleaned[525].value - delta[525].value)).toBeLessThan(0.5);
   });
 
   test('adapts to a blink burst while preserving a high-amplitude smooth N3 candidate', () => {
-    const delta = Array.from({ length: 900 }, (_, index) => ({
-      timestamp: index * 10,
-      value: Math.sin(2 * Math.PI * 0.8 * index / 100) * 180
-        + (index >= 448 && index <= 454 ? 1_600 : 0)
+    const delta = Array.from({ length: 1125 }, (_, index) => ({
+      timestamp: index * STEP_MS,
+      value: Math.sin(2 * Math.PI * 0.8 * index / SAMPLE_RATE) * 180
+        + (index >= 560 && index <= 568 ? 1_600 : 0)
     }));
     const raw = delta.map((point, index) => ({
       ...point,
-      value: Math.sin(2 * Math.PI * 0.8 * index / 100) * 180
-        + (index >= 447 && index <= 455 ? 8_000 : 0)
+      value: Math.sin(2 * Math.PI * 0.8 * index / SAMPLE_RATE) * 180
+        + (index >= 559 && index <= 569 ? 8_000 : 0)
     }));
 
     const cleaned = cleanSleepDeltaWave(delta, raw);
 
-    expect(Math.abs(cleaned[451].value)).toBeLessThan(400);
-    expect(Math.abs(cleaned[250].value - delta[250].value)).toBeLessThan(0.5);
-    expect(Math.abs(cleaned[750].value - delta[750].value)).toBeLessThan(0.5);
+    expect(Math.abs(cleaned[564].value)).toBeLessThan(400);
+    expect(Math.abs(cleaned[313].value - delta[313].value)).toBeLessThan(0.5);
+    expect(Math.abs(cleaned[938].value - delta[938].value)).toBeLessThan(0.5);
   });
 
   test('rejects a simultaneous multi-channel blink even when the selected raw channel is less steep', () => {

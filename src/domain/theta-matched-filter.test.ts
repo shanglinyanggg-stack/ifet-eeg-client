@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import { matchedFilterSleepTheta } from './theta-matched-filter';
 
-const SAMPLE_RATE = 100;
+const SAMPLE_RATE = 125;
 const LENGTH = 1_200;
 
 function thetaSignal(amplitude = 45, frequency = 6) {
   return Array.from({ length: LENGTH }, (_, index) => ({
-    timestamp: index * 10,
+    timestamp: index * (1000 / SAMPLE_RATE),
     value: Math.sin(2 * Math.PI * frequency * index / SAMPLE_RATE) * amplitude
   }));
 }

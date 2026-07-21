@@ -89,7 +89,7 @@ export function createEegBands(): EegBandDefinition[] {
   ];
 }
 
-// 纯波形模式频带：δ / α / β / γ，γ 受 100Hz 采样率 Nyquist 限制取 30~45Hz
+// 纯波形模式频带：δ / α / β / γ；125 Hz 采样率下 Nyquist 为 62.5 Hz。
 export type PureBandKey = 'delta' | 'alpha' | 'beta' | 'gamma';
 
 export interface PureBandDefinition {
@@ -110,8 +110,9 @@ export function createPureBands(): PureBandDefinition[] {
   ];
 }
 
-// 协议未携带采样率字段，统一常量；后续若协议扩展应改为从设置/协议读取
-export const EEG_SAMPLE_RATE = 100;
+// TD10 设备时钟为 125 Hz。采集、显示与本地 DSP 均保持原生时基；
+// 仅在固定 100 Hz 睡眠模型的输入边界做显式重采样。
+export const EEG_SAMPLE_RATE = 125;
 
 export function computeShare(values: BandValue[]): BandShare[] {
   const total = values.reduce((sum, item) => sum + Math.max(0, item.value), 0);
@@ -284,7 +285,7 @@ export interface FirBandpassOptions {
   low: number;
   high: number;
   sampleRate: number;
-  /** 最大群延迟（秒），决定抽头上限；默认 4s，即 100Hz 下最多 801 抽头 */
+  /** 最大群延迟（秒），决定抽头上限；默认 4s。 */
   maxDelaySeconds?: number;
 }
 

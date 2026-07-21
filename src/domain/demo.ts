@@ -1,7 +1,8 @@
+import { EEG_SAMPLE_RATE } from './dsp';
 import type { SampleEvent } from './protocol';
 
 // 与 EEG 采样率保持一致：保证 α/β/γ 频带在 Nyquist 内不混叠，滤波输出有意义
-export const DEMO_SAMPLE_RATE = 100;
+export const DEMO_SAMPLE_RATE = EEG_SAMPLE_RATE;
 
 // 累计样本序号，用作相位基准，避免依赖 Date.now 抖动
 let phase = 0;
@@ -54,7 +55,7 @@ function buildPacket(t: number) {
   };
 }
 
-// 生成 count 个连续样本（10ms 间隔），最后一个对齐当前时刻
+// 生成 count 个连续样本（125 Hz / 8 ms 间隔），最后一个对齐当前时刻
 export function createDemoSamples(count: number): SampleEvent[] {
   const now = Date.now();
   const startIdx = phase;

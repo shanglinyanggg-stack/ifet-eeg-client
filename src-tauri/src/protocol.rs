@@ -2,7 +2,8 @@ use crate::models::{DecodedPacket, EegSample, PpgSample};
 
 const TD10_NOTIFICATION_BYTES: usize = 43;
 const TD10_CLOCK_HZ: f64 = 125.0;
-const OUTPUT_SAMPLE_RATE_HZ: f64 = 100.0;
+const OUTPUT_SAMPLE_RATE_HZ: f64 = 125.0;
+pub const OUTPUT_SAMPLE_INTERVAL_MILLISECONDS: i64 = 8;
 const TD10_NOMINAL_TICKS_PER_NOTIFICATION: f64 = 4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,13 +345,13 @@ mod tests {
     }
 
     #[test]
-    fn restores_td10_device_clock_to_one_hundred_hz_stream() {
+    fn restores_td10_device_clock_to_native_one_hundred_twenty_five_hz_stream() {
         let mut decoder = PacketStreamDecoder::default();
         let mut rows = Vec::new();
         for index in 0..32_u8 {
             rows.extend(decoder.push(&td10_frame(index.wrapping_mul(4), index as u32 * 100)));
         }
-        assert_eq!(rows.len(), 100);
+        assert_eq!(rows.len(), 125);
         assert!(rows.iter().all(|row| row.valid));
         for pair in rows.windows(2) {
             assert_eq!(
@@ -365,7 +366,7 @@ mod tests {
         let mut decoder = PacketStreamDecoder::default();
         assert_eq!(decoder.push(&td10_frame(0, 0)).len(), 1);
         let rows = decoder.push(&td10_frame(8, 100));
-        assert!(rows.len() >= 6);
+        assert_eq!(rows.len(), 8);
         assert!(rows.iter().any(|row| !row.valid));
         assert!(rows.last().expect("endpoint").valid);
     }

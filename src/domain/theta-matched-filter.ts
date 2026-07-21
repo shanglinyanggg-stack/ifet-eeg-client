@@ -1,4 +1,4 @@
-import type { TimedValue } from './dsp';
+import { EEG_SAMPLE_RATE, type TimedValue } from './dsp';
 import type { SleepDeltaArtifactContext } from './delta-artifact-filter';
 
 export interface ThetaMatchedFilterOptions {
@@ -27,7 +27,7 @@ export interface ThetaMatchedFilterResult {
 export function matchedFilterSleepTheta(
   thetaValues: TimedValue[],
   rawValues: TimedValue[],
-  sampleRate = 100,
+  sampleRate = EEG_SAMPLE_RATE,
   context?: SleepDeltaArtifactContext,
   options: ThetaMatchedFilterOptions = {}
 ): ThetaMatchedFilterResult {

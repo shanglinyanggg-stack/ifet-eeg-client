@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import { BlinkGestureDetector } from './blink-gesture';
 
-const STEP_MS = 10;
+const SAMPLE_RATE = 125;
+const STEP_MS = 1000 / SAMPLE_RATE;
 const QUIET_MS = 3_000;
 const CALIBRATION_BLINK_MS = 10_000;
 const POST_CALIBRATION_GUARD_MS = 1_500;
@@ -9,7 +10,7 @@ const POST_CALIBRATION_GUARD_MS = 1_500;
 // 高斯眨眼脉冲：σ≈0.045s，与真机眨眼宽度同量级
 function pulseAt(index: number, center: number, amplitude: number): number {
   const distance = index - center;
-  return amplitude * Math.exp(-0.5 * (distance / 4.5) ** 2);
+  return amplitude * Math.exp(-0.5 * (distance / (0.045 * SAMPLE_RATE)) ** 2);
 }
 
 function noise(index: number): number {
@@ -48,7 +49,10 @@ function pushRange(
 function calibrate(detector: BlinkGestureDetector, channels = 4): number {
   detector.beginCalibration(0);
   let timestamp = pushRange(detector, 0, QUIET_MS, [], channels);
-  const centers = Array.from({ length: 13 }, (_, index) => Math.round((0.5 + index * 0.75) * 100));
+  const centers = Array.from(
+    { length: 13 },
+    (_, index) => Math.round((0.5 + index * 0.75) * SAMPLE_RATE)
+  );
   timestamp = pushRange(detector, timestamp, CALIBRATION_BLINK_MS + STEP_MS, centers, channels);
   return timestamp;
 }

@@ -227,7 +227,8 @@ export function PureWaveformView({
   const sleepMetrics = useMemo(() => calculateSleepMetrics({
     rawValues: analysisValues,
     bands: sleepBandSeries,
-    spindleValues
+    spindleValues,
+    sampleRate: EEG_SAMPLE_RATE
   }), [analysisValues, sleepBandSeries, spindleValues]);
 
   useEffect(() => {

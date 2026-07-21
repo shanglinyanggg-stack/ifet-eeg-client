@@ -103,7 +103,8 @@ import { ThemedSelect } from './components/ThemedSelect';
 import { WaveformCanvas } from './components/WaveformCanvas';
 import { useMusicPlayer } from './hooks/useMusicPlayer';
 
-const MAX_POINTS = 1200;
+const BUFFER_SECONDS = 12;
+const MAX_POINTS = EEG_SAMPLE_RATE * BUFFER_SECONDS;
 const SAMPLE_FLUSH_INTERVAL_MS = 50;
 const allChannels = Object.keys(channelLabels) as ChannelKey[];
 const DROWSINESS_BANDS = createEegBands();
@@ -590,11 +591,11 @@ export default function App() {
     flushSamples([event]);
   }, [flushSamples]);
 
-  // 演示模式：开启后以 100Hz 速率注入模拟样本，无需真实设备即可驱动波形/饼图/仪表
+  // 演示模式：以与真机一致的 125 Hz 注入模拟样本。
   useEffect(() => {
     if (!settings.demoMode) return;
     setStatus('演示模式：模拟数据流入');
-    const intervalMs = 50;
+    const intervalMs = 40;
     const perTick = Math.max(1, Math.round((intervalMs / 1000) * DEMO_SAMPLE_RATE));
     const timer = window.setInterval(() => {
       const events = createDemoSamples(perTick);
@@ -748,8 +749,9 @@ export default function App() {
     const referenceChannels = [buffers.eeg1, buffers.eeg2, buffers.eeg3, buffers.eeg4];
     const priorityChannels = [buffers.eeg1, buffers.eeg2];
     const channelMetrics = priorityChannels.flatMap((selected, channelIndex) => {
-      if (selected.length < 1_000) return [];
-      const referenced = applyRobustMedianReference(selected, referenceChannels).slice(-1_000);
+      const analysisSamples = EEG_SAMPLE_RATE * 10;
+      if (selected.length < analysisSamples) return [];
+      const referenced = applyRobustMedianReference(selected, referenceChannels).slice(-analysisSamples);
       const bands = DROWSINESS_BANDS.map((definition, bandIndex) => {
         const filtered = wearableBandFilters.current[channelIndex][bandIndex].update(
           `wearable|eeg${channelIndex + 1}|${definition.low}|${definition.high}|${settings.eeg.notch}`,
@@ -777,7 +779,8 @@ export default function App() {
       return [calculateSleepMetrics({
         rawValues: referenced,
         bands,
-        spindleValues: []
+        spindleValues: [],
+        sampleRate: EEG_SAMPLE_RATE
       })];
     });
     return channelMetrics.length > 0 ? averageDrowsinessMetrics(channelMetrics) : null;
@@ -1903,6 +1906,7 @@ export default function App() {
             <h1>iFET EEG Client</h1>
             <span className="status-chip">
               {sampleCount} samples
+              <em>· {EEG_SAMPLE_RATE} Hz</em>
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
             </span>
           </div>
@@ -2095,9 +2099,6 @@ function getViewportSize() {
   return { width: window.innerWidth, height: window.innerHeight };
 }
 
-// 默认采样率（协议未携带，与 EEG 保持一致）
-const DEFAULT_SAMPLE_RATE = 100;
-
 // 普通模式滤波（带通/卡尔曼）是状态ful的，必须与 EEG 频带一样走增量缓存：
 // 每次 flush 只处理新样本，避免整窗重复喂给滤波器造成波形失真。
 const normalFilterCaches = new Map<ChannelKey, StreamingFilterCache>();
@@ -2134,7 +2135,7 @@ function applyNormalFilters(
       ? FilterChain.butterworthBandpass({
         low: settings.filterLow,
         high: settings.filterHigh,
-        sampleRate: DEFAULT_SAMPLE_RATE,
+        sampleRate: EEG_SAMPLE_RATE,
         order: 2
       })
       : null;

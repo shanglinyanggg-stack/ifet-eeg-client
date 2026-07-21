@@ -1,5 +1,5 @@
 use crate::models::{DeviceInfo, SampleEvent};
-use crate::protocol::PacketStreamDecoder;
+use crate::protocol::{PacketStreamDecoder, OUTPUT_SAMPLE_INTERVAL_MILLISECONDS};
 use anyhow::{anyhow, Result};
 use btleplug::api::{
     Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
@@ -143,8 +143,10 @@ impl BleManagerState {
                 }
                 for row in rows {
                     let sample_timestamp = next_sample_timestamp.clone().unwrap_or(now);
-                    next_sample_timestamp =
-                        Some(sample_timestamp + ChronoDuration::milliseconds(10));
+                    next_sample_timestamp = Some(
+                        sample_timestamp
+                            + ChronoDuration::milliseconds(OUTPUT_SAMPLE_INTERVAL_MILLISECONDS),
+                    );
                     let timestamp = sample_timestamp.to_rfc3339();
                     let event = SampleEvent {
                         timestamp: timestamp.clone(),

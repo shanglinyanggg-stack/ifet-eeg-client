@@ -1637,7 +1637,7 @@ dependencies = [
 
 [[package]]
 name = "ifet-eeg-client"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "anyhow",
  "btleplug",
