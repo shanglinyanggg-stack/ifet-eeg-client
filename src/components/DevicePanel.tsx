@@ -1,5 +1,6 @@
-import { Bluetooth, CircleStop, Link2Off, Radio, RefreshCcw, Save, Send } from 'lucide-react';
-import type { DeviceInfo } from '../domain/protocol';
+import { Bluetooth, CircleStop, Gauge, Link2Off, Radio, RefreshCcw, Save, Send } from 'lucide-react';
+import { bleSampleRateOptions, type DeviceInfo } from '../domain/protocol';
+import type { BleSampleRate } from '../domain/settings';
 import { ThemedSelect } from './ThemedSelect';
 
 interface DevicePanelProps {
@@ -10,6 +11,9 @@ interface DevicePanelProps {
   recordingPending?: boolean;
   selectedDeviceId: string;
   commandText: string;
+  selectedSampleRateHz: BleSampleRate;
+  activeSampleRateHz: BleSampleRate;
+  sampleRatePending?: boolean;
   status: string;
   recordPath: string;
   onCommandTextChange: (value: string) => void;
@@ -18,6 +22,8 @@ interface DevicePanelProps {
   onConnect: () => void;
   onDisconnect: () => void;
   onSend: () => void;
+  onSelectedSampleRateChange: (value: BleSampleRate) => void;
+  onApplySampleRate: () => void;
   onToggleRecording: () => void;
 }
 
@@ -29,6 +35,9 @@ export function DevicePanel({
   recordingPending = false,
   selectedDeviceId,
   commandText,
+  selectedSampleRateHz,
+  activeSampleRateHz,
+  sampleRatePending = false,
   status,
   recordPath,
   onCommandTextChange,
@@ -37,6 +46,8 @@ export function DevicePanel({
   onConnect,
   onDisconnect,
   onSend,
+  onSelectedSampleRateChange,
+  onApplySampleRate,
   onToggleRecording
 }: DevicePanelProps) {
   const deviceOptions = [
@@ -91,6 +102,25 @@ export function DevicePanel({
         <button className="icon-button" type="button" onClick={onDisconnect} disabled={!connected}>
           <Link2Off size={18} />
           <span>断开</span>
+        </button>
+      </div>
+      <div className="device-group">
+        <ThemedSelect
+          className="sample-rate-select"
+          ariaLabel="BLE 采样率"
+          value={String(selectedSampleRateHz)}
+          options={bleSampleRateOptions}
+          onChange={(value) => onSelectedSampleRateChange(Number(value) as BleSampleRate)}
+        />
+        <button
+          className="icon-button"
+          type="button"
+          onClick={onApplySampleRate}
+          disabled={!connected || sampleRatePending}
+          title={`向 FFF5 写入采样率命令，当前 ${activeSampleRateHz === 1000 ? '1 kHz' : `${activeSampleRateHz} Hz`}`}
+        >
+          <Gauge size={18} />
+          <span>{sampleRatePending ? '设置中' : '设置采样率'}</span>
         </button>
       </div>
       <div className="device-group">

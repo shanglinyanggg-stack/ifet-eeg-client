@@ -2,9 +2,10 @@ import { describe, expect, test } from 'vitest';
 import type { SampleEvent } from './protocol';
 import { SleepDemoChunkAssembler, SleepStagingChunkAssembler } from './sleep-staging-stream';
 
-function sample(sequence: number, eeg1 = 0x000101): SampleEvent {
+function sample(sequence: number, eeg1 = 0x000101, sampleRateHz = 125): SampleEvent {
   return {
-    timestamp: new Date(1_700_000_000_000 + sequence * 8).toISOString(),
+    timestamp: new Date(1_700_000_000_000 + sequence * (1000 / sampleRateHz)).toISOString(),
+    sampleRateHz,
     packet: {
       sequence: sequence & 0xff,
       ppg: {
@@ -50,6 +51,19 @@ describe('SleepStagingChunkAssembler', () => {
     expect(chunk.eeg_5s[1][0]).toBe(-0x7fffff);
     expect(chunk.eeg_5s[2][0]).toBe(0x7fffff);
     expect(chunk.eeg_5s[3][0]).toBe(-1);
+  });
+
+  test('resamples every selectable native rate to the fixed 100 Hz model input', () => {
+    for (const sampleRateHz of [125, 250, 500, 1_000]) {
+      const assembler = new SleepStagingChunkAssembler(`rate-${sampleRateHz}`);
+      const chunks = assembler.pushMany(Array.from(
+        { length: sampleRateHz * 5 },
+        (_, index) => sample(index, 0x000101, sampleRateHz)
+      ));
+      expect(chunks, `${sampleRateHz} Hz`).toHaveLength(1);
+      expect(chunks[0].eeg_5s[0], `${sampleRateHz} Hz`).toHaveLength(500);
+      expect(chunks[0].valid_5s.every(Boolean), `${sampleRateHz} Hz`).toBe(true);
+    }
   });
 
   test('fills sequence gaps with invalid zero samples', () => {

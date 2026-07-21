@@ -26,10 +26,18 @@ export interface DecodedPacket {
 
 export interface SampleEvent {
   timestamp: string;
+  sampleRateHz?: number;
   valid?: boolean;
   deviceSequence?: number | null;
   packet: DecodedPacket;
 }
+
+export const bleSampleRateOptions = [
+  { value: '125', label: '125 Hz · 72 01' },
+  { value: '250', label: '250 Hz · 72 02' },
+  { value: '500', label: '500 Hz · 72 03' },
+  { value: '1000', label: '1 kHz · 72 04' }
+];
 
 export interface DeviceInfo {
   id: string;

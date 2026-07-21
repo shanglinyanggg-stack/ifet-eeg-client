@@ -15,6 +15,8 @@ describe('DevicePanel connection identity', () => {
         recording={false}
         selectedDeviceId="AA:BB:CC:DD"
         commandText=""
+        selectedSampleRateHz={125}
+        activeSampleRateHz={125}
         status="设备已连接"
         recordPath=""
         onCommandTextChange={vi.fn()}
@@ -23,6 +25,8 @@ describe('DevicePanel connection identity', () => {
         onConnect={vi.fn()}
         onDisconnect={vi.fn()}
         onSend={vi.fn()}
+        onSelectedSampleRateChange={vi.fn()}
+        onApplySampleRate={vi.fn()}
         onToggleRecording={vi.fn()}
       />
     );
@@ -41,6 +45,8 @@ describe('DevicePanel connection identity', () => {
         recording={false}
         selectedDeviceId=""
         commandText=""
+        selectedSampleRateHz={500}
+        activeSampleRateHz={250}
         status="正在持续扫描"
         recordPath=""
         onCommandTextChange={vi.fn()}
@@ -49,6 +55,8 @@ describe('DevicePanel connection identity', () => {
         onConnect={vi.fn()}
         onDisconnect={vi.fn()}
         onSend={vi.fn()}
+        onSelectedSampleRateChange={vi.fn()}
+        onApplySampleRate={vi.fn()}
         onToggleRecording={vi.fn()}
       />
     );
@@ -57,5 +65,36 @@ describe('DevicePanel connection identity', () => {
     expect(stopButton).toBeEnabled();
     stopButton.click();
     expect(onScan).toHaveBeenCalledTimes(1);
+  });
+
+  test('exposes the FFF5 sample-rate command button', () => {
+    const onApplySampleRate = vi.fn();
+    render(
+      <DevicePanel
+        devices={[{ id: 'headset', name: 'TD10', rssi: -50 }]}
+        connected
+        scanning={false}
+        recording={false}
+        selectedDeviceId="headset"
+        commandText=""
+        selectedSampleRateHz={1000}
+        activeSampleRateHz={500}
+        status="设备已连接"
+        recordPath=""
+        onCommandTextChange={vi.fn()}
+        onSelectedDeviceChange={vi.fn()}
+        onSelectedSampleRateChange={vi.fn()}
+        onScan={vi.fn()}
+        onConnect={vi.fn()}
+        onDisconnect={vi.fn()}
+        onSend={vi.fn()}
+        onApplySampleRate={onApplySampleRate}
+        onToggleRecording={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole('combobox', { name: 'BLE 采样率' })).toHaveTextContent('1 kHz · 72 04');
+    screen.getByRole('button', { name: '设置采样率' }).click();
+    expect(onApplySampleRate).toHaveBeenCalledTimes(1);
   });
 });

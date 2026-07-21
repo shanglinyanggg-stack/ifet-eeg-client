@@ -51,6 +51,7 @@ pub struct DecodedPacket {
 #[serde(rename_all = "camelCase")]
 pub struct SampleEvent {
     pub timestamp: String,
+    pub sample_rate_hz: u32,
     pub valid: bool,
     pub device_sequence: Option<u8>,
     pub packet: DecodedPacket,

@@ -1,5 +1,8 @@
 use crate::models::{DeviceInfo, SampleEvent};
-use crate::protocol::{PacketStreamDecoder, OUTPUT_SAMPLE_INTERVAL_MILLISECONDS};
+use crate::protocol::{
+    sample_interval_nanoseconds, sample_rate_command, samples_per_notification,
+    PacketStreamDecoder, DEFAULT_SAMPLE_RATE_HZ,
+};
 use anyhow::{anyhow, Result};
 use btleplug::api::{
     Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
@@ -10,6 +13,7 @@ use futures::StreamExt;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -21,10 +25,20 @@ const PPG_SERVICE_UUID: Uuid = Uuid::from_u128(0x0000_fff0_0000_1000_8000_0080_5
 const PPG_RX_UUID: Uuid = Uuid::from_u128(0x0000_fff5_0000_1000_8000_0080_5f9b_34fb);
 const PPG_TX_UUID: Uuid = Uuid::from_u128(0x0000_fff9_0000_1000_8000_0080_5f9b_34fb);
 
-#[derive(Default)]
 pub struct BleManagerState {
     inner: Mutex<BleRuntime>,
     recorder: Arc<Mutex<Option<Recorder>>>,
+    sample_rate_hz: Arc<AtomicU32>,
+}
+
+impl Default for BleManagerState {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(BleRuntime::default()),
+            recorder: Arc::new(Mutex::new(None)),
+            sample_rate_hz: Arc::new(AtomicU32::new(DEFAULT_SAMPLE_RATE_HZ)),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -123,13 +137,21 @@ impl BleManagerState {
             }
         };
         let recorder = Arc::clone(&self.recorder);
+        let selected_sample_rate = Arc::clone(&self.sample_rate_hz);
         let task_app = app.clone();
         let notify_task = tokio::spawn(async move {
-            let mut decoder = PacketStreamDecoder::default();
+            let mut active_sample_rate = selected_sample_rate.load(Ordering::Relaxed);
+            let mut decoder = PacketStreamDecoder::new(active_sample_rate);
             let mut next_sample_timestamp: Option<chrono::DateTime<Utc>> = None;
             while let Some(notification) = notifications.next().await {
                 if notification.uuid != PPG_TX_UUID {
                     continue;
+                }
+                let requested_sample_rate = selected_sample_rate.load(Ordering::Relaxed);
+                if requested_sample_rate != active_sample_rate {
+                    active_sample_rate = requested_sample_rate;
+                    decoder.set_sample_rate(active_sample_rate);
+                    next_sample_timestamp = None;
                 }
                 let rows = decoder.push(&notification.value);
                 if rows.is_empty() {
@@ -145,11 +167,14 @@ impl BleManagerState {
                     let sample_timestamp = next_sample_timestamp.clone().unwrap_or(now);
                     next_sample_timestamp = Some(
                         sample_timestamp
-                            + ChronoDuration::milliseconds(OUTPUT_SAMPLE_INTERVAL_MILLISECONDS),
+                            + ChronoDuration::nanoseconds(sample_interval_nanoseconds(
+                                active_sample_rate,
+                            )),
                     );
                     let timestamp = sample_timestamp.to_rfc3339();
                     let event = SampleEvent {
                         timestamp: timestamp.clone(),
+                        sample_rate_hz: active_sample_rate,
                         valid: row.valid,
                         device_sequence: row.device_sequence,
                         packet: row.packet.clone(),
@@ -158,6 +183,7 @@ impl BleManagerState {
                     if let Err(error) = write_record(
                         &recorder,
                         &timestamp,
+                        active_sample_rate,
                         row.valid,
                         row.device_sequence,
                         &row.packet,
@@ -217,6 +243,19 @@ impl BleManagerState {
 
     pub async fn send_command(&self, hex: String) -> Result<()> {
         let bytes = parse_hex(&hex)?;
+        self.write_bytes(&bytes).await
+    }
+
+    pub async fn set_sample_rate(&self, sample_rate_hz: u32) -> Result<()> {
+        let command = sample_rate_command(sample_rate_hz)
+            .ok_or_else(|| anyhow!("不支持的采样率 {sample_rate_hz} Hz"))?;
+        debug_assert!(samples_per_notification(sample_rate_hz).is_some());
+        self.write_bytes(&command).await?;
+        self.sample_rate_hz.store(sample_rate_hz, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
         let (peripheral, write_char) = {
             let inner = self.inner.lock().await;
             (
@@ -231,7 +270,7 @@ impl BleManagerState {
             )
         };
         peripheral
-            .write(&write_char, &bytes, WriteType::WithoutResponse)
+            .write(&write_char, bytes, WriteType::WithoutResponse)
             .await?;
         Ok(())
     }
@@ -249,7 +288,7 @@ impl BleManagerState {
         let mut writer = BufWriter::new(file);
         writeln!(
             writer,
-            "time,seq,ir1,red1,green1,ir2,red2,green2,accX,accY,accZ,eeg1,eeg2,eeg3,eeg4,flag,valid,deviceSeq"
+            "time,sampleRateHz,seq,ir1,red1,green1,ir2,red2,green2,accX,accY,accZ,eeg1,eeg2,eeg3,eeg4,flag,valid,deviceSeq"
         )?;
         writer.flush()?;
 
@@ -312,7 +351,9 @@ impl BleManagerState {
             csv_field(&label),
             csv_field(&note),
             sample_count,
-            device_flag.map(|value| value.to_string()).unwrap_or_default(),
+            device_flag
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
             csv_field(&algorithm_action),
             optional_number(eeg1),
             optional_number(eeg2),
@@ -374,8 +415,25 @@ impl BleManagerState {
 }
 
 fn parse_hex(raw: &str) -> Result<Vec<u8>> {
+    let compact = raw.trim();
+    if !compact.is_empty() && compact.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        if compact.len() % 2 != 0 {
+            return Err(anyhow!("紧凑十六进制命令必须包含偶数字符"));
+        }
+        return compact
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                std::str::from_utf8(pair)
+                    .ok()
+                    .and_then(|value| u8::from_str_radix(value, 16).ok())
+                    .ok_or_else(|| anyhow!("命令包含非法十六进制字节"))
+            })
+            .collect();
+    }
+    let normalized = raw.replace("0x", "").replace("0X", "");
     let mut bytes = Vec::new();
-    for part in raw.split(|ch: char| !ch.is_ascii_hexdigit()) {
+    for part in normalized.split(|ch: char| !ch.is_ascii_hexdigit()) {
         if part.is_empty() {
             continue;
         }
@@ -392,6 +450,7 @@ fn parse_hex(raw: &str) -> Result<Vec<u8>> {
 async fn write_record(
     recorder: &Arc<Mutex<Option<Recorder>>>,
     timestamp: &str,
+    sample_rate_hz: u32,
     valid: bool,
     device_sequence: Option<u8>,
     packet: &crate::models::DecodedPacket,
@@ -404,8 +463,9 @@ async fn write_record(
     let eeg = packet.eeg.as_ref();
     writeln!(
         recording.writer,
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         timestamp,
+        sample_rate_hz,
         packet
             .sequence
             .map(|value| value.to_string())
@@ -452,7 +512,10 @@ async fn abort_recorder(recorder: &Arc<Mutex<Option<Recorder>>>) {
 fn csv_field(value: &str) -> String {
     format!(
         "\"{}\"",
-        value.replace('"', "\"\"").replace('\r', " ").replace('\n', " ")
+        value
+            .replace('"', "\"\"")
+            .replace('\r', " ")
+            .replace('\n', " ")
     )
 }
 
@@ -461,4 +524,17 @@ fn optional_number(value: Option<f64>) -> String {
         .filter(|number| number.is_finite())
         .map(|number| number.to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_hex;
+
+    #[test]
+    fn accepts_compact_and_spaced_sample_rate_commands() {
+        assert_eq!(parse_hex("7201").unwrap(), vec![0x72, 0x01]);
+        assert_eq!(parse_hex("72 04").unwrap(), vec![0x72, 0x04]);
+        assert_eq!(parse_hex("0x72, 0x03").unwrap(), vec![0x72, 0x03]);
+        assert!(parse_hex("721").is_err());
+    }
 }

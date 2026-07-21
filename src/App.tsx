@@ -73,6 +73,7 @@ import {
   saveSettings,
   themeOptions,
   type AppSettings,
+  type BleSampleRate,
   type ThemeName
 } from './domain/settings';
 import { SampleBatcher } from './domain/sample-batcher';
@@ -104,7 +105,6 @@ import { WaveformCanvas } from './components/WaveformCanvas';
 import { useMusicPlayer } from './hooks/useMusicPlayer';
 
 const BUFFER_SECONDS = 12;
-const MAX_POINTS = EEG_SAMPLE_RATE * BUFFER_SECONDS;
 const SAMPLE_FLUSH_INTERVAL_MS = 50;
 const allChannels = Object.keys(channelLabels) as ChannelKey[];
 const DROWSINESS_BANDS = createEegBands();
@@ -172,7 +172,11 @@ export function extractChannelValues(event: SampleEvent): Partial<Record<Channel
   };
 }
 
-function mergeSampleEvents(current: ChannelBuffers, events: SampleEvent[]): ChannelBuffers {
+function mergeSampleEvents(
+  current: ChannelBuffers,
+  events: SampleEvent[],
+  sampleRateHz: number
+): ChannelBuffers {
   const next: ChannelBuffers = { ...current };
   const pending = allChannels.reduce((acc, channel) => {
     acc[channel] = [];
@@ -188,7 +192,11 @@ function mergeSampleEvents(current: ChannelBuffers, events: SampleEvent[]): Chan
     }
   }
   for (const channel of allChannels) {
-    next[channel] = appendSamples(current[channel], pending[channel], MAX_POINTS);
+    next[channel] = appendSamples(
+      current[channel],
+      pending[channel],
+      Math.max(EEG_SAMPLE_RATE, sampleRateHz) * BUFFER_SECONDS
+    );
   }
   return next;
 }
@@ -260,6 +268,10 @@ export default function App() {
   const [recordPath, setRecordPath] = useState('');
   const [status, setStatus] = useState('待机');
   const [commandText, setCommandText] = useState('AA 55 01 01');
+  const [activeSampleRateHz, setActiveSampleRateHz] = useState<BleSampleRate>(
+    settings.bleSampleRateHz
+  );
+  const [sampleRatePending, setSampleRatePending] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [musicLibraryOpen, setMusicLibraryOpen] = useState(false);
   const [sampleCount, setSampleCount] = useState(0);
@@ -562,9 +574,11 @@ export default function App() {
 
   const flushSamples = useCallback((events: SampleEvent[]) => {
     if (events.length === 0) return;
+    const eventSampleRate = normalizeBleSampleRate(events[events.length - 1].sampleRateHz);
+    setActiveSampleRateHz(eventSampleRate);
     enqueueSleepChunks(sleepAssembler.current.pushMany(events));
     enqueueSleepDemoChunks(sleepDemoAssembler.current.pushMany(events));
-    setBuffers((current) => mergeSampleEvents(current, events));
+    setBuffers((current) => mergeSampleEvents(current, events, eventSampleRate));
     setDeviceFlags((current) => mergeDeviceFlags(current, events));
     setSampleCount((count) => count + events.length);
     setInvalidSampleCount((count) => count + events.filter((event) => event.valid === false).length);
@@ -617,6 +631,37 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [warmupRemaining]);
 
+  const applySampleRateCommand = useCallback(async (sampleRateHz: BleSampleRate): Promise<boolean> => {
+    setSampleRatePending(true);
+    setStatus(`正在向 FFF5 写入 ${sampleRateCommandText(sampleRateHz)}`);
+    try {
+      await invokeCommand('set_sample_rate', { sampleRateHz });
+      sampleBatcher.current?.flush();
+      sleepAssembler.current.setInputSampleRate(sampleRateHz);
+      sleepAssembler.current.reset(sleepAssembler.current.currentSessionId);
+      sleepDemoAssembler.current.setInputSampleRate(sampleRateHz);
+      sleepDemoAssembler.current.reset(sleepDemoAssembler.current.currentSessionId);
+      blinkDetector.current.reset();
+      lastBlinkSampleTimestamp.current = 0;
+      normalFilterCaches.clear();
+      wearableDrowsinessEstimator.current.reset();
+      setBuffers(createEmptyBuffers());
+      setDeviceFlags([]);
+      setSampleCount(0);
+      setInvalidSampleCount(0);
+      setActiveSampleRateHz(sampleRateHz);
+      setBlinkSnapshot(blinkDetector.current.snapshot());
+      setWearableDrowsiness(createWearableDrowsinessSnapshot());
+      setStatus(`采样率已设置为 ${formatSampleRate(sampleRateHz)}（${sampleRateCommandText(sampleRateHz)}）`);
+      return true;
+    } catch (error) {
+      setStatus(`采样率设置失败：${String(error)}`);
+      return false;
+    } finally {
+      setSampleRatePending(false);
+    }
+  }, []);
+
   // 自动重连：仅在开启 autoReconnect 且有上次连接的设备时触发
   const reconnectTimer = useRef<number | undefined>(undefined);
   const handleUnexpectedDisconnect = useCallback(() => {
@@ -634,14 +679,14 @@ export default function App() {
         await invokeCommand('connect_device', { deviceId });
         setConnected(true);
         reconnectAttempt.current = 0;
-        setStatus('设备已重新连接');
+        await applySampleRateCommand(settingsRef.current.bleSampleRateHz);
         startWarmup();
       } catch (error) {
         setStatus(`自动重连失败: ${error}`);
         handleUnexpectedDisconnect();
       }
     }, delay);
-  }, [settings.autoReconnect, startWarmup]);
+  }, [applySampleRateCommand, settings.autoReconnect, startWarmup]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -749,17 +794,17 @@ export default function App() {
     const referenceChannels = [buffers.eeg1, buffers.eeg2, buffers.eeg3, buffers.eeg4];
     const priorityChannels = [buffers.eeg1, buffers.eeg2];
     const channelMetrics = priorityChannels.flatMap((selected, channelIndex) => {
-      const analysisSamples = EEG_SAMPLE_RATE * 10;
+      const analysisSamples = activeSampleRateHz * 10;
       if (selected.length < analysisSamples) return [];
       const referenced = applyRobustMedianReference(selected, referenceChannels).slice(-analysisSamples);
       const bands = DROWSINESS_BANDS.map((definition, bandIndex) => {
         const filtered = wearableBandFilters.current[channelIndex][bandIndex].update(
-          `wearable|eeg${channelIndex + 1}|${definition.low}|${definition.high}|${settings.eeg.notch}`,
+          `wearable|eeg${channelIndex + 1}|${definition.low}|${definition.high}|${settings.eeg.notch}|${activeSampleRateHz}`,
           referenced,
           () => FilterChain.firBandpass({
             low: definition.low,
             high: definition.high,
-            sampleRate: EEG_SAMPLE_RATE,
+            sampleRate: activeSampleRateHz,
             notch: settings.eeg.notch
           })
         );
@@ -769,7 +814,7 @@ export default function App() {
             ? matchedFilterSleepTheta(
               filtered,
               referenced,
-              EEG_SAMPLE_RATE,
+              activeSampleRateHz,
               spectralArtifactContext,
               { lowHz: definition.low, highHz: definition.high }
             ).values
@@ -780,11 +825,11 @@ export default function App() {
         rawValues: referenced,
         bands,
         spindleValues: [],
-        sampleRate: EEG_SAMPLE_RATE
+        sampleRate: activeSampleRateHz
       })];
     });
     return channelMetrics.length > 0 ? averageDrowsinessMetrics(channelMetrics) : null;
-  }, [buffers, settings.eeg.notch, spectralArtifactContext]);
+  }, [activeSampleRateHz, buffers, settings.eeg.notch, spectralArtifactContext]);
 
   useEffect(() => {
     wearableDrowsinessEstimator.current.reset();
@@ -834,7 +879,7 @@ export default function App() {
     if (message) setStatus(message);
   };
 
-  const finishConnection = (device: DeviceInfo) => {
+  const finishConnection = async (device: DeviceInfo) => {
     scanActive.current = false;
     scanSession.current += 1;
     selectedDeviceIdRef.current = device.id;
@@ -844,7 +889,8 @@ export default function App() {
     setSelectedDeviceId(device.id);
     setConnected(true);
     setScanning(false);
-    setStatus(`设备已连接：${device.name}`);
+    setStatus(`设备已连接：${device.name}，正在设置采样率`);
+    await applySampleRateCommand(settingsRef.current.bleSampleRateHz);
     startWarmup();
   };
 
@@ -893,7 +939,7 @@ export default function App() {
           try {
             await invokeCommand('connect_device', { deviceId: device.id });
             // 后端已经完成连接时，即便用户恰好点击“停止扫描”，也必须同步真实连接状态。
-            finishConnection(device);
+            await finishConnection(device);
             return;
           } catch (error) {
             lastError = error;
@@ -924,7 +970,7 @@ export default function App() {
         name: selectedDeviceId,
         rssi: Number.MIN_SAFE_INTEGER
       };
-      finishConnection(device);
+      await finishConnection(device);
     } catch (error) {
       setStatus(String(error));
     }
@@ -1063,11 +1109,16 @@ export default function App() {
           {
             label: channelLabels[channel],
             color: channelColors[channel],
-            values: applyNormalFilters(visibleBuffers[channel], channel, settings)
+            values: applyNormalFilters(
+              visibleBuffers[channel],
+              channel,
+              settings,
+              activeSampleRateHz
+            )
           }
         ]
       }));
-  }, [visibleBuffers, settings]);
+  }, [activeSampleRateHz, visibleBuffers, settings]);
 
   const handleSelectSleepTrack = useCallback((trackId: string) => {
     setSettings((current) => ({
@@ -1540,7 +1591,7 @@ export default function App() {
   useEffect(() => {
     if (!sleepGuidanceActive || (!sleepMetrics && !onlineDemoSignal) || !settings.sleepMusic.enabled) return;
     const values = buffers[settings.eeg.selectedChannel];
-    const quality = estimateSignalQuality(values);
+    const quality = estimateSignalQuality(values, activeSampleRateHz);
     const demoPhase = settings.demoMode ? settings.sleepMusic.demoPhase : 'live';
     if (values.length < 40 && demoPhase === 'live' && !onlineDemoSignal) return;
     const service = settings.sleepMusic.serviceEnabled
@@ -1570,6 +1621,7 @@ export default function App() {
       demoSignal
     }, sleepConfig));
   }, [
+    activeSampleRateHz,
     buffers,
     settings.demoMode,
     settings.eeg.selectedChannel,
@@ -1737,6 +1789,11 @@ export default function App() {
     let newestTimestamp = lastBlinkSampleTimestamp.current;
     for (const point of eeg1) {
       if (point.timestamp <= lastBlinkSampleTimestamp.current) continue;
+      // 本地备用眨眼检测器的已验证滤波器为 125 Hz；高采样率流按时间戳
+      // 因果抽取到 125 Hz，避免 250/500/1000 Hz 被误当作更长的眨眼波形。
+      if (newestTimestamp > 0 && point.timestamp - newestTimestamp < 1000 / EEG_SAMPLE_RATE) {
+        continue;
+      }
       const eeg2 = eeg2ByTime.get(point.timestamp);
       const eeg3 = eeg3ByTime.get(point.timestamp);
       const eeg4 = eeg4ByTime.get(point.timestamp);
@@ -1756,6 +1813,7 @@ export default function App() {
     lastBlinkSampleTimestamp.current = newestTimestamp;
     setBlinkSnapshot(blinkDetector.current.snapshot(Date.now()));
   }, [
+    activeSampleRateHz,
     buffers,
     settings.sleepMusic.blinkControlEnabled,
     usingOnlineDemoDetector
@@ -1883,6 +1941,7 @@ export default function App() {
           connected={connected}
           status={status}
           sampleCount={sampleCount}
+          sampleRateHz={activeSampleRateHz}
           warmupRemaining={warmupRemaining}
           onSleepMetrics={handleSleepMetrics}
           musicPanel={musicPanel}
@@ -1906,7 +1965,7 @@ export default function App() {
             <h1>iFET EEG Client</h1>
             <span className="status-chip">
               {sampleCount} samples
-              <em>· {EEG_SAMPLE_RATE} Hz</em>
+              <em>· {formatSampleRate(activeSampleRateHz)}</em>
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
             </span>
           </div>
@@ -1943,6 +2002,9 @@ export default function App() {
           recordingPending={recordingPending}
           selectedDeviceId={selectedDeviceId}
           commandText={commandText}
+          selectedSampleRateHz={settings.bleSampleRateHz}
+          activeSampleRateHz={activeSampleRateHz}
+          sampleRatePending={sampleRatePending}
           status={status}
           recordPath={recordPath}
           onCommandTextChange={setCommandText}
@@ -1957,6 +2019,13 @@ export default function App() {
           onConnect={connectDevice}
           onDisconnect={disconnectDevice}
           onSend={sendCommand}
+          onSelectedSampleRateChange={(bleSampleRateHz) => setSettings((value) => ({
+            ...value,
+            bleSampleRateHz
+          }))}
+          onApplySampleRate={() => {
+            void applySampleRateCommand(settings.bleSampleRateHz);
+          }}
           onToggleRecording={toggleRecording}
         />
       )}
@@ -1983,6 +2052,7 @@ export default function App() {
               deviceName={devices.find((device) => device.id === selectedDeviceId)?.name ?? selectedDeviceId ?? '--'}
               linkStatus={status}
               sampleCount={sampleCount}
+              sampleRateHz={activeSampleRateHz}
               invalidSampleCount={invalidSampleCount}
               latestDeviceFlag={deviceFlags[deviceFlags.length - 1]?.value ?? null}
               recording={recording}
@@ -2029,6 +2099,7 @@ export default function App() {
               channel={settings.eeg.selectedChannel}
               values={visibleBuffers[settings.eeg.selectedChannel]}
               settings={settings.eeg}
+              sampleRateHz={activeSampleRateHz}
               onSleepMetrics={handleSleepMetrics}
               musicPanel={musicPanel}
               deltaArtifactContext={deltaArtifactContext}
@@ -2115,7 +2186,8 @@ function getNormalFilterCache(channel: ChannelKey): StreamingFilterCache {
 function applyNormalFilters(
   values: TimedValue[],
   channel: ChannelKey,
-  settings: AppSettings
+  settings: AppSettings,
+  sampleRateHz: number
 ): TimedValue[] {
   const bandpassOn = settings.filterEnabled && settings.filterHigh > settings.filterLow;
   const kalmanOn = settings.kalmanEnabled;
@@ -2123,10 +2195,11 @@ function applyNormalFilters(
   if (!bandpassOn && !kalmanOn) {
     // 滤波全关时清空缓存：否则下次再开时，关闭期间的样本永远不会被处理，输出出现断档
     cache.reset();
-    return isPpgChannel(channel) ? filterPpgDisplayWindow(values) : values;
+    return isPpgChannel(channel) ? filterPpgDisplayWindow(values, sampleRateHz) : values;
   }
   const key = [
     channel,
+    sampleRateHz,
     bandpassOn ? `${settings.filterLow}-${settings.filterHigh}` : 'off',
     kalmanOn ? `${settings.kalmanQ}|${settings.kalmanR}` : 'off'
   ].join('|');
@@ -2135,7 +2208,7 @@ function applyNormalFilters(
       ? FilterChain.butterworthBandpass({
         low: settings.filterLow,
         high: settings.filterHigh,
-        sampleRate: EEG_SAMPLE_RATE,
+        sampleRate: sampleRateHz,
         order: 2
       })
       : null;
@@ -2153,7 +2226,7 @@ function applyNormalFilters(
       }
     };
   });
-  return isPpgChannel(channel) ? filterPpgDisplayWindow(filtered) : filtered;
+  return isPpgChannel(channel) ? filterPpgDisplayWindow(filtered, sampleRateHz) : filtered;
 }
 
 function isPpgChannel(channel: ChannelKey): boolean {
@@ -2210,14 +2283,17 @@ function toSleepSessionConfig(settings: AppSettings): SleepSessionConfig {
   };
 }
 
-function estimateSignalQuality(values: TimedValue[]): { coverage: number; valid: boolean } {
+function estimateSignalQuality(
+  values: TimedValue[],
+  sampleRateHz: number
+): { coverage: number; valid: boolean } {
   if (values.length < 2) return { coverage: 0, valid: false };
   const lastTimestamp = values[values.length - 1].timestamp;
   const recent = values.filter((point) => point.timestamp >= lastTimestamp - 5_000);
   if (recent.length < 2) return { coverage: 0, valid: false };
 
   const spanMs = Math.max(10, recent[recent.length - 1].timestamp - recent[0].timestamp);
-  const expectedSamples = Math.max(1, Math.round(spanMs / 10) + 1);
+  const expectedSamples = Math.max(1, Math.round((spanMs / 1000) * sampleRateHz) + 1);
   const coverage = clamp01(recent.length / expectedSamples);
   let maximumGapMs = 0;
   for (let index = 1; index < recent.length; index += 1) {
@@ -2225,7 +2301,7 @@ function estimateSignalQuality(values: TimedValue[]): { coverage: number; valid:
   }
   return {
     coverage,
-    valid: recent.length >= 40 && coverage >= 0.6 && maximumGapMs <= 2_000
+    valid: recent.length >= Math.min(40, sampleRateHz) && coverage >= 0.6 && maximumGapMs <= 2_000
   };
 }
 
@@ -2247,6 +2323,19 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? value : minimum));
 }
 
+function normalizeBleSampleRate(value: number | null | undefined): BleSampleRate {
+  return value === 250 || value === 500 || value === 1_000 ? value : 125;
+}
+
+function formatSampleRate(value: BleSampleRate): string {
+  return value === 1_000 ? '1 kHz' : `${value} Hz`;
+}
+
+function sampleRateCommandText(value: BleSampleRate): string {
+  const parameter = value === 125 ? '01' : value === 250 ? '02' : value === 500 ? '03' : '04';
+  return `72 ${parameter}`;
+}
+
 function createSleepSessionId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `ifet-${crypto.randomUUID()}`;
@@ -2258,9 +2347,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8774;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8776;
   } catch {
-    return 8774;
+    return 8776;
   }
 }
 

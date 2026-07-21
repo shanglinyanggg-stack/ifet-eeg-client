@@ -8,6 +8,7 @@ describe('settings persistence', () => {
 
   test('uses EEG auto defaults', () => {
     expect(defaultSettings.displayMode).toBe('normal');
+    expect(defaultSettings.bleSampleRateHz).toBe(125);
     expect(defaultSettings.theme).toBe('neuro-dark');
     expect(defaultSettings.eeg.selectedChannel).toBe('eeg1');
     expect(defaultSettings.eeg.scale).toBe('auto');
@@ -18,7 +19,7 @@ describe('settings persistence', () => {
     expect(defaultSettings.sleepMusic.sleepStopEnabled).toBe(true);
     expect(defaultSettings.sleepMusic.maximumVolume).toBe(0.8);
     expect(defaultSettings.displayDelayMs).toBe(0);
-    expect(defaultSettings.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8775');
+    expect(defaultSettings.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8776');
     expect(defaultSettings.sleepMusic.drowsinessMode).toBe('wearable-trial');
     expect(defaultSettings.sleepMusic.libraryTracks).toHaveLength(5);
     expect(defaultSettings.sleepMusic.tracks).toHaveLength(0);
@@ -50,6 +51,7 @@ describe('settings persistence', () => {
       displayMode: 'eeg',
       theme: 'clinical-light',
       autoReconnect: true,
+      bleSampleRateHz: 500,
       eeg: {
         ...defaultSettings.eeg,
         selectedChannel: 'eeg3',
@@ -71,6 +73,7 @@ describe('settings persistence', () => {
     expect(loaded.displayMode).toBe('eeg');
     expect(loaded.theme).toBe('clinical-light');
     expect(loaded.autoReconnect).toBe(true);
+    expect(loaded.bleSampleRateHz).toBe(500);
     expect(loaded.eeg.selectedChannel).toBe('eeg3');
     expect(loaded.eeg.scale).toBe(120);
     expect(loaded.eeg.timeWindowSeconds).toBe(8);
@@ -106,6 +109,6 @@ describe('settings persistence', () => {
     expect(loaded.sleepMusic.libraryTracks.some((track) => track.id === 'builtin-star-alpha')).toBe(true);
     expect(loaded.eeg.bandRanges.delta).toEqual({ low: 0.5, high: 2 });
     expect(loaded.eeg.pure.bandRanges.delta).toEqual({ low: 0.5, high: 2 });
-    expect(loaded.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8775');
+    expect(loaded.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8776');
   });
 });

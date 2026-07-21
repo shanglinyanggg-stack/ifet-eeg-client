@@ -65,7 +65,7 @@ export function createDemoSamples(count: number): SampleEvent[] {
     const idx = startIdx + i;
     const t = idx / DEMO_SAMPLE_RATE;
     const timestamp = new Date(now - (count - 1 - i) * (1000 / DEMO_SAMPLE_RATE)).toISOString();
-    events.push({ timestamp, packet: buildPacket(t) });
+    events.push({ timestamp, sampleRateHz: DEMO_SAMPLE_RATE, packet: buildPacket(t) });
   }
   return events;
 }

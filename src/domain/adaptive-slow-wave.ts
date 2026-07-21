@@ -20,7 +20,7 @@ export class AdaptiveSlowWaveGate {
 
   update(
     values: TimedValue[],
-    options: { stage?: string; quiet?: boolean; streamKey?: string } = {}
+    options: { stage?: string; quiet?: boolean; streamKey?: string; sampleRateHz?: number } = {}
   ): SlowWaveGateSnapshot {
     if (options.streamKey !== undefined && options.streamKey !== this.streamKey) {
       this.streamKey = options.streamKey;
@@ -33,7 +33,8 @@ export class AdaptiveSlowWaveGate {
       return { weight: 0, currentLevel: 0, awakeBaseline: this.awakeBaseline };
     }
 
-    const recent = values.slice(-EEG_SAMPLE_RATE * 5);
+    const sampleRateHz = Math.max(1, Math.round(options.sampleRateHz ?? EEG_SAMPLE_RATE));
+    const recent = values.slice(-sampleRateHz * 5);
     const currentLevel = robustLevel(recent.map((point) => point.value));
     const timestamp = recent[recent.length - 1].timestamp;
     const stage = (options.stage ?? '').trim().toUpperCase();

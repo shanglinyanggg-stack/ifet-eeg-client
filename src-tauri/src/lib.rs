@@ -37,6 +37,17 @@ async fn send_command(state: State<'_, BleManagerState>, hex: String) -> Result<
 }
 
 #[tauri::command]
+async fn set_sample_rate(
+    state: State<'_, BleManagerState>,
+    sample_rate_hz: u32,
+) -> Result<(), String> {
+    state
+        .set_sample_rate(sample_rate_hz)
+        .await
+        .map_err(to_user_error)
+}
+
+#[tauri::command]
 async fn start_recording(
     app: AppHandle,
     state: State<'_, BleManagerState>,
@@ -248,6 +259,7 @@ pub fn run() {
             connect_device,
             disconnect_device,
             send_command,
+            set_sample_rate,
             start_recording,
             stop_recording,
             append_debug_marker,

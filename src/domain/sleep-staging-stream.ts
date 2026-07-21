@@ -23,7 +23,7 @@ interface StagingSample {
   valid: boolean;
 }
 
-const ACQUISITION_SAMPLE_RATE = 125;
+const DEFAULT_ACQUISITION_SAMPLE_RATE = 125;
 const MODEL_SAMPLE_RATE = 100;
 const STAGING_STEP_SAMPLES = MODEL_SAMPLE_RATE * 5;
 const DEMO_STEP_SAMPLES = MODEL_SAMPLE_RATE / 2;
@@ -31,7 +31,8 @@ const DEMO_STEP_SAMPLES = MODEL_SAMPLE_RATE / 2;
 abstract class AlgorithmChunkAssembler<TRequest> {
   private samples: StagingSample[] = [];
   private previousSequence: number | null = null;
-  private resampler = new FixedRateResampler(ACQUISITION_SAMPLE_RATE, MODEL_SAMPLE_RATE);
+  private inputSampleRate = DEFAULT_ACQUISITION_SAMPLE_RATE;
+  private resampler = new FixedRateResampler(this.inputSampleRate, MODEL_SAMPLE_RATE);
 
   protected constructor(private sessionId: string, private readonly chunkSamples: number) {}
 
@@ -44,6 +45,10 @@ abstract class AlgorithmChunkAssembler<TRequest> {
   }
 
   push(event: SampleEvent): TRequest[] {
+    const eventSampleRate = normalizeSampleRate(event.sampleRateHz);
+    if (eventSampleRate !== this.inputSampleRate) {
+      this.setInputSampleRate(eventSampleRate);
+    }
     const sequence = normalizeSequence(event.packet.sequence);
     if (sequence !== null && this.previousSequence !== null) {
       const delta = (sequence - this.previousSequence + 256) % 256;
@@ -70,7 +75,16 @@ abstract class AlgorithmChunkAssembler<TRequest> {
     this.sessionId = sessionId;
     this.samples = [];
     this.previousSequence = null;
-    this.resampler = new FixedRateResampler(ACQUISITION_SAMPLE_RATE, MODEL_SAMPLE_RATE);
+    this.resampler = new FixedRateResampler(this.inputSampleRate, MODEL_SAMPLE_RATE);
+  }
+
+  setInputSampleRate(sampleRate: number): void {
+    const normalized = normalizeSampleRate(sampleRate);
+    if (normalized === this.inputSampleRate) return;
+    this.inputSampleRate = normalized;
+    this.samples = [];
+    this.previousSequence = null;
+    this.resampler = new FixedRateResampler(normalized, MODEL_SAMPLE_RATE);
   }
 
   protected abstract createRequest(sessionId: string, samples: StagingSample[]): TRequest;
@@ -92,10 +106,10 @@ abstract class AlgorithmChunkAssembler<TRequest> {
 }
 
 /**
- * The headset is acquired and recorded at its native 125 Hz. The deployed
+ * The headset is acquired and recorded at its selected native rate. The deployed
  * sleep models remain fixed at their validated 100 Hz input contract, so the
- * conversion lives only at this boundary. Linear time-grid interpolation is
- * deterministic for the 4:5 ratio; invalid transport gaps stay invalid and
+ * conversion lives only at this boundary. Linear time-grid conversion is
+ * deterministic for 125/250/500/1000 Hz; invalid transport gaps stay invalid and
  * are never filled with apparently valid EEG.
  */
 class FixedRateResampler {
@@ -240,4 +254,10 @@ export function signedU24(value: number): number {
 function normalizeSequence(value: number | null | undefined): number | null {
   if (!Number.isInteger(value)) return null;
   return ((Number(value) % 256) + 256) % 256;
+}
+
+function normalizeSampleRate(value: number | null | undefined): number {
+  return value === 250 || value === 500 || value === 1_000
+    ? value
+    : DEFAULT_ACQUISITION_SAMPLE_RATE;
 }

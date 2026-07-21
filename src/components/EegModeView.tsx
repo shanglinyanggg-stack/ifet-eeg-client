@@ -31,6 +31,7 @@ interface EegModeViewProps {
   channel: EegChannel;
   values: TimedValue[];
   settings: EegSettings;
+  sampleRateHz?: number;
   onSleepMetrics?: (metrics: SleepMetrics) => void;
   musicPanel?: Omit<SleepMusicPanelProps, 'variant' | 'metrics'>;
   deltaArtifactContext?: SleepDeltaArtifactContext;
@@ -46,6 +47,7 @@ export function EegModeView({
   channel,
   values,
   settings,
+  sampleRateHz = EEG_SAMPLE_RATE,
   onSleepMetrics,
   musicPanel,
   deltaArtifactContext
@@ -61,11 +63,12 @@ export function EegModeView({
     channel,
     analysisValues,
     settings,
+    sampleRateHz,
     realtimeStage,
     deltaArtifactContext
   );
-  const spindleValues = useSpindleFilter(channel, analysisValues, settings);
-  const rawValues = useRawWaveformFilter(channel, values, settings);
+  const spindleValues = useSpindleFilter(channel, analysisValues, settings, sampleRateHz);
+  const rawValues = useRawWaveformFilter(channel, values, settings, sampleRateHz);
   const rawScale = resolveScale(settings.scale, rawValues.map((item) => item.value));
   const shareValues = computeShare(compensateAwakeAperiodicSlope(
     bandSeries.map((band, index) => {
@@ -88,8 +91,8 @@ export function EegModeView({
       values: band.analysisValues ?? band.values
     })),
     spindleValues,
-    sampleRate: EEG_SAMPLE_RATE
-  }), [analysisValues, bandSeries, spindleValues]);
+    sampleRate: sampleRateHz
+  }), [analysisValues, bandSeries, sampleRateHz, spindleValues]);
 
   useEffect(() => {
     onSleepMetrics?.(sleepMetrics);
@@ -137,6 +140,7 @@ function useBandFilters(
   channel: EegChannel,
   values: TimedValue[],
   settings: EegSettings,
+  sampleRateHz: number,
   realtimeStage: string,
   artifactContext?: SleepDeltaArtifactContext
 ): AnalysisWaveformSeries[] {
@@ -148,29 +152,30 @@ function useBandFilters(
 
   return useMemo(() => definitions.map((definition, index) => {
     const range = settings.bandRanges[definition.key] ?? { low: definition.low, high: definition.high };
-    const key = `${channel}|${definition.key}|${range.low}|${range.high}|${settings.notch}`;
+    const key = `${channel}|${definition.key}|${range.low}|${range.high}|${settings.notch}|${sampleRateHz}`;
     const cache = filters.current[index];
     const filtered = cache.update(key, values, () =>
       // Kaiser 窗 FIR：阻带 ~-61dB，相邻频带（如 δ/θ 的 4Hz）几乎不互相渗漏
       FilterChain.firBandpass({
         low: range.low,
         high: range.high,
-        sampleRate: EEG_SAMPLE_RATE,
+        sampleRate: sampleRateHz,
         notch: settings.notch
       })
     );
     const deltaCleaned = definition.key === 'delta'
-      ? cleanSleepDeltaWave(filtered, values, EEG_SAMPLE_RATE, artifactContext)
+      ? cleanSleepDeltaWave(filtered, values, sampleRateHz, artifactContext)
       : filtered;
     const displayValues = definition.key === 'delta'
       ? applySlowWaveGate(deltaCleaned, slowWaveGate.current.update(deltaCleaned, {
         stage: realtimeStage,
         quiet: !artifactContext?.blinkArtifactActive,
-        streamKey: `${channel}|${range.low}|${range.high}`
+        streamKey: `${channel}|${range.low}|${range.high}|${sampleRateHz}`,
+        sampleRateHz
       }).weight)
       : filtered;
     const analysisValues = definition.key === 'theta'
-      ? matchedFilterSleepTheta(filtered, values, EEG_SAMPLE_RATE, artifactContext, {
+      ? matchedFilterSleepTheta(filtered, values, sampleRateHz, artifactContext, {
         lowHz: range.low,
         highHz: range.high
       }).values
@@ -181,26 +186,36 @@ function useBandFilters(
       values: displayValues,
       analysisValues
     };
-  }), [artifactContext, channel, definitions, realtimeStage, settings.bandRanges, settings.notch, values]);
+  }), [artifactContext, channel, definitions, realtimeStage, sampleRateHz, settings.bandRanges, settings.notch, values]);
 }
 
-function useSpindleFilter(channel: EegChannel, values: TimedValue[], settings: EegSettings): TimedValue[] {
+function useSpindleFilter(
+  channel: EegChannel,
+  values: TimedValue[],
+  settings: EegSettings,
+  sampleRateHz: number
+): TimedValue[] {
   const filter = useRef(new StreamingFilterCache());
   return useMemo(() => {
-    const key = `${channel}|sigma|11|16|${settings.notch}`;
+    const key = `${channel}|sigma|11|16|${settings.notch}|${sampleRateHz}`;
     return filter.current.update(key, values, () =>
       FilterChain.firBandpass({
         low: 11,
         high: 16,
-        sampleRate: EEG_SAMPLE_RATE,
+        sampleRate: sampleRateHz,
         notch: settings.notch
       })
     );
-  }, [channel, settings.notch, values]);
+  }, [channel, sampleRateHz, settings.notch, values]);
 }
 
 // 原始波形的「EEG 带通」显示滤波：仅在设置开启时生效，与频带分离一样走增量缓存
-function useRawWaveformFilter(channel: EegChannel, values: TimedValue[], settings: EegSettings): TimedValue[] {
+function useRawWaveformFilter(
+  channel: EegChannel,
+  values: TimedValue[],
+  settings: EegSettings,
+  sampleRateHz: number
+): TimedValue[] {
   const filter = useRef(new StreamingFilterCache());
   return useMemo(() => {
     const enabled = settings.bandpassEnabled && settings.bandpassHigh > settings.bandpassLow;
@@ -208,16 +223,16 @@ function useRawWaveformFilter(channel: EegChannel, values: TimedValue[], setting
       filter.current.reset();
       return values;
     }
-    const key = `${channel}|raw|${settings.bandpassLow}-${settings.bandpassHigh}`;
+    const key = `${channel}|raw|${settings.bandpassLow}-${settings.bandpassHigh}|${sampleRateHz}`;
     return filter.current.update(key, values, () =>
       FilterChain.butterworthBandpass({
         low: settings.bandpassLow,
         high: settings.bandpassHigh,
-        sampleRate: EEG_SAMPLE_RATE,
+        sampleRate: sampleRateHz,
         order: 2
       })
     );
-  }, [channel, settings.bandpassEnabled, settings.bandpassLow, settings.bandpassHigh, values]);
+  }, [channel, sampleRateHz, settings.bandpassEnabled, settings.bandpassLow, settings.bandpassHigh, values]);
 }
 
 function averageAbs(values: TimedValue[]): number {

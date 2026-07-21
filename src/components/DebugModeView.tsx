@@ -27,7 +27,7 @@ import {
   type DebugEegScale,
   type DebugSignalView
 } from '../domain/debug-signal';
-import type { TimedValue } from '../domain/dsp';
+import { EEG_SAMPLE_RATE, type TimedValue } from '../domain/dsp';
 import type { MusicPlayerController } from '../domain/music-player';
 import {
   formatEnabledBlinkPairs,
@@ -75,6 +75,7 @@ interface DebugModeViewProps {
   deviceName: string;
   linkStatus: string;
   sampleCount: number;
+  sampleRateHz?: number;
   invalidSampleCount: number;
   latestDeviceFlag: number | null;
   recording: boolean;
@@ -139,6 +140,7 @@ export function DebugModeView({
   deviceName,
   linkStatus,
   sampleCount,
+  sampleRateHz = EEG_SAMPLE_RATE,
   invalidSampleCount,
   latestDeviceFlag,
   recording,
@@ -190,14 +192,17 @@ export function DebugModeView({
   }, [blinkTrial?.status]);
 
   const debugEeg = useMemo(() => Object.fromEntries(
-    EEG_CHANNELS.map(({ key }) => [key, filterDebugEegWindow(eegBuffers[key], filterMode)])
-  ) as Record<EegChannel, TimedValue[]>, [eegBuffers, filterMode]);
+    EEG_CHANNELS.map(({ key }) => [
+      key,
+      filterDebugEegWindow(eegBuffers[key], filterMode, sampleRateHz)
+    ])
+  ) as Record<EegChannel, TimedValue[]>, [eegBuffers, filterMode, sampleRateHz]);
   const debugPpg = useMemo(() => Object.fromEntries(
     (Object.keys(ppgBuffers) as PpgChannel[]).map((key) => [
       key,
-      filterPpgDisplayWindow(ppgBuffers[key], 100, 10)
+      filterPpgDisplayWindow(ppgBuffers[key], sampleRateHz, 10)
     ])
-  ) as Record<PpgChannel, TimedValue[]>, [ppgBuffers]);
+  ) as Record<PpgChannel, TimedValue[]>, [ppgBuffers, sampleRateHz]);
 
   const telemetry = demoResponse?.telemetry;
   const state = demoResponse?.state;
@@ -225,6 +230,7 @@ export function DebugModeView({
         <div className="debug-toolbar-status">
           <span data-state={connected ? 'ready' : 'idle'}>{connected ? `已连接 ${deviceName}` : 'BLE 未连接'}</span>
           <span>{sampleCount} samples</span>
+          <span>{sampleRateHz === 1_000 ? '1 kHz' : `${sampleRateHz} Hz`}</span>
           <span>丢包 {formatPercent(lossRate)}</span>
           <button type="button" className={recording ? 'is-recording' : ''} onClick={onToggleRecording} disabled={recordingPending}>
             {recording ? <CircleStop size={15} /> : <Play size={15} />}

@@ -20,10 +20,17 @@
     "write_characteristic_uuid": "0000fff5-0000-1000-8000-00805f9b34fb",
     "start_command_hex": "AA 55 01 01",
     "stop_command_hex": "",
+    "sample_rate_commands": {
+      "125": "72 01",
+      "250": "72 02",
+      "500": "72 03",
+      "1000": "72 04"
+    },
     "write_with_response": false
   },
   "stream": {
     "sample_rate_hz": 125,
+    "supported_sample_rates_hz": [125, 250, 500, 1000],
     "step_seconds": 5,
     "discontinuity_seconds": 10.0
   },
@@ -31,9 +38,11 @@
   "reconnect_seconds": 2.0,
   "packet": {
     "enabled": true,
-    "note": "Verified with legacy appav8 APK and a real TD10 FFF9 capture: 01 29 header, one 43-byte PpgPacket6 record, and a trailing 4-byte device clock.",
+    "note": "TD variable packet: 27-byte PPG/ACC prefix, 1/2/4/8 consecutive 12-byte EEG samples for 125/250/500/1000 Hz, then a 4-byte RTC tail.",
     "byteorder": "big",
     "exact_notification_bytes": 43,
+    "notification_bytes_by_rate": {"125": 43, "250": 55, "500": 79, "1000": 127},
+    "eeg_samples_per_notification_by_rate": {"125": 1, "250": 2, "500": 4, "1000": 8},
     "ignore_non_data_frames": true,
     "header": {
       "offset": 0,

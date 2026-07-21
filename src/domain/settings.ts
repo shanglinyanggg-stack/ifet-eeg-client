@@ -10,6 +10,7 @@ export type SleepMusicCover = 'stars' | 'ocean' | 'forest' | 'rain' | 'dawn';
 export type SleepMusicSource = 'builtin' | 'local';
 export type AlphaVolumeMode = '3' | '10' | '20' | 'smooth';
 export type DrowsinessMode = 'v025' | 'wearable-trial';
+export type BleSampleRate = 125 | 250 | 500 | 1000;
 
 export interface SleepMusicTrack {
   id: string;
@@ -154,6 +155,7 @@ export interface EegSettings {
 }
 
 export interface AppSettings {
+  bleSampleRateHz: BleSampleRate;
   displayMode: DisplayMode;
   displayDelayMs: number;
   theme: ThemeName;
@@ -176,6 +178,7 @@ export interface AppSettings {
 const STORAGE_KEY = 'ifet-eeg-client-settings';
 
 export const defaultSettings: AppSettings = {
+  bleSampleRateHz: 125,
   displayMode: 'normal',
   displayDelayMs: 0,
   theme: 'neuro-dark',
@@ -249,7 +252,7 @@ export const defaultSettings: AppSettings = {
     stopFadeSeconds: 8,
     audioOutputDeviceId: 'default',
     serviceEnabled: true,
-    serviceEndpoint: 'http://127.0.0.1:8775',
+    serviceEndpoint: 'http://127.0.0.1:8776',
     drowsinessMode: 'wearable-trial',
     alphaVolumeMode: '3',
     blinkControlEnabled: false,
@@ -284,6 +287,9 @@ export function saveSettings(settings: AppSettings): void {
 }
 
 function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSettings {
+  const bleSampleRateHz = isBleSampleRate(value.bleSampleRateHz)
+    ? value.bleSampleRateHz
+    : base.bleSampleRateHz;
   const tracks = Array.isArray(value.sleepMusic?.tracks)
     ? sanitizeTracks(value.sleepMusic.tracks, 24)
     : base.sleepMusic.tracks;
@@ -319,11 +325,13 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
     || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8772'
     || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8773'
     || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8774'
+    || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8775'
     ? base.sleepMusic.serviceEndpoint
     : value.sleepMusic?.serviceEndpoint;
   return {
     ...base,
     ...value,
+    bleSampleRateHz,
     visibleChannels: {
       ...base.visibleChannels,
       ...value.visibleChannels
@@ -360,6 +368,10 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
         : tracks[0]?.id ?? null
     }
   };
+}
+
+function isBleSampleRate(value: unknown): value is BleSampleRate {
+  return value === 125 || value === 250 || value === 500 || value === 1_000;
 }
 
 function sanitizeTracks(value: SleepMusicTrack[], limit: number): SleepMusicTrack[] {

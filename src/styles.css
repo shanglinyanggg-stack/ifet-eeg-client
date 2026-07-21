@@ -688,6 +688,10 @@ input::placeholder {
   letter-spacing: 0.02em;
 }
 
+.sample-rate-select {
+  min-width: 150px;
+}
+
 .record-path {
   display: inline-flex;
   align-items: center;
