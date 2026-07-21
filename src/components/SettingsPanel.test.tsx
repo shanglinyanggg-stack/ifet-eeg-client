@@ -68,5 +68,9 @@ describe('SettingsPanel sleep guidance settings', () => {
 
     fireEvent.click(screen.getByLabelText('显示模式'));
     expect(screen.getByRole('option', { name: '调试模式' })).toBeInTheDocument();
+    expect(screen.getAllByRole('option')
+      .map((option) => option.textContent)
+      .filter((label) => ['脑电模式', '调试模式', '全部波形'].includes(label ?? '')))
+      .toEqual(['脑电模式', '调试模式', '全部波形']);
   });
 });

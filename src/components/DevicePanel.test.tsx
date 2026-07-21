@@ -133,4 +133,33 @@ describe('DevicePanel connection identity', () => {
     expect(screen.getByLabelText('设备电量')).toHaveTextContent('4.20 V');
     expect(screen.getByLabelText('设备电量')).toHaveTextContent('正在充电');
   });
+
+  test('shows live recording duration as HH:MM:SS', () => {
+    render(
+      <DevicePanel
+        devices={[]}
+        connected={false}
+        scanning={false}
+        recording
+        recordingElapsedSeconds={3_723}
+        selectedDeviceId=""
+        commandText=""
+        selectedSampleRateHz={125}
+        activeSampleRateHz={125}
+        status="记录中"
+        recordPath="/tmp/record.csv"
+        onCommandTextChange={vi.fn()}
+        onSelectedDeviceChange={vi.fn()}
+        onSelectedSampleRateChange={vi.fn()}
+        onScan={vi.fn()}
+        onConnect={vi.fn()}
+        onDisconnect={vi.fn()}
+        onSend={vi.fn()}
+        onApplySampleRate={vi.fn()}
+        onToggleRecording={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText('数据记录时长')).toHaveTextContent('01:02:03');
+  });
 });

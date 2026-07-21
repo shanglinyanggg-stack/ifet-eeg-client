@@ -44,6 +44,7 @@ import {
   type SleepMusicPanelProps
 } from './SleepMusicPanel';
 import type { DeviceFlagRecord } from '../App';
+import { formatRecordingDuration } from '../domain/recording-time';
 
 interface PureWaveformViewProps {
   values: TimedValue[];
@@ -55,7 +56,10 @@ interface PureWaveformViewProps {
   status: string;
   sampleCount: number;
   sampleRateHz?: number;
+  acquisitionSampleRateHz?: number;
   batteryStatus?: BatteryEvent | null;
+  recording?: boolean;
+  recordingElapsedSeconds?: number;
   warmupRemaining: number;
   onSleepMetrics?: (metrics: SleepMetrics) => void;
   musicPanel?: Omit<SleepMusicPanelProps, 'variant' | 'metrics'>;
@@ -87,7 +91,10 @@ export function PureWaveformView({
   status,
   sampleCount,
   sampleRateHz = EEG_SAMPLE_RATE,
+  acquisitionSampleRateHz = sampleRateHz,
   batteryStatus = null,
+  recording = false,
+  recordingElapsedSeconds = 0,
   warmupRemaining,
   onSleepMetrics,
   musicPanel,
@@ -265,10 +272,11 @@ export function PureWaveformView({
             <h1>纯波形监测</h1>
             <span className={`status-chip ${connected ? 'is-online' : ''}`}>
               {sampleCount} samples
-              <em>· {sampleRateHz === 1_000 ? '1 kHz' : `${sampleRateHz} Hz`}</em>
+              <em>· {acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}</em>
               {connected && <em>· 电量 {batteryStatus
                 ? `${batteryStatus.voltage.toFixed(2)} V${batteryStatus.charging ? '（充电中）' : ''}`
                 : '等待上报'}</em>}
+              {recording && <em>· 记录 {formatRecordingDuration(recordingElapsedSeconds)}</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
               {status && <em>· {status}</em>}
             </span>

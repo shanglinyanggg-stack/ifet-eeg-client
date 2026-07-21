@@ -3,6 +3,7 @@ import {
   BatteryMedium,
   Bluetooth,
   CircleStop,
+  Clock3,
   Gauge,
   Link2Off,
   Radio,
@@ -12,6 +13,7 @@ import {
 } from 'lucide-react';
 import { bleSampleRateOptions, type BatteryEvent, type DeviceInfo } from '../domain/protocol';
 import type { BleSampleRate } from '../domain/settings';
+import { formatRecordingDuration } from '../domain/recording-time';
 import { ThemedSelect } from './ThemedSelect';
 
 interface DevicePanelProps {
@@ -20,6 +22,7 @@ interface DevicePanelProps {
   scanning: boolean;
   recording: boolean;
   recordingPending?: boolean;
+  recordingElapsedSeconds?: number;
   selectedDeviceId: string;
   commandText: string;
   selectedSampleRateHz: BleSampleRate;
@@ -45,6 +48,7 @@ export function DevicePanel({
   scanning,
   recording,
   recordingPending = false,
+  recordingElapsedSeconds = 0,
   selectedDeviceId,
   commandText,
   selectedSampleRateHz,
@@ -177,6 +181,12 @@ export function DevicePanel({
           {recording ? <CircleStop size={18} /> : <Save size={18} />}
           <span>{recordingPending ? '处理中' : recording ? '停止' : '记录'}</span>
         </button>
+        {recording && (
+          <span className="recording-time" aria-label="数据记录时长">
+            <Clock3 size={15} aria-hidden="true" />
+            记录时长 <strong>{formatRecordingDuration(recordingElapsedSeconds)}</strong>
+          </span>
+        )}
         {recordPath && <span className="record-path" title={recordPath}>{recordPath}</span>}
       </div>
     </section>

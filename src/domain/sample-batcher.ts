@@ -10,7 +10,12 @@ export class SampleBatcher<T> {
   constructor(private readonly options: SampleBatcherOptions<T>) {}
 
   push(item: T): void {
-    this.queue.push(item);
+    this.pushMany([item]);
+  }
+
+  pushMany(items: T[]): void {
+    if (items.length === 0) return;
+    this.queue.push(...items);
     if (this.timer !== null) return;
     this.timer = setTimeout(() => this.flush(), this.options.intervalMs);
   }

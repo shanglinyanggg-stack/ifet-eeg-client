@@ -40,4 +40,18 @@ describe('SampleBatcher', () => {
 
     expect(batches).toEqual([[1, 2]]);
   });
+
+  test('coalesces a native multi-sample BLE packet without per-sample scheduling', () => {
+    vi.useFakeTimers();
+    const batches: number[][] = [];
+    const batcher = new SampleBatcher<number>({
+      intervalMs: 100,
+      onFlush: (items) => batches.push(items)
+    });
+
+    batcher.pushMany([1, 2, 3, 4, 5, 6, 7, 8]);
+    vi.advanceTimersByTime(100);
+
+    expect(batches).toEqual([[1, 2, 3, 4, 5, 6, 7, 8]]);
+  });
 });

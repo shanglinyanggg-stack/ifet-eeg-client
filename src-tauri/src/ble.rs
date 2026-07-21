@@ -176,6 +176,7 @@ impl BleManagerState {
                 }) {
                     next_sample_timestamp = Some(now);
                 }
+                let mut sample_events = Vec::with_capacity(rows.len());
                 for row in rows {
                     let sample_timestamp = next_sample_timestamp.clone().unwrap_or(now);
                     next_sample_timestamp = Some(
@@ -192,7 +193,7 @@ impl BleManagerState {
                         device_sequence: row.device_sequence,
                         packet: row.packet.clone(),
                     };
-                    let _ = task_app.emit("ble://sample", &event);
+                    sample_events.push(event);
                     if let Err(error) = write_record(
                         &recorder,
                         &timestamp,
@@ -213,6 +214,9 @@ impl BleManagerState {
                         // 写盘失败后主动停止录制，避免后续样本继续往坏掉的 writer 写
                         abort_recorder(&recorder).await;
                     }
+                }
+                if !sample_events.is_empty() {
+                    let _ = task_app.emit("ble://samples", &sample_events);
                 }
             }
         });

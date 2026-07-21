@@ -76,6 +76,7 @@ interface DebugModeViewProps {
   linkStatus: string;
   sampleCount: number;
   sampleRateHz?: number;
+  acquisitionSampleRateHz?: number;
   invalidSampleCount: number;
   latestDeviceFlag: number | null;
   recording: boolean;
@@ -141,6 +142,7 @@ export function DebugModeView({
   linkStatus,
   sampleCount,
   sampleRateHz = EEG_SAMPLE_RATE,
+  acquisitionSampleRateHz = sampleRateHz,
   invalidSampleCount,
   latestDeviceFlag,
   recording,
@@ -230,7 +232,7 @@ export function DebugModeView({
         <div className="debug-toolbar-status">
           <span data-state={connected ? 'ready' : 'idle'}>{connected ? `已连接 ${deviceName}` : 'BLE 未连接'}</span>
           <span>{sampleCount} samples</span>
-          <span>{sampleRateHz === 1_000 ? '1 kHz' : `${sampleRateHz} Hz`}</span>
+          <span>{acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}</span>
           <span>丢包 {formatPercent(lossRate)}</span>
           <button type="button" className={recording ? 'is-recording' : ''} onClick={onToggleRecording} disabled={recordingPending}>
             {recording ? <CircleStop size={15} /> : <Play size={15} />}

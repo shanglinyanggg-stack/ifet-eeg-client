@@ -104,9 +104,16 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { ThemedSelect } from './components/ThemedSelect';
 import { WaveformCanvas } from './components/WaveformCanvas';
 import { useMusicPlayer } from './hooks/useMusicPlayer';
+import { formatRecordingDuration } from './domain/recording-time';
+import {
+  decimateDisplayValues,
+  DISPLAY_PROCESSING_SAMPLE_RATE_HZ,
+  resolveDisplaySampleRate
+} from './domain/display-decimation';
 
 const BUFFER_SECONDS = 12;
-const SAMPLE_FLUSH_INTERVAL_MS = 50;
+// 10 FPS 足以连续观察 EEG；算法与 CSV 在 flush 中仍接收全部原始样本。
+const SAMPLE_FLUSH_INTERVAL_MS = 100;
 const allChannels = Object.keys(channelLabels) as ChannelKey[];
 const DROWSINESS_BANDS = createEegBands();
 
@@ -193,10 +200,15 @@ function mergeSampleEvents(
     }
   }
   for (const channel of allChannels) {
+    const displayValues = decimateDisplayValues(
+      current[channel][current[channel].length - 1]?.timestamp,
+      pending[channel],
+      sampleRateHz
+    );
     next[channel] = appendSamples(
       current[channel],
-      pending[channel],
-      Math.max(EEG_SAMPLE_RATE, sampleRateHz) * BUFFER_SECONDS
+      displayValues,
+      DISPLAY_PROCESSING_SAMPLE_RATE_HZ * BUFFER_SECONDS
     );
   }
   return next;
@@ -265,6 +277,8 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
+  const [recordingElapsedSeconds, setRecordingElapsedSeconds] = useState(0);
   const [recordingPending, setRecordingPending] = useState(false);
   const [recordPath, setRecordPath] = useState('');
   const [status, setStatus] = useState('待机');
@@ -274,6 +288,7 @@ export default function App() {
     settings.bleSampleRateHz
   );
   const [sampleRatePending, setSampleRatePending] = useState(false);
+  const displaySampleRateHz = resolveDisplaySampleRate(activeSampleRateHz);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [musicLibraryOpen, setMusicLibraryOpen] = useState(false);
   const [sampleCount, setSampleCount] = useState(0);
@@ -368,6 +383,16 @@ export default function App() {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  useEffect(() => {
+    if (!recording || recordingStartedAt === null) return;
+    const updateElapsed = () => {
+      setRecordingElapsedSeconds(Math.max(0, Math.floor((Date.now() - recordingStartedAt) / 1000)));
+    };
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1_000);
+    return () => window.clearInterval(timer);
+  }, [recording, recordingStartedAt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -598,13 +623,14 @@ export default function App() {
     };
   }, [flushSamples]);
 
-  const pushSample = useCallback((event: SampleEvent) => {
+  const pushSamples = useCallback((events: SampleEvent[]) => {
+    if (events.length === 0) return;
     const batcher = sampleBatcher.current;
     if (batcher) {
-      batcher.push(event);
+      batcher.pushMany(events);
       return;
     }
-    flushSamples([event]);
+    flushSamples(events);
   }, [flushSamples]);
 
   // 演示模式：以与真机一致的 125 Hz 注入模拟样本。
@@ -696,8 +722,8 @@ export default function App() {
     let cancelled = false;
     const unlisteners: Array<() => void> = [];
 
-    listen<SampleEvent>('ble://sample', (event) => {
-      if (!cancelled) pushSample(event.payload);
+    listen<SampleEvent[]>('ble://samples', (event) => {
+      if (!cancelled) pushSamples(event.payload);
     }).then((unlisten) => {
       if (cancelled) {
         unlisten();
@@ -736,7 +762,7 @@ export default function App() {
       cancelled = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [pushSample, handleUnexpectedDisconnect]);
+  }, [pushSamples, handleUnexpectedDisconnect]);
 
   const visibleBuffers = useMemo(() => {
     const result: ChannelBuffers = { ...buffers };
@@ -808,17 +834,17 @@ export default function App() {
     const referenceChannels = [buffers.eeg1, buffers.eeg2, buffers.eeg3, buffers.eeg4];
     const priorityChannels = [buffers.eeg1, buffers.eeg2];
     const channelMetrics = priorityChannels.flatMap((selected, channelIndex) => {
-      const analysisSamples = activeSampleRateHz * 10;
+      const analysisSamples = displaySampleRateHz * 10;
       if (selected.length < analysisSamples) return [];
       const referenced = applyRobustMedianReference(selected, referenceChannels).slice(-analysisSamples);
       const bands = DROWSINESS_BANDS.map((definition, bandIndex) => {
         const filtered = wearableBandFilters.current[channelIndex][bandIndex].update(
-          `wearable|eeg${channelIndex + 1}|${definition.low}|${definition.high}|${settings.eeg.notch}|${activeSampleRateHz}`,
+          `wearable|eeg${channelIndex + 1}|${definition.low}|${definition.high}|${settings.eeg.notch}|${displaySampleRateHz}`,
           referenced,
           () => FilterChain.firBandpass({
             low: definition.low,
             high: definition.high,
-            sampleRate: activeSampleRateHz,
+            sampleRate: displaySampleRateHz,
             notch: settings.eeg.notch
           })
         );
@@ -828,7 +854,7 @@ export default function App() {
             ? matchedFilterSleepTheta(
               filtered,
               referenced,
-              activeSampleRateHz,
+              displaySampleRateHz,
               spectralArtifactContext,
               { lowHz: definition.low, highHz: definition.high }
             ).values
@@ -839,11 +865,11 @@ export default function App() {
         rawValues: referenced,
         bands,
         spindleValues: [],
-        sampleRate: activeSampleRateHz
+        sampleRate: displaySampleRateHz
       })];
     });
     return channelMetrics.length > 0 ? averageDrowsinessMetrics(channelMetrics) : null;
-  }, [activeSampleRateHz, buffers, settings.eeg.notch, spectralArtifactContext]);
+  }, [buffers, displaySampleRateHz, settings.eeg.notch, spectralArtifactContext]);
 
   useEffect(() => {
     wearableDrowsinessEstimator.current.reset();
@@ -1028,6 +1054,8 @@ export default function App() {
         setDebugMarkerStatus('正在写入并关闭记录文件…');
         await invokeCommand('stop_recording');
         setRecording(false);
+        setRecordingStartedAt(null);
+        setRecordingElapsedSeconds(0);
         setStatus('记录已停止');
         setDebugMarkerStatus('记录已停止，数据与标记文件已保存');
       } else {
@@ -1036,6 +1064,8 @@ export default function App() {
         const path = await invokeCommand<string>('start_recording', { directory: settings.recordDir || null });
         setRecordPath(path);
         setRecording(true);
+        setRecordingStartedAt(Date.now());
+        setRecordingElapsedSeconds(0);
         setStatus('记录已开始');
         setDebugMarkers([]);
         setDebugMarkerPath(markerPathFromRecordPath(path));
@@ -1130,12 +1160,12 @@ export default function App() {
               visibleBuffers[channel],
               channel,
               settings,
-              activeSampleRateHz
+              displaySampleRateHz
             )
           }
         ]
       }));
-  }, [activeSampleRateHz, visibleBuffers, settings]);
+  }, [displaySampleRateHz, visibleBuffers, settings]);
 
   const handleSelectSleepTrack = useCallback((trackId: string) => {
     setSettings((current) => ({
@@ -1608,7 +1638,7 @@ export default function App() {
   useEffect(() => {
     if (!sleepGuidanceActive || (!sleepMetrics && !onlineDemoSignal) || !settings.sleepMusic.enabled) return;
     const values = buffers[settings.eeg.selectedChannel];
-    const quality = estimateSignalQuality(values, activeSampleRateHz);
+    const quality = estimateSignalQuality(values, displaySampleRateHz);
     const demoPhase = settings.demoMode ? settings.sleepMusic.demoPhase : 'live';
     if (values.length < 40 && demoPhase === 'live' && !onlineDemoSignal) return;
     const service = settings.sleepMusic.serviceEnabled
@@ -1638,7 +1668,7 @@ export default function App() {
       demoSignal
     }, sleepConfig));
   }, [
-    activeSampleRateHz,
+    displaySampleRateHz,
     buffers,
     settings.demoMode,
     settings.eeg.selectedChannel,
@@ -1958,8 +1988,11 @@ export default function App() {
           connected={connected}
           status={status}
           sampleCount={sampleCount}
-          sampleRateHz={activeSampleRateHz}
+          sampleRateHz={displaySampleRateHz}
+          acquisitionSampleRateHz={activeSampleRateHz}
           batteryStatus={batteryStatus}
+          recording={recording}
+          recordingElapsedSeconds={recordingElapsedSeconds}
           warmupRemaining={warmupRemaining}
           onSleepMetrics={handleSleepMetrics}
           musicPanel={musicPanel}
@@ -1987,6 +2020,7 @@ export default function App() {
               {connected && <em>· 电量 {batteryStatus
                 ? `${batteryStatus.voltage.toFixed(2)} V${batteryStatus.charging ? '（充电中）' : ''}`
                 : '等待上报'}</em>}
+              {recording && <em>· 记录 {formatRecordingDuration(recordingElapsedSeconds)}</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
             </span>
           </div>
@@ -2021,6 +2055,7 @@ export default function App() {
           scanning={scanning}
           recording={recording}
           recordingPending={recordingPending}
+          recordingElapsedSeconds={recordingElapsedSeconds}
           selectedDeviceId={selectedDeviceId}
           commandText={commandText}
           selectedSampleRateHz={settings.bleSampleRateHz}
@@ -2074,7 +2109,8 @@ export default function App() {
               deviceName={devices.find((device) => device.id === selectedDeviceId)?.name ?? selectedDeviceId ?? '--'}
               linkStatus={status}
               sampleCount={sampleCount}
-              sampleRateHz={activeSampleRateHz}
+              sampleRateHz={displaySampleRateHz}
+              acquisitionSampleRateHz={activeSampleRateHz}
               invalidSampleCount={invalidSampleCount}
               latestDeviceFlag={deviceFlags[deviceFlags.length - 1]?.value ?? null}
               recording={recording}
@@ -2121,7 +2157,7 @@ export default function App() {
               channel={settings.eeg.selectedChannel}
               values={visibleBuffers[settings.eeg.selectedChannel]}
               settings={settings.eeg}
-              sampleRateHz={activeSampleRateHz}
+              sampleRateHz={displaySampleRateHz}
               onSleepMetrics={handleSleepMetrics}
               musicPanel={musicPanel}
               deltaArtifactContext={deltaArtifactContext}
@@ -2369,9 +2405,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8777;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8778;
   } catch {
-    return 8777;
+    return 8778;
   }
 }
 
