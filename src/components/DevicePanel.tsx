@@ -1,5 +1,16 @@
-import { Bluetooth, CircleStop, Gauge, Link2Off, Radio, RefreshCcw, Save, Send } from 'lucide-react';
-import { bleSampleRateOptions, type DeviceInfo } from '../domain/protocol';
+import {
+  BatteryCharging,
+  BatteryMedium,
+  Bluetooth,
+  CircleStop,
+  Gauge,
+  Link2Off,
+  Radio,
+  RefreshCcw,
+  Save,
+  Send
+} from 'lucide-react';
+import { bleSampleRateOptions, type BatteryEvent, type DeviceInfo } from '../domain/protocol';
 import type { BleSampleRate } from '../domain/settings';
 import { ThemedSelect } from './ThemedSelect';
 
@@ -14,6 +25,7 @@ interface DevicePanelProps {
   selectedSampleRateHz: BleSampleRate;
   activeSampleRateHz: BleSampleRate;
   sampleRatePending?: boolean;
+  batteryStatus?: BatteryEvent | null;
   status: string;
   recordPath: string;
   onCommandTextChange: (value: string) => void;
@@ -38,6 +50,7 @@ export function DevicePanel({
   selectedSampleRateHz,
   activeSampleRateHz,
   sampleRatePending = false,
+  batteryStatus = null,
   status,
   recordPath,
   onCommandTextChange,
@@ -103,6 +116,24 @@ export function DevicePanel({
           <Link2Off size={18} />
           <span>断开</span>
         </button>
+      </div>
+      <div
+        className="device-group battery-group"
+        aria-label="设备电量"
+        title={batteryStatus
+          ? `原始计量值 ${batteryStatus.rawValue} · 序号 ${batteryStatus.sequence}`
+          : connected ? '等待设备发送 0x03/0x04 电压帧' : '连接设备后显示电量'}
+      >
+        {batteryStatus?.charging
+          ? <BatteryCharging size={20} aria-hidden="true" />
+          : <BatteryMedium size={20} aria-hidden="true" />}
+        <div className="battery-copy">
+          <span>设备电量</span>
+          <strong>{batteryStatus ? `${batteryStatus.voltage.toFixed(2)} V` : '--'}</strong>
+          <small>{batteryStatus
+            ? batteryStatus.charging ? '正在充电' : '正常使用'
+            : connected ? '等待上报' : '未连接'}</small>
+        </div>
       </div>
       <div className="device-group">
         <ThemedSelect

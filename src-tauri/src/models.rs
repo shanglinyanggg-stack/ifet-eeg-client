@@ -15,6 +15,16 @@ pub struct StatusEvent {
     pub connected: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatteryEvent {
+    pub timestamp: String,
+    pub sequence: u8,
+    pub charging: bool,
+    pub raw_value: u32,
+    pub voltage: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PpgSample {

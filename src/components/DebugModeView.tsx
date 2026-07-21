@@ -218,7 +218,7 @@ export function DebugModeView({
   const disabledPairs = formatEnabledBlinkPairs(telemetry?.blink_runtime_disabled_pairs);
 
   return (
-    <div className="debug-mode" aria-label="调试记录界面">
+    <div className="debug-mode" aria-label="调试模式界面">
       <header className="debug-toolbar panel">
         <div className="debug-toolbar-title">
           <Bug size={18} />

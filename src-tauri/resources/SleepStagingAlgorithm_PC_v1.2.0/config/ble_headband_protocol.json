@@ -36,6 +36,17 @@
   },
   "queue_size": 4096,
   "reconnect_seconds": 2.0,
+  "battery_packet": {
+    "notification_bytes": 7,
+    "header_normal_use_hex": "03",
+    "header_charging_hex": "04",
+    "sequence_offset": 1,
+    "unused_offset": 2,
+    "measurement_offset": 3,
+    "measurement_bytes": 4,
+    "byteorder": "big",
+    "voltage_formula": "measurement / 135"
+  },
   "packet": {
     "enabled": true,
     "note": "TD variable packet: 27-byte PPG/ACC prefix, 1/2/4/8 consecutive 12-byte EEG samples for 125/250/500/1000 Hz, then a 4-byte RTC tail.",

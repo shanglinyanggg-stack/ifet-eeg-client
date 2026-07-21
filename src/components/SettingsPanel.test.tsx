@@ -67,6 +67,6 @@ describe('SettingsPanel sleep guidance settings', () => {
     }));
 
     fireEvent.click(screen.getByLabelText('显示模式'));
-    expect(screen.getByRole('option', { name: '调试记录' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '调试模式' })).toBeInTheDocument();
   });
 });

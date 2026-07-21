@@ -97,4 +97,40 @@ describe('DevicePanel connection identity', () => {
     screen.getByRole('button', { name: '设置采样率' }).click();
     expect(onApplySampleRate).toHaveBeenCalledTimes(1);
   });
+
+  test('shows documented battery voltage and charging state', () => {
+    render(
+      <DevicePanel
+        devices={[{ id: 'headset', name: 'TD10', rssi: -50 }]}
+        connected
+        scanning={false}
+        recording={false}
+        selectedDeviceId="headset"
+        commandText=""
+        selectedSampleRateHz={125}
+        activeSampleRateHz={125}
+        batteryStatus={{
+          timestamp: '2026-07-21T12:00:00Z',
+          sequence: 8,
+          charging: true,
+          rawValue: 567,
+          voltage: 4.2
+        }}
+        status="设备已连接"
+        recordPath=""
+        onCommandTextChange={vi.fn()}
+        onSelectedDeviceChange={vi.fn()}
+        onSelectedSampleRateChange={vi.fn()}
+        onScan={vi.fn()}
+        onConnect={vi.fn()}
+        onDisconnect={vi.fn()}
+        onSend={vi.fn()}
+        onApplySampleRate={vi.fn()}
+        onToggleRecording={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText('设备电量')).toHaveTextContent('4.20 V');
+    expect(screen.getByLabelText('设备电量')).toHaveTextContent('正在充电');
+  });
 });

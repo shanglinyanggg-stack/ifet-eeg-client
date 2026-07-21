@@ -84,6 +84,7 @@ import { connectionCandidates, mergeDiscoveredDevices } from './domain/ble-disco
 import {
   channelColors,
   channelLabels,
+  type BatteryEvent,
   type ChannelKey,
   type DeviceInfo,
   type SampleEvent,
@@ -267,6 +268,7 @@ export default function App() {
   const [recordingPending, setRecordingPending] = useState(false);
   const [recordPath, setRecordPath] = useState('');
   const [status, setStatus] = useState('待机');
+  const [batteryStatus, setBatteryStatus] = useState<BatteryEvent | null>(null);
   const [commandText, setCommandText] = useState('AA 55 01 01');
   const [activeSampleRateHz, setActiveSampleRateHz] = useState<BleSampleRate>(
     settings.bleSampleRateHz
@@ -676,6 +678,7 @@ export default function App() {
       reconnectTimer.current = undefined;
       try {
         setStatus('正在自动重连设备');
+        setBatteryStatus(null);
         await invokeCommand('connect_device', { deviceId });
         setConnected(true);
         reconnectAttempt.current = 0;
@@ -703,11 +706,22 @@ export default function App() {
       }
     });
 
+    listen<BatteryEvent>('ble://battery', (event) => {
+      if (!cancelled) setBatteryStatus(event.payload);
+    }).then((unlisten) => {
+      if (cancelled) {
+        unlisten();
+      } else {
+        unlisteners.push(unlisten);
+      }
+    });
+
     listen<StatusEvent>('ble://status', (event) => {
       if (cancelled) return;
       setConnected(event.payload.connected);
       setStatus(event.payload.message);
       if (!event.payload.connected) {
+        setBatteryStatus(null);
         handleUnexpectedDisconnect();
       }
     }).then((unlisten) => {
@@ -937,6 +951,7 @@ export default function App() {
           if (!scanActive.current || scanSession.current !== session || connectedRef.current) break;
           setStatus(`发现 ${device.name}，正在自动连接`);
           try {
+            setBatteryStatus(null);
             await invokeCommand('connect_device', { deviceId: device.id });
             // 后端已经完成连接时，即便用户恰好点击“停止扫描”，也必须同步真实连接状态。
             await finishConnection(device);
@@ -964,6 +979,7 @@ export default function App() {
     stopContinuousScan();
     try {
       setStatus('正在连接设备');
+      setBatteryStatus(null);
       await invokeCommand('connect_device', { deviceId: selectedDeviceId });
       const device = devices.find((item) => item.id === selectedDeviceId) ?? {
         id: selectedDeviceId,
@@ -987,6 +1003,7 @@ export default function App() {
       }
       await invokeCommand('disconnect_device');
       setConnected(false);
+      setBatteryStatus(null);
       setStatus('已断开连接');
     } catch (error) {
       setStatus(String(error));
@@ -1942,6 +1959,7 @@ export default function App() {
           status={status}
           sampleCount={sampleCount}
           sampleRateHz={activeSampleRateHz}
+          batteryStatus={batteryStatus}
           warmupRemaining={warmupRemaining}
           onSleepMetrics={handleSleepMetrics}
           musicPanel={musicPanel}
@@ -1966,6 +1984,9 @@ export default function App() {
             <span className="status-chip">
               {sampleCount} samples
               <em>· {formatSampleRate(activeSampleRateHz)}</em>
+              {connected && <em>· 电量 {batteryStatus
+                ? `${batteryStatus.voltage.toFixed(2)} V${batteryStatus.charging ? '（充电中）' : ''}`
+                : '等待上报'}</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
             </span>
           </div>
@@ -2005,6 +2026,7 @@ export default function App() {
           selectedSampleRateHz={settings.bleSampleRateHz}
           activeSampleRateHz={activeSampleRateHz}
           sampleRatePending={sampleRatePending}
+          batteryStatus={batteryStatus}
           status={status}
           recordPath={recordPath}
           onCommandTextChange={setCommandText}
@@ -2347,9 +2369,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8776;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8777;
   } catch {
-    return 8776;
+    return 8777;
   }
 }
 

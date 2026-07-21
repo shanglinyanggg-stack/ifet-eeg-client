@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "iFET EEG Client Sleep 0.2.14",
-  "version": "0.2.14",
-  "identifier": "com.ifet.eeg-client.sleep-v0214",
+  "productName": "iFET EEG Client Sleep 0.2.15",
+  "version": "0.2.15",
+  "identifier": "com.ifet.eeg-client.sleep-v0215",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "iFET EEG Client Sleep 0.2.14",
+        "title": "iFET EEG Client Sleep 0.2.15",
         "width": 1440,
         "height": 920,
         "minWidth": 1080,

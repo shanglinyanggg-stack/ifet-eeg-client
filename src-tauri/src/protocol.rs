@@ -5,6 +5,15 @@ const TD_RTC_BYTES: usize = 4;
 const TD_EEG_SAMPLE_BYTES: usize = 12;
 const TD_SEQUENCE_CLOCK_HZ: f64 = 125.0;
 pub const DEFAULT_SAMPLE_RATE_HZ: u32 = 125;
+const BATTERY_VOLTAGE_DIVISOR: f64 = 135.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BatteryFrame {
+    pub sequence: u8,
+    pub charging: bool,
+    pub raw_value: u32,
+    pub voltage: f64,
+}
 
 pub fn sample_interval_nanoseconds(sample_rate_hz: u32) -> i64 {
     1_000_000_000_i64 / i64::from(sample_rate_hz.max(1))
@@ -29,6 +38,21 @@ pub fn sample_rate_command(sample_rate_hz: u32) -> Option<[u8; 2]> {
         _ => return None,
     };
     Some([0x72, parameter])
+}
+
+/// 解析 TD 电压上报帧：0x03 表示正常使用，0x04 表示正在充电。
+/// 文档规定电压计量值为大端 32 位整数，实际电压 = 计量值 / 135。
+pub fn parse_battery_frame(raw: &[u8]) -> Option<BatteryFrame> {
+    if raw.len() != 7 || !matches!(raw[0], 0x03 | 0x04) {
+        return None;
+    }
+    let raw_value = u32::from_be_bytes([raw[3], raw[4], raw[5], raw[6]]);
+    Some(BatteryFrame {
+        sequence: raw[1],
+        charging: raw[0] == 0x04,
+        raw_value,
+        voltage: raw_value as f64 / BATTERY_VOLTAGE_DIVISOR,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,7 +413,8 @@ fn read_i16(raw: &[u8], index: usize) -> Option<i16> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_packet, sample_interval_nanoseconds, sample_rate_command, PacketStreamDecoder,
+        parse_battery_frame, parse_packet, sample_interval_nanoseconds, sample_rate_command,
+        PacketStreamDecoder,
     };
 
     fn push_u24(buf: &mut Vec<u8>, value: u32) {
@@ -545,5 +570,25 @@ mod tests {
     fn rejects_short_or_wrong_header_packets() {
         assert!(parse_packet(&[0x01, 26, 7]).is_none());
         assert!(parse_packet(&[0x02, 26, 7]).is_none());
+    }
+
+    #[test]
+    fn parses_battery_voltage_and_charging_frames() {
+        let using =
+            parse_battery_frame(&[0x03, 7, 0, 0, 0, 0x02, 0x1c]).expect("normal-use battery frame");
+        assert_eq!(using.sequence, 7);
+        assert!(!using.charging);
+        assert_eq!(using.raw_value, 540);
+        assert!((using.voltage - 4.0).abs() < f64::EPSILON);
+
+        let charging = parse_battery_frame(&[0x04, 8, 0xff, 0, 0, 0x02, 0x37])
+            .expect("charging battery frame");
+        assert_eq!(charging.sequence, 8);
+        assert!(charging.charging);
+        assert_eq!(charging.raw_value, 567);
+        assert!((charging.voltage - 4.2).abs() < f64::EPSILON);
+
+        assert!(parse_battery_frame(&[0x04, 8, 0, 0, 0, 2]).is_none());
+        assert!(parse_battery_frame(&[0x01, 8, 0, 0, 0, 2, 0x37]).is_none());
     }
 }

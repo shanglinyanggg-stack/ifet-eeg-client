@@ -1,7 +1,7 @@
-use crate::models::{DeviceInfo, SampleEvent};
+use crate::models::{BatteryEvent, DeviceInfo, SampleEvent};
 use crate::protocol::{
-    sample_interval_nanoseconds, sample_rate_command, samples_per_notification,
-    PacketStreamDecoder, DEFAULT_SAMPLE_RATE_HZ,
+    parse_battery_frame, sample_interval_nanoseconds, sample_rate_command,
+    samples_per_notification, PacketStreamDecoder, DEFAULT_SAMPLE_RATE_HZ,
 };
 use anyhow::{anyhow, Result};
 use btleplug::api::{
@@ -145,6 +145,19 @@ impl BleManagerState {
             let mut next_sample_timestamp: Option<chrono::DateTime<Utc>> = None;
             while let Some(notification) = notifications.next().await {
                 if notification.uuid != PPG_TX_UUID {
+                    continue;
+                }
+                if let Some(battery) = parse_battery_frame(&notification.value) {
+                    let _ = task_app.emit(
+                        "ble://battery",
+                        BatteryEvent {
+                            timestamp: Utc::now().to_rfc3339(),
+                            sequence: battery.sequence,
+                            charging: battery.charging,
+                            raw_value: battery.raw_value,
+                            voltage: battery.voltage,
+                        },
+                    );
                     continue;
                 }
                 let requested_sample_rate = selected_sample_rate.load(Ordering::Relaxed);

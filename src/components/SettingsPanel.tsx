@@ -67,7 +67,7 @@ const channels = Object.keys(channelLabels) as ChannelKey[];
 const displayModeOptions = [
   { value: 'normal', label: '全部波形' },
   { value: 'eeg', label: '脑电模式' },
-  { value: 'debug', label: '调试记录' }
+  { value: 'debug', label: '调试模式' }
 ];
 const eegChannelOptions = [
   { value: 'eeg1', label: 'EEG1' },

@@ -32,7 +32,7 @@ import {
   type EegChannel,
   type EegPureBandKey
 } from '../domain/settings';
-import { channelLabels } from '../domain/protocol';
+import { channelLabels, type BatteryEvent } from '../domain/protocol';
 import { WaveformCanvas } from './WaveformCanvas';
 import { BandDonut, type DonutShare } from './BandDonut';
 import { SleepMetricsPanel } from './SleepMetricsPanel';
@@ -55,6 +55,7 @@ interface PureWaveformViewProps {
   status: string;
   sampleCount: number;
   sampleRateHz?: number;
+  batteryStatus?: BatteryEvent | null;
   warmupRemaining: number;
   onSleepMetrics?: (metrics: SleepMetrics) => void;
   musicPanel?: Omit<SleepMusicPanelProps, 'variant' | 'metrics'>;
@@ -86,6 +87,7 @@ export function PureWaveformView({
   status,
   sampleCount,
   sampleRateHz = EEG_SAMPLE_RATE,
+  batteryStatus = null,
   warmupRemaining,
   onSleepMetrics,
   musicPanel,
@@ -264,6 +266,9 @@ export function PureWaveformView({
             <span className={`status-chip ${connected ? 'is-online' : ''}`}>
               {sampleCount} samples
               <em>· {sampleRateHz === 1_000 ? '1 kHz' : `${sampleRateHz} Hz`}</em>
+              {connected && <em>· 电量 {batteryStatus
+                ? `${batteryStatus.voltage.toFixed(2)} V${batteryStatus.charging ? '（充电中）' : ''}`
+                : '等待上报'}</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
               {status && <em>· {status}</em>}
             </span>

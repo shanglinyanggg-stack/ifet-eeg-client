@@ -50,6 +50,14 @@ export interface StatusEvent {
   connected: boolean;
 }
 
+export interface BatteryEvent {
+  timestamp: string;
+  sequence: number;
+  charging: boolean;
+  rawValue: number;
+  voltage: number;
+}
+
 export type ChannelKey =
   | keyof PpgSample
   | keyof Omit<EegSample, 'flag'>;
