@@ -58,7 +58,7 @@ export interface DebugAlgorithmEvent {
 }
 
 export interface DebugBlinkTrial {
-  expectedCount: 0 | 3 | 5;
+  expectedCount: 0 | 3 | 5 | 'continuous';
   startedAt: number;
   endsAt: number;
   detectedCount: 3 | 5 | null;
@@ -111,7 +111,7 @@ interface DebugModeViewProps {
   onStartSleepAndRecord: () => void;
   onStartBlinkValidation: () => void;
   onStopSession: () => void;
-  onStartBlinkTrial: (expectedCount: 0 | 3 | 5) => void;
+  onStartBlinkTrial: (expectedCount: 0 | 3 | 5 | 'continuous') => void;
   onToggleRecording: () => void;
   onAddMarker: (label: string, note: string) => void;
 }
@@ -504,6 +504,7 @@ export function DebugModeView({
               <button type="button" disabled={recordingPending} onClick={onStopSession}><CircleStop size={12} />结束/停止记录</button>
             </div>
             <div className="debug-trial-buttons">
+              <button type="button" disabled={!recording || blinkTrial?.status === 'active'} onClick={() => onStartBlinkTrial('continuous')}>PSG 对齐：连续眨眼 10 秒</button>
               <button type="button" disabled={!recording || blinkTrial?.status === 'active'} onClick={() => onStartBlinkTrial(0)}>标记 10 秒无指令</button>
               <button type="button" disabled={!recording || blinkTrial?.status === 'active'} onClick={() => onStartBlinkTrial(3)}>标记并测试 3 次</button>
               <button type="button" disabled={!recording || blinkTrial?.status === 'active'} onClick={() => onStartBlinkTrial(5)}>标记并测试 5 次</button>
@@ -511,9 +512,13 @@ export function DebugModeView({
             {blinkTrial && (
               <div className="debug-trial-status" data-state={blinkTrial.status === 'active' ? 'active' : blinkTrial.success ? 'ready' : 'warning'}>
                 <strong>{blinkTrial.status === 'active'
-                  ? `真值窗进行中 · 剩余 ${(trialRemaining / 1000).toFixed(1)} 秒`
-                  : `真值测试${blinkTrial.success ? '通过' : '未通过'}`}</strong>
-                <span>预期 {blinkTrial.expectedCount === 0 ? '无连续指令' : `${blinkTrial.expectedCount} 次`} · {blinkTrial.detectedCount ? `检出 ${blinkTrial.detectedCount} 次` : '尚未检出命令'}</span>
+                  ? `${blinkTrial.expectedCount === 'continuous' ? 'PSG 对齐连续眨眼' : '真值窗'}进行中 · 剩余 ${(trialRemaining / 1000).toFixed(1)} 秒`
+                  : blinkTrial.expectedCount === 'continuous'
+                    ? 'PSG 对齐标记已完成'
+                    : `真值测试${blinkTrial.success ? '通过' : '未通过'}`}</strong>
+                <span>{blinkTrial.expectedCount === 'continuous'
+                  ? '持续连续眨眼；开始与结束时间均写入标记文件'
+                  : `预期 ${blinkTrial.expectedCount === 0 ? '无连续指令' : `${blinkTrial.expectedCount} 次`} · ${blinkTrial.detectedCount ? `检出 ${blinkTrial.detectedCount} 次` : '尚未检出命令'}`}</span>
               </div>
             )}
             <div className="debug-marker-buttons">

@@ -8,7 +8,7 @@ use btleplug::api::{
     Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Local, SecondsFormat, Utc};
 use futures::StreamExt;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -57,6 +57,9 @@ struct Recorder {
 }
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
+// 设备协议没有硬件绝对时间。逻辑采样时钟与主机到达时间偏差过大时，
+// 重新锚定到本次 BLE 通知，避免长时间记录逐步偏离 PSG 的墙钟时间。
+const SAMPLE_CLOCK_REANCHOR_THRESHOLD_MS: i64 = 250;
 
 impl BleManagerState {
     pub async fn scan_devices(&self) -> Result<Vec<DeviceInfo>> {
@@ -151,7 +154,7 @@ impl BleManagerState {
                     let _ = task_app.emit(
                         "ble://battery",
                         BatteryEvent {
-                            timestamp: Utc::now().to_rfc3339(),
+                            timestamp: local_now_rfc3339(),
                             sequence: battery.sequence,
                             charging: battery.charging,
                             raw_value: battery.raw_value,
@@ -171,21 +174,30 @@ impl BleManagerState {
                     continue;
                 }
                 let now = Utc::now();
-                if next_sample_timestamp.as_ref().is_some_and(|next| {
-                    now.signed_duration_since(next.clone()).num_milliseconds() > 2_000
-                }) {
-                    next_sample_timestamp = Some(now);
+                // 一包多数据代表到达通知之前的一段采样；让最后一个样本落在
+                // 主机实际接收时刻，避免把整包样本写到未来。
+                let interval_ns = sample_interval_nanoseconds(active_sample_rate);
+                let packet_start =
+                    arrival_aligned_packet_start(now, rows.len(), active_sample_rate);
+                let should_reanchor = match next_sample_timestamp.as_ref() {
+                    Some(next) => {
+                        packet_start
+                            .signed_duration_since(next.clone())
+                            .num_milliseconds()
+                            .abs()
+                            > SAMPLE_CLOCK_REANCHOR_THRESHOLD_MS
+                    }
+                    None => true,
+                };
+                if should_reanchor {
+                    next_sample_timestamp = Some(packet_start);
                 }
                 let mut sample_events = Vec::with_capacity(rows.len());
                 for row in rows {
                     let sample_timestamp = next_sample_timestamp.clone().unwrap_or(now);
-                    next_sample_timestamp = Some(
-                        sample_timestamp
-                            + ChronoDuration::nanoseconds(sample_interval_nanoseconds(
-                                active_sample_rate,
-                            )),
-                    );
-                    let timestamp = sample_timestamp.to_rfc3339();
+                    next_sample_timestamp =
+                        Some(sample_timestamp + ChronoDuration::nanoseconds(interval_ns));
+                    let timestamp = local_rfc3339(sample_timestamp);
                     let event = SampleEvent {
                         timestamp: timestamp.clone(),
                         sample_rate_hz: active_sample_rate,
@@ -299,7 +311,7 @@ impl BleManagerState {
             .unwrap_or(std::env::current_dir()?.join("recordings"));
         fs::create_dir_all(&dir)?;
 
-        let filename = format!("ppg_eeg_log_{}.csv", Utc::now().format("%Y%m%d_%H%M%S"));
+        let filename = format!("ppg_eeg_log_{}.csv", Local::now().format("%Y%m%d_%H%M%S"));
         let path = dir.join(filename);
         let file = File::create(&path)?;
         let mut writer = BufWriter::new(file);
@@ -363,7 +375,7 @@ impl BleManagerState {
         writeln!(
             recording.marker_writer,
             "{},{},{},{},{},{},{},{},{},{},{}",
-            Utc::now().to_rfc3339(),
+            local_now_rfc3339(),
             csv_field(&participant_id),
             csv_field(&label),
             csv_field(&note),
@@ -543,9 +555,31 @@ fn optional_number(value: Option<f64>) -> String {
         .unwrap_or_default()
 }
 
+fn local_now_rfc3339() -> String {
+    local_rfc3339(Utc::now())
+}
+
+fn local_rfc3339(timestamp: DateTime<Utc>) -> String {
+    timestamp
+        .with_timezone(&Local)
+        .to_rfc3339_opts(SecondsFormat::Micros, true)
+}
+
+fn arrival_aligned_packet_start(
+    arrival: DateTime<Utc>,
+    sample_count: usize,
+    sample_rate_hz: u32,
+) -> DateTime<Utc> {
+    arrival
+        - ChronoDuration::nanoseconds(
+            sample_interval_nanoseconds(sample_rate_hz) * sample_count.saturating_sub(1) as i64,
+        )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_hex;
+    use super::{arrival_aligned_packet_start, local_rfc3339, parse_hex};
+    use chrono::{DateTime, Duration as ChronoDuration, Local, TimeZone, Utc};
 
     #[test]
     fn accepts_compact_and_spaced_sample_rate_commands() {
@@ -553,5 +587,25 @@ mod tests {
         assert_eq!(parse_hex("72 04").unwrap(), vec![0x72, 0x04]);
         assert_eq!(parse_hex("0x72, 0x03").unwrap(), vec![0x72, 0x03]);
         assert!(parse_hex("721").is_err());
+    }
+
+    #[test]
+    fn local_timestamp_preserves_real_instant_and_explicit_offset() {
+        let utc = Utc.with_ymd_and_hms(2026, 7, 22, 8, 8, 24).unwrap();
+        let formatted = local_rfc3339(utc);
+        let parsed = DateTime::parse_from_rfc3339(&formatted).unwrap();
+        assert_eq!(parsed.with_timezone(&Utc), utc);
+        assert_eq!(
+            parsed.offset().local_minus_utc(),
+            utc.with_timezone(&Local).offset().local_minus_utc()
+        );
+    }
+
+    #[test]
+    fn multi_sample_packet_ends_at_real_host_arrival_time() {
+        let arrival = Utc.with_ymd_and_hms(2026, 7, 22, 8, 8, 24).unwrap();
+        let start = arrival_aligned_packet_start(arrival, 8, 1_000);
+        assert_eq!(start, arrival - ChronoDuration::milliseconds(7));
+        assert_eq!(start + ChronoDuration::milliseconds(7), arrival);
     }
 }

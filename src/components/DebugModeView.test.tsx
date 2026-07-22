@@ -120,6 +120,8 @@ describe('DebugModeView', () => {
 
     const active = props(true);
     rerender(<DebugModeView {...active} />);
+    fireEvent.click(screen.getByRole('button', { name: 'PSG 对齐：连续眨眼 10 秒' }));
+    expect(active.onStartBlinkTrial).toHaveBeenCalledWith('continuous');
     fireEvent.click(screen.getByRole('button', { name: '标记并测试 3 次' }));
     expect(active.onStartBlinkTrial).toHaveBeenCalledWith(3);
     fireEvent.click(screen.getByRole('button', { name: /单次眨眼/ }));

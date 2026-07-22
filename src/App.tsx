@@ -1117,7 +1117,7 @@ export default function App() {
     }
   }, [buffers, debugParticipantId, deviceFlags, lastAlgorithmAction, recordPath, recording, sampleCount]);
 
-  const handleStartDebugBlinkTrial = useCallback((expectedCount: 0 | 3 | 5) => {
+  const handleStartDebugBlinkTrial = useCallback((expectedCount: 0 | 3 | 5 | 'continuous') => {
     if (!recording) {
       setDebugMarkerStatus('请先开始记录，再启动眨眼真值测试');
       return;
@@ -1140,10 +1140,17 @@ export default function App() {
       status: 'active',
       success: null
     });
-    const instruction = expectedCount === 0
-      ? '接下来10秒不执行连续眨眼指令，可自然眨眼'
-      : `接下来10秒连续、均匀眨眼${expectedCount}次`;
-    void handleDebugMarker('眨眼真值窗开始', `预期=${expectedCount}; ${instruction}`);
+    const instruction = expectedCount === 'continuous'
+      ? '用于与 PSG 对齐：接下来10秒持续、均匀连续眨眼，倒计时结束后停止'
+      : expectedCount === 0
+        ? '接下来10秒不执行连续眨眼指令，可自然眨眼'
+        : `接下来10秒连续、均匀眨眼${expectedCount}次`;
+    void handleDebugMarker(
+      expectedCount === 'continuous' ? 'PSG对齐连续眨眼开始' : '眨眼真值窗开始',
+      expectedCount === 'continuous'
+        ? `持续时间=10s; ${instruction}`
+        : `预期=${expectedCount}; ${instruction}`
+    );
     setDebugMarkerStatus(instruction);
   }, [debugBlinkTrial?.status, debugParticipantId, handleDebugMarker, recording]);
 
@@ -1620,6 +1627,14 @@ export default function App() {
     const timer = window.setTimeout(() => {
       setDebugBlinkTrial((current) => {
         if (!current || current.status !== 'active') return current;
+        if (current.expectedCount === 'continuous') {
+          void handleDebugMarker(
+            'PSG对齐连续眨眼结束',
+            '持续时间=10s; 连续眨眼窗口结束；用于头戴设备与PSG时间对齐'
+          );
+          setDebugMarkerStatus('PSG 对齐连续眨眼标记完成：开始与结束时间已保存');
+          return { ...current, status: 'complete', success: true };
+        }
         const success = current.expectedCount === 0
           ? current.detectedCount === null
           : current.detectedCount === current.expectedCount;
@@ -2405,9 +2420,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8778;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8779;
   } catch {
-    return 8778;
+    return 8779;
   }
 }
 
