@@ -614,6 +614,34 @@ input:disabled {
   color: var(--danger);
 }
 
+.battery-record-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.battery-record-switch input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.battery-record-switch.is-active {
+  color: var(--accent);
+}
+
+.battery-record-switch input:disabled {
+  cursor: wait;
+}
+
 @keyframes status-spin {
   from { transform: rotate(0deg); box-shadow: 0 0 0 4px var(--accent-soft); }
   to { transform: rotate(360deg); box-shadow: 0 0 0 4px var(--accent-soft); }

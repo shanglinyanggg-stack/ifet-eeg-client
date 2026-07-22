@@ -29,6 +29,9 @@ interface DevicePanelProps {
   recording: boolean;
   recordingPending?: boolean;
   recordingElapsedSeconds?: number;
+  batteryRecording?: boolean;
+  batteryRecordingPending?: boolean;
+  batteryRecordPath?: string;
   selectedDeviceId: string;
   selectedSampleRateHz: BleSampleRate;
   activeSampleRateHz: BleSampleRate;
@@ -43,6 +46,7 @@ interface DevicePanelProps {
   onSelectedSampleRateChange: (value: BleSampleRate) => void;
   onApplySampleRate: () => void;
   onToggleRecording: () => void;
+  onToggleBatteryRecording?: () => void;
 }
 
 export function DevicePanel({
@@ -52,6 +56,9 @@ export function DevicePanel({
   recording,
   recordingPending = false,
   recordingElapsedSeconds = 0,
+  batteryRecording = false,
+  batteryRecordingPending = false,
+  batteryRecordPath = '',
   selectedDeviceId,
   selectedSampleRateHz,
   activeSampleRateHz,
@@ -65,7 +72,8 @@ export function DevicePanel({
   onDisconnect,
   onSelectedSampleRateChange,
   onApplySampleRate,
-  onToggleRecording
+  onToggleRecording,
+  onToggleBatteryRecording = () => undefined
 }: DevicePanelProps) {
   const deviceOptions = [
     { value: '', label: '选择设备' },
@@ -144,6 +152,20 @@ export function DevicePanel({
             ? batteryStateLabel(batteryStatus)
             : connected ? '等待上报' : '未连接'}</small>
         </div>
+        <label
+          className={`battery-record-switch ${batteryRecording ? 'is-active' : ''}`}
+          title={batteryRecordPath || '独立保存设备上报的电压，不要求同时记录 EEG'}
+        >
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label="电压记录开关"
+            checked={batteryRecording}
+            disabled={batteryRecordingPending}
+            onChange={onToggleBatteryRecording}
+          />
+          <span>{batteryRecordingPending ? '处理中' : batteryRecording ? '记录中' : '记录电压'}</span>
+        </label>
       </div>
       <div className="device-group">
         <ThemedSelect

@@ -188,4 +188,37 @@ describe('DevicePanel connection identity', () => {
 
     expect(screen.getByLabelText('数据记录时长')).toHaveTextContent('01:02:03');
   });
+
+  test('exposes battery recording as an independent switch', () => {
+    const onToggleBatteryRecording = vi.fn();
+    render(
+      <DevicePanel
+        devices={[{ id: 'headset', name: 'TD10', rssi: -50 }]}
+        connected
+        scanning={false}
+        recording={false}
+        batteryRecording
+        batteryRecordPath="/tmp/battery_voltage_log.csv"
+        selectedDeviceId="headset"
+        selectedSampleRateHz={125}
+        activeSampleRateHz={125}
+        status="设备已连接"
+        recordPath=""
+        onSelectedDeviceChange={vi.fn()}
+        onSelectedSampleRateChange={vi.fn()}
+        onScan={vi.fn()}
+        onConnect={vi.fn()}
+        onDisconnect={vi.fn()}
+        onApplySampleRate={vi.fn()}
+        onToggleRecording={vi.fn()}
+        onToggleBatteryRecording={onToggleBatteryRecording}
+      />
+    );
+
+    const voltageSwitch = screen.getByRole('switch', { name: '电压记录开关' });
+    expect(voltageSwitch).toBeChecked();
+    expect(screen.getByLabelText('设备电量')).toHaveTextContent('记录中');
+    voltageSwitch.click();
+    expect(onToggleBatteryRecording).toHaveBeenCalledTimes(1);
+  });
 });

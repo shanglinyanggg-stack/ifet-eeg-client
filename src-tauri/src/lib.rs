@@ -88,6 +88,38 @@ async fn stop_recording(
     Ok(())
 }
 
+fn resolve_recording_directory(
+    app: &AppHandle,
+    directory: Option<String>,
+) -> Result<String, String> {
+    match directory.filter(|value| !value.trim().is_empty()) {
+        Some(value) => Ok(value),
+        None => app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| format!("操作失败: 无法确定记录目录: {error}"))
+            .map(|path| path.join("recordings").to_string_lossy().to_string()),
+    }
+}
+
+#[tauri::command]
+async fn start_battery_recording(
+    app: AppHandle,
+    state: State<'_, BleManagerState>,
+    directory: Option<String>,
+) -> Result<String, String> {
+    let directory = resolve_recording_directory(&app, directory)?;
+    state
+        .start_battery_recording(Some(directory))
+        .await
+        .map_err(to_user_error)
+}
+
+#[tauri::command]
+async fn stop_battery_recording(state: State<'_, BleManagerState>) -> Result<(), String> {
+    state.stop_battery_recording().await.map_err(to_user_error)
+}
+
 #[tauri::command]
 fn set_acquisition_sleep_prevention(
     state: State<'_, PowerManagerState>,
@@ -291,6 +323,8 @@ pub fn run() {
             set_sample_rate,
             start_recording,
             stop_recording,
+            start_battery_recording,
+            stop_battery_recording,
             set_acquisition_sleep_prevention,
             power_prevention_status,
             append_debug_marker,

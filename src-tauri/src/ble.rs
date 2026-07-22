@@ -29,6 +29,7 @@ const PPG_TX_UUID: Uuid = Uuid::from_u128(0x0000_fff9_0000_1000_8000_0080_5f9b_3
 pub struct BleManagerState {
     inner: Mutex<BleRuntime>,
     recorder: Arc<Mutex<Option<Recorder>>>,
+    battery_recorder: Arc<Mutex<Option<BatteryRecorder>>>,
     sample_rate_hz: Arc<AtomicU32>,
 }
 
@@ -37,6 +38,7 @@ impl Default for BleManagerState {
         Self {
             inner: Mutex::new(BleRuntime::default()),
             recorder: Arc::new(Mutex::new(None)),
+            battery_recorder: Arc::new(Mutex::new(None)),
             sample_rate_hz: Arc::new(AtomicU32::new(DEFAULT_SAMPLE_RATE_HZ)),
         }
     }
@@ -53,9 +55,12 @@ struct BleRuntime {
 struct Recorder {
     writer: BufWriter<File>,
     marker_writer: BufWriter<File>,
-    battery_writer: BufWriter<File>,
     marker_path: PathBuf,
     last_flush: Instant,
+}
+
+struct BatteryRecorder {
+    writer: BufWriter<File>,
 }
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
@@ -144,6 +149,7 @@ impl BleManagerState {
             }
         };
         let recorder = Arc::clone(&self.recorder);
+        let battery_recorder = Arc::clone(&self.battery_recorder);
         let selected_sample_rate = Arc::clone(&self.sample_rate_hz);
         let task_app = app.clone();
         let notify_task = tokio::spawn(async move {
@@ -169,15 +175,18 @@ impl BleManagerState {
                         estimated_percent: estimate.estimated_percent,
                         level: estimate.level,
                     };
-                    if let Err(error) = write_battery_record(&recorder, &battery_event).await {
+                    if let Err(error) =
+                        write_battery_record(&battery_recorder, &battery_event).await
+                    {
                         let _ = task_app.emit(
                             "ble://status",
                             crate::models::StatusEvent {
-                                message: format!("电池记录写入失败，已停止录制: {error}"),
+                                message: format!("电压记录写入失败，已停止电压记录: {error}"),
                                 connected: true,
                             },
                         );
-                        abort_recorder(&recorder).await;
+                        abort_battery_recorder(&battery_recorder).await;
+                        let _ = task_app.emit("ble://battery-recording", false);
                     }
                     let _ = task_app.emit("ble://battery", battery_event);
                     continue;
@@ -357,20 +366,10 @@ impl BleManagerState {
         )?;
         marker_writer.flush()?;
 
-        let battery_path = path.with_file_name(format!("{stem}_battery.csv"));
-        let battery_file = File::create(&battery_path)?;
-        let mut battery_writer = BufWriter::new(battery_file);
-        writeln!(
-            battery_writer,
-            "time,sequence,rawValue,voltage,smoothedVoltage,estimatedPercent,charging,level"
-        )?;
-        battery_writer.flush()?;
-
         let mut recorder = self.recorder.lock().await;
         *recorder = Some(Recorder {
             writer,
             marker_writer,
-            battery_writer,
             marker_path,
             last_flush: Instant::now(),
         });
@@ -382,7 +381,44 @@ impl BleManagerState {
         if let Some(recording) = recorder.as_mut() {
             recording.writer.flush()?;
             recording.marker_writer.flush()?;
-            recording.battery_writer.flush()?;
+        }
+        *recorder = None;
+        Ok(())
+    }
+
+    pub async fn start_battery_recording(&self, directory: Option<String>) -> Result<String> {
+        let dir = directory
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or(std::env::current_dir()?.join("recordings"));
+        fs::create_dir_all(&dir)?;
+
+        let mut recorder = self.battery_recorder.lock().await;
+        if recorder.is_some() {
+            return Err(anyhow!("电压记录已开启"));
+        }
+
+        let filename = format!(
+            "battery_voltage_log_{}.csv",
+            Local::now().format("%Y%m%d_%H%M%S_%3f")
+        );
+        let path = dir.join(filename);
+        let file = File::create(&path)?;
+        let mut writer = BufWriter::new(file);
+        writeln!(
+            writer,
+            "time,sequence,rawValue,voltage,smoothedVoltage,estimatedPercent,charging,level"
+        )?;
+        writer.flush()?;
+
+        *recorder = Some(BatteryRecorder { writer });
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    pub async fn stop_battery_recording(&self) -> Result<()> {
+        let mut recorder = self.battery_recorder.lock().await;
+        if let Some(recording) = recorder.as_mut() {
+            recording.writer.flush()?;
         }
         *recorder = None;
         Ok(())
@@ -527,7 +563,6 @@ async fn write_records(
     if recording.last_flush.elapsed() >= FLUSH_INTERVAL {
         recording.writer.flush()?;
         recording.marker_writer.flush()?;
-        recording.battery_writer.flush()?;
         recording.last_flush = Instant::now();
     }
     Ok(())
@@ -573,16 +608,16 @@ fn write_record_rows(writer: &mut impl Write, events: &[SampleEvent]) -> Result<
 }
 
 async fn write_battery_record(
-    recorder: &Arc<Mutex<Option<Recorder>>>,
+    recorder: &Arc<Mutex<Option<BatteryRecorder>>>,
     battery: &BatteryEvent,
 ) -> Result<()> {
     let mut recorder = recorder.lock().await;
     let Some(recording) = recorder.as_mut() else {
         return Ok(());
     };
-    write_battery_row(&mut recording.battery_writer, battery)?;
+    write_battery_row(&mut recording.writer, battery)?;
     // 电压帧频率远低于 EEG；逐帧 flush 可保证意外断电前的电量轨迹落盘。
-    recording.battery_writer.flush()?;
+    recording.writer.flush()?;
     Ok(())
 }
 
@@ -607,7 +642,14 @@ async fn abort_recorder(recorder: &Arc<Mutex<Option<Recorder>>>) {
     if let Some(recording) = recorder.as_mut() {
         let _ = recording.writer.flush();
         let _ = recording.marker_writer.flush();
-        let _ = recording.battery_writer.flush();
+    }
+    *recorder = None;
+}
+
+async fn abort_battery_recorder(recorder: &Arc<Mutex<Option<BatteryRecorder>>>) {
+    let mut recorder = recorder.lock().await;
+    if let Some(recording) = recorder.as_mut() {
+        let _ = recording.writer.flush();
     }
     *recorder = None;
 }
@@ -654,11 +696,12 @@ fn arrival_aligned_packet_start(
 mod tests {
     use super::{
         arrival_aligned_packet_start, local_rfc3339, parse_hex, write_battery_row,
-        write_record_rows,
+        write_record_rows, BleManagerState,
     };
     use crate::battery::BatteryLevel;
     use crate::models::{BatteryEvent, DecodedPacket, EegSample, PpgSample, SampleEvent};
     use chrono::{DateTime, Duration as ChronoDuration, Local, TimeZone, Utc};
+    use uuid::Uuid;
 
     #[test]
     fn accepts_compact_and_spaced_sample_rate_commands() {
@@ -745,5 +788,34 @@ mod tests {
         .unwrap();
         let csv = String::from_utf8(csv).unwrap();
         assert!(csv.contains(",9,444,3.288889,3.290000,0,false,empty"));
+    }
+
+    #[tokio::test]
+    async fn battery_recording_has_an_independent_file_and_lifecycle() {
+        let directory =
+            std::env::temp_dir().join(format!("ifet-eeg-battery-recording-{}", Uuid::new_v4()));
+        let state = BleManagerState::default();
+        let path = state
+            .start_battery_recording(Some(directory.to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        assert!(path.contains("battery_voltage_log_"));
+        assert!(!path.contains("ppg_eeg_log_"));
+
+        let duplicate = state
+            .start_battery_recording(Some(directory.to_string_lossy().to_string()))
+            .await
+            .unwrap_err();
+        assert!(duplicate.to_string().contains("电压记录已开启"));
+
+        state.stop_battery_recording().await.unwrap();
+        let csv = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            csv.trim(),
+            "time,sequence,rawValue,voltage,smoothedVoltage,estimatedPercent,charging,level"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
     }
 }

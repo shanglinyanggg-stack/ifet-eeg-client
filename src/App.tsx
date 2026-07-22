@@ -297,6 +297,9 @@ export default function App() {
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [recordingElapsedSeconds, setRecordingElapsedSeconds] = useState(0);
   const [recordingPending, setRecordingPending] = useState(false);
+  const [batteryRecording, setBatteryRecording] = useState(false);
+  const [batteryRecordingPending, setBatteryRecordingPending] = useState(false);
+  const [batteryRecordPath, setBatteryRecordPath] = useState('');
   const [powerPrevention, setPowerPrevention] = useState<PowerPreventionStatus>({
     supported: false,
     active: false,
@@ -876,6 +879,16 @@ export default function App() {
       }
     });
 
+    listen<boolean>('ble://battery-recording', (event) => {
+      if (!cancelled) setBatteryRecording(event.payload);
+    }).then((unlisten) => {
+      if (cancelled) {
+        unlisten();
+      } else {
+        unlisteners.push(unlisten);
+      }
+    });
+
     listen<StatusEvent>('ble://status', (event) => {
       if (cancelled) return;
       setConnected(event.payload.connected);
@@ -1222,6 +1235,33 @@ export default function App() {
       setRecordingPending(false);
     }
   }, [recording, recordingPending, settings.recordDir]);
+
+  const toggleBatteryRecording = useCallback(async (): Promise<boolean> => {
+    if (batteryRecordingPending) return false;
+    setBatteryRecordingPending(true);
+    try {
+      if (batteryRecording) {
+        setStatus('正在停止电压记录…');
+        await invokeCommand('stop_battery_recording');
+        setBatteryRecording(false);
+        setStatus('电压记录已停止并保存');
+      } else {
+        setStatus('正在创建独立电压记录文件…');
+        const path = await invokeCommand<string>('start_battery_recording', {
+          directory: settings.recordDir || null
+        });
+        setBatteryRecordPath(path);
+        setBatteryRecording(true);
+        setStatus('电压记录已开启');
+      }
+      return true;
+    } catch (error) {
+      setStatus(`电压记录操作失败：${String(error)}`);
+      return false;
+    } finally {
+      setBatteryRecordingPending(false);
+    }
+  }, [batteryRecording, batteryRecordingPending, settings.recordDir]);
 
   const handleDebugMarker = useCallback(async (label: string, note: string) => {
     if (!recording) {
@@ -2226,6 +2266,7 @@ export default function App() {
                 ? formatBatterySummary(batteryStatus)
                 : '等待上报'}</em>}
               {recording && <em>· 记录 {formatRecordingDuration(recordingElapsedSeconds)}</em>}
+              {batteryRecording && <em>· 电压记录中</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
               {settings.acquisitionMode && <em>· 数据采集模式</em>}
               {powerPrevention.active && <em>· Windows 防睡眠已开启</em>}
@@ -2286,6 +2327,9 @@ export default function App() {
           recording={recording}
           recordingPending={recordingPending}
           recordingElapsedSeconds={recordingElapsedSeconds}
+          batteryRecording={batteryRecording}
+          batteryRecordingPending={batteryRecordingPending}
+          batteryRecordPath={batteryRecordPath}
           selectedDeviceId={selectedDeviceId}
           selectedSampleRateHz={settings.bleSampleRateHz}
           activeSampleRateHz={activeSampleRateHz}
@@ -2311,6 +2355,7 @@ export default function App() {
             void applySampleRateCommand(settings.bleSampleRateHz);
           }}
           onToggleRecording={toggleRecording}
+          onToggleBatteryRecording={() => void toggleBatteryRecording()}
         />
       )}
 
@@ -2589,6 +2634,9 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
     if (command === 'start_recording') {
       return '浏览器预览模式' as T;
     }
+    if (command === 'start_battery_recording') {
+      return '浏览器预览模式/电压记录.csv' as T;
+    }
     return undefined as T;
   }
   return invoke<T>(command, args);
@@ -2675,9 +2723,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8784;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8785;
   } catch {
-    return 8784;
+    return 8785;
   }
 }
 
