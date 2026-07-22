@@ -115,6 +115,27 @@ describe('App settings bootstrapping', () => {
     }).requestFullscreen;
   });
 
+  test('exposes fullscreen beside settings and enters the algorithm-free acquisition workspace', async () => {
+    const requestFullscreen = vi.fn(() => Promise.resolve());
+    Object.defineProperty(document.documentElement, 'requestFullscreen', {
+      configurable: true,
+      value: requestFullscreen
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '全屏' }));
+    await waitFor(() => expect(requestFullscreen).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: '数据采集模式' }));
+    expect(await screen.findByLabelText('数据采集模式界面')).toBeInTheDocument();
+    expect(screen.getByText(/音乐、基线、分期和眨眼控制均已停用/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('睡眠指标')).not.toBeInTheDocument();
+
+    delete (document.documentElement as HTMLElement & {
+      requestFullscreen?: () => Promise<void>;
+    }).requestFullscreen;
+  });
+
   test('keeps the scan workflow active through automatic connection', async () => {
     render(<App />);
 

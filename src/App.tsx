@@ -2,7 +2,7 @@ import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState }
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Activity, Palette, Settings2 } from 'lucide-react';
+import { Activity, Database, Maximize2, Minimize2, Palette, Settings2 } from 'lucide-react';
 import {
   appendSamples,
   createEegBands,
@@ -91,6 +91,7 @@ import {
   type StatusEvent
 } from './domain/protocol';
 import { DevicePanel } from './components/DevicePanel';
+import { AcquisitionModeView } from './components/AcquisitionModeView';
 import {
   DebugModeView,
   type DebugAlgorithmEvent,
@@ -114,10 +115,12 @@ import {
 const BUFFER_SECONDS = 12;
 // 10 FPS 足以连续观察 EEG；正常负载下算法接收全部样本，CSV 始终由后端完整记录。
 const SAMPLE_FLUSH_INTERVAL_MS = 100;
-// 前端最多积压 2 秒的 1 kHz 实时样本。CSV 已由 Rust 后端先写入，
-// 因此超载时丢弃过期 UI/实时分析数据不会影响原始记录完整性。
+// 前端最多积压 2 秒的 1 kHz 绘图样本。CSV 已由 Rust 后端先写入，
+// 算法输入也走独立链路，因此超载清理只影响过期画面。
 const MAX_PENDING_FRONTEND_SAMPLES = 2_000;
-const MAX_PENDING_STAGING_CHUNKS = 2;
+// 7 x 5 s = 35 s：覆盖一个 30 s 分期 epoch，并保留下一次 5 s 更新。
+// 每块已降采样至 100 Hz，内存远小于保留 35 s 的 1 kHz 原始数据。
+const MAX_PENDING_STAGING_CHUNKS = 7;
 const MAX_PENDING_DEMO_CHUNKS = 6;
 const MAX_DEBUG_EVENT_KEYS = 1_000;
 const allChannels = Object.keys(channelLabels) as ChannelKey[];
@@ -296,6 +299,7 @@ export default function App() {
   const [sampleRatePending, setSampleRatePending] = useState(false);
   const displaySampleRateHz = resolveDisplaySampleRate(activeSampleRateHz);
   const [settingsOpen, setSettingsOpen] = useState(true);
+  const [fullscreen, setFullscreen] = useState(false);
   const [musicLibraryOpen, setMusicLibraryOpen] = useState(false);
   const [sampleCount, setSampleCount] = useState(0);
   const [invalidSampleCount, setInvalidSampleCount] = useState(0);
@@ -404,6 +408,38 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    if (settings.acquisitionMode) {
+      setSleepService({
+        phase: 'local',
+        message: '数据采集模式：实时分期已关闭',
+        chunksSeen: 0,
+        lastResponse: null
+      });
+      setSleepDemoService({
+        phase: 'local',
+        message: '数据采集模式：基线与眨眼算法已关闭',
+        alphaCalibrationSeconds: DEFAULT_ALPHA_CALIBRATION_SECONDS,
+        closedEyeCalibrationSeconds: DEFAULT_CLOSED_EYE_CALIBRATION_SECONDS,
+        blinkCalibrationSeconds: DEFAULT_BLINK_CALIBRATION_SECONDS,
+        lastResponse: null
+      });
+      remoteStagingSession.current = null;
+      remoteBlinkState.current = null;
+      sleepAssembler.current.reset(sleepAssembler.current.currentSessionId);
+      sleepDemoAssembler.current.reset(sleepDemoAssembler.current.currentSessionId);
+      pendingSleepStepCount.current = 0;
+      pendingSleepDemoStepCount.current = 0;
+      if (isTauriRuntime()) {
+        void stopSleepStagingService()
+          .then((runtime) => {
+            if (!cancelled) setSleepRuntime(runtime);
+          })
+          .catch((error) => console.warn('Unable to stop sleep service for acquisition mode', error));
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
     if (!settings.sleepMusic.serviceEnabled || !isTauriRuntime()) {
       setSleepService({
         phase: 'local',
@@ -449,6 +485,7 @@ export default function App() {
         try {
           return await getSleepStagingHealth(endpoint);
         } catch (healthError) {
+          if (cancelled || settingsRef.current.acquisitionMode) throw new Error('cancelled');
           if (!runtime.venv_ready) throw healthError;
           const started = await startSleepStagingService(endpointPort(endpoint));
           setSleepRuntime(started);
@@ -456,6 +493,7 @@ export default function App() {
         }
       })
       .then(async (health) => {
+        if (cancelled || settingsRef.current.acquisitionMode) throw new Error('cancelled');
         const sessionId = sleepAssembler.current.currentSessionId;
         const blinkEnabled = settingsRef.current.sleepMusic.blinkControlEnabled;
         const [stagingHealth, demoResponse] = await Promise.all([
@@ -487,7 +525,14 @@ export default function App() {
         });
       })
       .catch((error) => {
-        if (cancelled) return;
+        if (cancelled) {
+          if (settingsRef.current.acquisitionMode && isTauriRuntime()) {
+            void stopSleepStagingService()
+              .then((runtime) => setSleepRuntime(runtime))
+              .catch(() => undefined);
+          }
+          return;
+        }
         setSleepService({
           phase: 'fallback',
           message: preparedRuntime?.venv_ready
@@ -511,7 +556,11 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [settings.sleepMusic.serviceEnabled, settings.sleepMusic.serviceEndpoint]);
+  }, [settings.acquisitionMode, settings.sleepMusic.serviceEnabled, settings.sleepMusic.serviceEndpoint]);
+
+  const handleToggleFullscreen = useCallback(async () => {
+    setFullscreen(await toggleFullscreen());
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = async (event: KeyboardEvent) => {
@@ -520,11 +569,17 @@ export default function App() {
         && event.ctrlKey;
       if (event.key !== 'F11' && !macFullscreenShortcut) return;
       event.preventDefault();
-      await toggleFullscreen();
+      await handleToggleFullscreen();
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleToggleFullscreen]);
+
+  useEffect(() => {
+    const updateBrowserFullscreen = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', updateBrowserFullscreen);
+    return () => document.removeEventListener('fullscreenchange', updateBrowserFullscreen);
   }, []);
 
   const sampleBatcher = useRef<SampleBatcher<SampleEvent> | null>(null);
@@ -534,8 +589,11 @@ export default function App() {
       pendingSleepStepCount.current += 1;
       sleepStepQueue.current = sleepStepQueue.current
         .then(async () => {
-          const current = settingsRef.current.sleepMusic;
+          const currentSettings = settingsRef.current;
+          const current = currentSettings.sleepMusic;
           if (
+            currentSettings.acquisitionMode
+            ||
             !current.serviceEnabled
             || !isTauriRuntime()
             || remoteStagingSession.current !== chunk.session_id
@@ -577,9 +635,12 @@ export default function App() {
       pendingSleepDemoStepCount.current += 1;
       sleepDemoStepQueue.current = sleepDemoStepQueue.current
         .then(async () => {
-          const current = settingsRef.current.sleepMusic;
+          const currentSettings = settingsRef.current;
+          const current = currentSettings.sleepMusic;
           const remoteState = remoteBlinkState.current;
           if (
+            currentSettings.acquisitionMode
+            ||
             !current.serviceEnabled
             || !isTauriRuntime()
             || !remoteState
@@ -619,17 +680,21 @@ export default function App() {
     }
   }, []);
 
+  const processAlgorithmSamples = useCallback((events: SampleEvent[]) => {
+    if (events.length === 0 || settings.acquisitionMode) return;
+    enqueueSleepChunks(sleepAssembler.current.pushMany(events));
+    enqueueSleepDemoChunks(sleepDemoAssembler.current.pushMany(events));
+  }, [enqueueSleepChunks, enqueueSleepDemoChunks, settings.acquisitionMode]);
+
   const flushSamples = useCallback((events: SampleEvent[]) => {
     if (events.length === 0) return;
     const eventSampleRate = normalizeBleSampleRate(events[events.length - 1].sampleRateHz);
     setActiveSampleRateHz(eventSampleRate);
-    enqueueSleepChunks(sleepAssembler.current.pushMany(events));
-    enqueueSleepDemoChunks(sleepDemoAssembler.current.pushMany(events));
     setBuffers((current) => mergeSampleEvents(current, events, eventSampleRate));
     setDeviceFlags((current) => mergeDeviceFlags(current, events));
     setSampleCount((count) => count + events.length);
     setInvalidSampleCount((count) => count + events.filter((event) => event.valid === false).length);
-  }, [enqueueSleepChunks, enqueueSleepDemoChunks]);
+  }, []);
 
   useEffect(() => {
     sampleBatcher.current = new SampleBatcher({
@@ -649,13 +714,16 @@ export default function App() {
 
   const pushSamples = useCallback((events: SampleEvent[]) => {
     if (events.length === 0) return;
+    // 算法输入不经过可丢弃的绘图队列；显示过载只清理旧画面，不破坏
+    // 30 s epoch + 5 s 步长的连续分期输入。
+    processAlgorithmSamples(events);
     const batcher = sampleBatcher.current;
     if (batcher) {
       batcher.pushMany(events);
       return;
     }
     flushSamples(events);
-  }, [flushSamples]);
+  }, [flushSamples, processAlgorithmSamples]);
 
   // 演示模式：以与真机一致的 125 Hz 注入模拟样本。
   useEffect(() => {
@@ -665,10 +733,10 @@ export default function App() {
     const perTick = Math.max(1, Math.round((intervalMs / 1000) * DEMO_SAMPLE_RATE));
     const timer = window.setInterval(() => {
       const events = createDemoSamples(perTick);
-      flushSamples(events);
+      pushSamples(events);
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [flushSamples, settings.demoMode]);
+  }, [pushSamples, settings.demoMode]);
 
   // 预热倒计时：连接后等待电极稳定，期间提示用户
   const startWarmup = useCallback(() => {
@@ -855,6 +923,7 @@ export default function App() {
   }, [buffers, sleepDemoService.lastResponse]);
 
   const wearableMetrics = useMemo<SleepMetrics | null>(() => {
+    if (settings.acquisitionMode) return null;
     const referenceChannels = [buffers.eeg1, buffers.eeg2, buffers.eeg3, buffers.eeg4];
     const priorityChannels = [buffers.eeg1, buffers.eeg2];
     const channelMetrics = priorityChannels.flatMap((selected, channelIndex) => {
@@ -893,7 +962,7 @@ export default function App() {
       })];
     });
     return channelMetrics.length > 0 ? averageDrowsinessMetrics(channelMetrics) : null;
-  }, [buffers, displaySampleRateHz, settings.eeg.notch, spectralArtifactContext]);
+  }, [buffers, displaySampleRateHz, settings.acquisitionMode, settings.eeg.notch, spectralArtifactContext]);
 
   useEffect(() => {
     wearableDrowsinessEstimator.current.reset();
@@ -901,6 +970,11 @@ export default function App() {
   }, [selectedDeviceId]);
 
   useEffect(() => {
+    if (settings.acquisitionMode) {
+      wearableDrowsinessEstimator.current.reset();
+      setWearableDrowsiness(createWearableDrowsinessSnapshot());
+      return;
+    }
     if (!wearableMetrics) return;
     const timestampMs = Math.max(
       buffers.eeg1[buffers.eeg1.length - 1]?.timestamp ?? 0,
@@ -927,6 +1001,7 @@ export default function App() {
     }));
   }, [
     connected,
+    settings.acquisitionMode,
     buffers.eeg1,
     buffers.eeg2,
     sleepDemoService.lastResponse?.telemetry.signal_quality,
@@ -1399,6 +1474,14 @@ export default function App() {
   }, []);
 
   const handleStartSleepService = useCallback(async () => {
+    if (settingsRef.current.acquisitionMode) {
+      setSleepService((current) => ({
+        ...current,
+        phase: 'local',
+        message: '数据采集模式已关闭实时睡眠分期'
+      }));
+      return;
+    }
     const sleep = settingsRef.current.sleepMusic;
     setSleepService((current) => ({
       ...current,
@@ -1475,6 +1558,7 @@ export default function App() {
   }, []);
 
   const effectiveAutomationAction = !sleepGuidanceActive
+    || settings.acquisitionMode
     ? 'hold'
     : sleepSession.action === 'play' && !settings.sleepMusic.autoMode
       ? 'hold'
@@ -1487,7 +1571,7 @@ export default function App() {
   const musicPlayer = useMusicPlayer({
     tracks: settings.sleepMusic.tracks,
     selectedTrackId: settings.sleepMusic.selectedTrackId,
-    enabled: settings.sleepMusic.enabled,
+    enabled: settings.sleepMusic.enabled && !settings.acquisitionMode,
     // The EEGSleepUpper switches are independent. The hook remains active and
     // receives a gated action, so Alpha volume and sleep-stop can be toggled
     // without coupling them to the Alpha-triggered play switch.
@@ -1504,6 +1588,10 @@ export default function App() {
   });
 
   const handleStartSleepGuidance = useCallback(() => {
+    if (settingsRef.current.acquisitionMode) {
+      setSleepGuidanceMessage('数据采集模式已关闭音乐引导、基线、分期和眨眼控制');
+      return;
+    }
     const sleep = settingsRef.current.sleepMusic;
     const response = sleepDemoService.lastResponse;
     if (!sleep.enabled) {
@@ -1547,6 +1635,17 @@ export default function App() {
     setBlinkVolumeOffset(0);
     musicPlayer.pause();
   }, [musicPlayer.pause]);
+
+  useEffect(() => {
+    if (!settings.acquisitionMode) return;
+    setSleepGuidanceActive(false);
+    setSleepGuidanceMessage('数据采集模式：音乐引导与全部实时算法已关闭');
+    setSleepSession(createSleepSessionState(toSleepSessionConfig(settingsRef.current)));
+    setBlinkVolumeOffset(0);
+    blinkDetector.current.reset();
+    setBlinkSnapshot(blinkDetector.current.snapshot());
+    musicPlayer.pause();
+  }, [musicPlayer.pause, settings.acquisitionMode]);
 
   const handleDebugStartSleepAndRecord = useCallback(() => {
     void (async () => {
@@ -1604,7 +1703,8 @@ export default function App() {
     setSleepMetrics((current) => sleepMetricsEqual(current, metrics) ? current : metrics);
   }, []);
 
-  const onlineDemoSignal = settings.sleepMusic.serviceEnabled
+  const onlineDemoSignal = !settings.acquisitionMode
+    && settings.sleepMusic.serviceEnabled
     && (sleepDemoService.phase === 'calibrating' || sleepDemoService.phase === 'ready')
     ? sleepDemoService.lastResponse
     : null;
@@ -1729,7 +1829,8 @@ export default function App() {
   useEffect(() => {
     const remoteState = remoteBlinkState.current;
     if (
-      !settings.sleepMusic.serviceEnabled
+      settings.acquisitionMode
+      || !settings.sleepMusic.serviceEnabled
       || !isTauriRuntime()
       || !remoteState
       || remoteState.enabled === settings.sleepMusic.blinkControlEnabled
@@ -1758,13 +1859,14 @@ export default function App() {
       });
   }, [
     settings.sleepMusic.blinkControlEnabled,
+    settings.acquisitionMode,
     settings.sleepMusic.serviceEnabled,
     sleepDemoService.phase
   ]);
 
   useEffect(() => {
     const remoteState = remoteBlinkState.current;
-    if (!settings.sleepMusic.serviceEnabled || !isTauriRuntime() || !remoteState) return;
+    if (settings.acquisitionMode || !settings.sleepMusic.serviceEnabled || !isTauriRuntime() || !remoteState) return;
     // 点击“开始助眠”后立即冻结睁眼 Alpha 基线。若等到检出 Alpha 再冻结，
     // 用户点击后马上闭眼会把闭眼 Alpha 污染进睁眼基线。
     const sessionActive = sleepGuidanceActive;
@@ -1781,11 +1883,19 @@ export default function App() {
       .catch((error) => console.warn('Sleep demo configuration sync failed', error));
   }, [
     settings.sleepMusic.alphaVolumeMode,
+    settings.acquisitionMode,
     settings.sleepMusic.serviceEnabled,
     sleepGuidanceActive
   ]);
 
   const handleBlinkCalibration = useCallback(() => {
+    if (settingsRef.current.acquisitionMode) {
+      setSleepDemoService((current) => ({
+        ...current,
+        message: '数据采集模式已关闭眨眼基线测量'
+      }));
+      return;
+    }
     const remoteState = remoteBlinkState.current;
     if (settingsRef.current.sleepMusic.serviceEnabled && isTauriRuntime() && remoteState) {
       setSleepDemoService((current) => ({
@@ -1823,6 +1933,13 @@ export default function App() {
   }, []);
 
   const handleAlphaCalibration = useCallback((kind: 'open-eye' | 'closed-eye') => {
+    if (settingsRef.current.acquisitionMode) {
+      setSleepDemoService((current) => ({
+        ...current,
+        message: '数据采集模式已关闭实时基线测量'
+      }));
+      return;
+    }
     const remoteState = remoteBlinkState.current;
     if (!settingsRef.current.sleepMusic.serviceEnabled || !isTauriRuntime() || !remoteState) {
       setSleepDemoService((current) => ({
@@ -1858,14 +1975,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (usingOnlineDemoDetector) return;
+    if (settings.acquisitionMode || usingOnlineDemoDetector) return;
     blinkDetector.current.reset();
     lastBlinkSampleTimestamp.current = 0;
     setBlinkSnapshot(blinkDetector.current.snapshot());
-  }, [usingOnlineDemoDetector]);
+  }, [settings.acquisitionMode, usingOnlineDemoDetector]);
 
   useEffect(() => {
-    if (usingOnlineDemoDetector) return;
+    if (settings.acquisitionMode || usingOnlineDemoDetector) return;
     const localState = blinkDetector.current.snapshot();
     if (!settings.sleepMusic.blinkControlEnabled && localState.calibrationStatus !== 'running') return;
     const eeg1 = buffers.eeg1;
@@ -1904,12 +2021,13 @@ export default function App() {
   }, [
     activeSampleRateHz,
     buffers,
+    settings.acquisitionMode,
     settings.sleepMusic.blinkControlEnabled,
     usingOnlineDemoDetector
   ]);
 
   useEffect(() => {
-    if (!settings.sleepMusic.blinkControlEnabled || usingOnlineDemoDetector) return;
+    if (settings.acquisitionMode || !settings.sleepMusic.blinkControlEnabled || usingOnlineDemoDetector) return;
     const timer = window.setInterval(() => {
       const gesture = blinkDetector.current.poll(Date.now());
       setBlinkSnapshot(blinkDetector.current.snapshot(Date.now()));
@@ -1928,13 +2046,14 @@ export default function App() {
   }, [
     musicPlayer.setVolume,
     musicPlayer.snapshot.volume,
+    settings.acquisitionMode,
     settings.sleepMusic.blinkControlEnabled,
     sleepSession.targetVolume,
     usingOnlineDemoDetector
   ]);
 
   useEffect(() => {
-    if (!onlineDemoSignal || onlineDemoSignal.timestamp_ms <= lastDemoGestureTimestamp.current) return;
+    if (settings.acquisitionMode || !onlineDemoSignal || onlineDemoSignal.timestamp_ms <= lastDemoGestureTimestamp.current) return;
     lastDemoGestureTimestamp.current = onlineDemoSignal.timestamp_ms;
     const down = onlineDemoSignal.action_flags.includes('VOLUME_DOWN_3_BLINKS');
     const up = onlineDemoSignal.action_flags.includes('VOLUME_UP_5_BLINKS');
@@ -1950,6 +2069,7 @@ export default function App() {
   }, [
     musicPlayer.setVolume,
     musicPlayer.snapshot.volume,
+    settings.acquisitionMode,
     onlineDemoSignal,
     sleepSession.targetVolume
   ]);
@@ -2026,7 +2146,7 @@ export default function App() {
           settings={settings}
           onChange={setSettings}
           onExit={() => setSettings((value) => ({ ...value, showChartsOnly: false }))}
-          onToggleFullscreen={toggleFullscreen}
+          onToggleFullscreen={handleToggleFullscreen}
           connected={connected}
           status={status}
           sampleCount={sampleCount}
@@ -2064,10 +2184,25 @@ export default function App() {
                 : '等待上报'}</em>}
               {recording && <em>· 记录 {formatRecordingDuration(recordingElapsedSeconds)}</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
+              {settings.acquisitionMode && <em>· 数据采集模式</em>}
             </span>
           </div>
         </div>
         <div className="topbar-actions">
+          <button
+            className={`icon-button acquisition-mode-toggle ${settings.acquisitionMode ? 'is-active' : ''}`}
+            type="button"
+            aria-pressed={settings.acquisitionMode}
+            onClick={() => setSettings((value) => ({
+              ...value,
+              acquisitionMode: !value.acquisitionMode,
+              showChartsOnly: value.acquisitionMode ? value.showChartsOnly : false
+            }))}
+            title="仅保留采集、记录、人工标记和基础频带显示"
+          >
+            <Database size={18} />
+            <span>{settings.acquisitionMode ? '退出采集模式' : '数据采集模式'}</span>
+          </button>
           <div className="theme-switcher">
             <Palette size={17} />
             <span>主题</span>
@@ -2078,6 +2213,15 @@ export default function App() {
               onChange={(theme) => setSettings((value) => ({ ...value, theme: theme as ThemeName }))}
             />
           </div>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={() => void handleToggleFullscreen()}
+            title={fullscreen ? '退出全屏 (F11)' : '进入全屏 (F11)'}
+          >
+            {fullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+            <span>{fullscreen ? '退出全屏' : '全屏'}</span>
+          </button>
           <button
             className="icon-button"
             type="button"
@@ -2099,14 +2243,12 @@ export default function App() {
           recordingPending={recordingPending}
           recordingElapsedSeconds={recordingElapsedSeconds}
           selectedDeviceId={selectedDeviceId}
-          commandText={commandText}
           selectedSampleRateHz={settings.bleSampleRateHz}
           activeSampleRateHz={activeSampleRateHz}
           sampleRatePending={sampleRatePending}
           batteryStatus={batteryStatus}
           status={status}
           recordPath={recordPath}
-          onCommandTextChange={setCommandText}
           onSelectedDeviceChange={(deviceId) => {
             selectedDeviceIdRef.current = deviceId;
             setSelectedDeviceId(deviceId);
@@ -2117,7 +2259,6 @@ export default function App() {
           onScan={scanDevices}
           onConnect={connectDevice}
           onDisconnect={disconnectDevice}
-          onSend={sendCommand}
           onSelectedSampleRateChange={(bleSampleRateHz) => setSettings((value) => ({
             ...value,
             bleSampleRateHz
@@ -2131,7 +2272,41 @@ export default function App() {
 
       <div className={settingsOpen ? 'workspace with-settings' : 'workspace'}>
         <section className="waveform-area">
-          {settings.displayMode === 'debug' ? (
+          {settings.acquisitionMode ? (
+            <AcquisitionModeView
+              eegBuffers={{
+                eeg1: visibleBuffers.eeg1,
+                eeg2: visibleBuffers.eeg2,
+                eeg3: visibleBuffers.eeg3,
+                eeg4: visibleBuffers.eeg4
+              }}
+              eegSettings={settings.eeg}
+              connected={connected}
+              deviceName={devices.find((device) => device.id === selectedDeviceId)?.name ?? selectedDeviceId ?? '--'}
+              linkStatus={status}
+              sampleCount={sampleCount}
+              sampleRateHz={displaySampleRateHz}
+              acquisitionSampleRateHz={activeSampleRateHz}
+              invalidSampleCount={invalidSampleCount}
+              recording={recording}
+              recordingPending={recordingPending}
+              recordingElapsedSeconds={recordingElapsedSeconds}
+              recordPath={recordPath}
+              markerPath={debugMarkerPath}
+              markerStatus={debugMarkerStatus}
+              markers={debugMarkers}
+              blinkTrial={debugBlinkTrial}
+              participantId={debugParticipantId}
+              onParticipantIdChange={setDebugParticipantId}
+              onSelectedChannelChange={(selectedChannel) => setSettings((current) => ({
+                ...current,
+                eeg: { ...current.eeg, selectedChannel }
+              }))}
+              onToggleRecording={() => void toggleRecording()}
+              onAddMarker={(label, note) => void handleDebugMarker(label, note)}
+              onStartAlignment={() => handleStartDebugBlinkTrial('continuous')}
+            />
+          ) : settings.displayMode === 'debug' ? (
             <DebugModeView
               eegBuffers={{
                 eeg1: visibleBuffers.eeg1,
@@ -2255,6 +2430,10 @@ export default function App() {
             onRefreshAudioOutputs={() => void musicPlayer.refreshOutputDevices(true)}
             onTestAudioOutput={() => void musicPlayer.testOutput()}
             onOpenMusicLibrary={handleOpenMusicLibrary}
+            connected={connected}
+            commandText={commandText}
+            onCommandTextChange={setCommandText}
+            onSendCommand={() => void sendCommand()}
           />
         )}
       </div>
@@ -2338,18 +2517,21 @@ function isPpgChannel(channel: ChannelKey): boolean {
     || channel === 'green2';
 }
 
-async function toggleFullscreen(): Promise<void> {
+async function toggleFullscreen(): Promise<boolean> {
   if (isTauriRuntime()) {
     const appWindow = getCurrentWindow();
     const fullscreen = await appWindow.isFullscreen();
-    await appWindow.setFullscreen(!fullscreen);
-    return;
+    const next = !fullscreen;
+    await appWindow.setFullscreen(next);
+    return next;
   }
 
   if (document.fullscreenElement) {
     await document.exitFullscreen?.();
+    return false;
   } else {
     await document.documentElement.requestFullscreen?.();
+    return true;
   }
 }
 
@@ -2447,9 +2629,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8780;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8781;
   } catch {
-    return 8780;
+    return 8781;
   }
 }
 
@@ -2493,7 +2675,10 @@ function markerPathFromRecordPath(path: string): string {
 
 async function waitForSleepStagingHealth(endpoint: string): Promise<SleepStagingHealth> {
   let lastError: unknown = null;
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  // A freshly installed PyInstaller/ONNX sidecar can need close to one minute
+  // for Gatekeeper verification, extraction and first imports on macOS. Keep
+  // polling quickly, but do not mistake that cold start for an algorithm fault.
+  for (let attempt = 0; attempt < 240; attempt += 1) {
     try {
       return await getSleepStagingHealth(endpoint);
     } catch (error) {

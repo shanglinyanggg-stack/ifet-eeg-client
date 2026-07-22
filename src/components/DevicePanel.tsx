@@ -8,8 +8,7 @@ import {
   Link2Off,
   Radio,
   RefreshCcw,
-  Save,
-  Send
+  Save
 } from 'lucide-react';
 import { bleSampleRateOptions, type BatteryEvent, type DeviceInfo } from '../domain/protocol';
 import type { BleSampleRate } from '../domain/settings';
@@ -24,19 +23,16 @@ interface DevicePanelProps {
   recordingPending?: boolean;
   recordingElapsedSeconds?: number;
   selectedDeviceId: string;
-  commandText: string;
   selectedSampleRateHz: BleSampleRate;
   activeSampleRateHz: BleSampleRate;
   sampleRatePending?: boolean;
   batteryStatus?: BatteryEvent | null;
   status: string;
   recordPath: string;
-  onCommandTextChange: (value: string) => void;
   onSelectedDeviceChange: (value: string) => void;
   onScan: () => void;
   onConnect: () => void;
   onDisconnect: () => void;
-  onSend: () => void;
   onSelectedSampleRateChange: (value: BleSampleRate) => void;
   onApplySampleRate: () => void;
   onToggleRecording: () => void;
@@ -50,19 +46,16 @@ export function DevicePanel({
   recordingPending = false,
   recordingElapsedSeconds = 0,
   selectedDeviceId,
-  commandText,
   selectedSampleRateHz,
   activeSampleRateHz,
   sampleRatePending = false,
   batteryStatus = null,
   status,
   recordPath,
-  onCommandTextChange,
   onSelectedDeviceChange,
   onScan,
   onConnect,
   onDisconnect,
-  onSend,
   onSelectedSampleRateChange,
   onApplySampleRate,
   onToggleRecording
@@ -156,19 +149,6 @@ export function DevicePanel({
         >
           <Gauge size={18} />
           <span>{sampleRatePending ? '设置中' : '设置采样率'}</span>
-        </button>
-      </div>
-      <div className="device-group">
-        <input
-          className="command-input"
-          value={commandText}
-          onChange={(event) => onCommandTextChange(event.target.value)}
-          aria-label="十六进制命令"
-          placeholder="AA 55 01 01"
-        />
-        <button className="icon-button" type="button" onClick={onSend} disabled={!connected}>
-          <Send size={18} />
-          <span>发送</span>
         </button>
       </div>
       <div className="device-group">

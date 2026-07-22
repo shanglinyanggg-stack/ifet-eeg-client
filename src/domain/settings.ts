@@ -156,6 +156,7 @@ export interface EegSettings {
 
 export interface AppSettings {
   bleSampleRateHz: BleSampleRate;
+  acquisitionMode: boolean;
   displayMode: DisplayMode;
   displayDelayMs: number;
   theme: ThemeName;
@@ -179,6 +180,7 @@ const STORAGE_KEY = 'ifet-eeg-client-settings';
 
 export const defaultSettings: AppSettings = {
   bleSampleRateHz: 125,
+  acquisitionMode: false,
   displayMode: 'eeg',
   displayDelayMs: 0,
   theme: 'neuro-dark',
@@ -252,7 +254,7 @@ export const defaultSettings: AppSettings = {
     stopFadeSeconds: 8,
     audioOutputDeviceId: 'default',
     serviceEnabled: true,
-    serviceEndpoint: 'http://127.0.0.1:8780',
+    serviceEndpoint: 'http://127.0.0.1:8781',
     drowsinessMode: 'wearable-trial',
     alphaVolumeMode: '3',
     blinkControlEnabled: false,
@@ -287,6 +289,7 @@ export function saveSettings(settings: AppSettings): void {
 }
 
 function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSettings {
+  const acquisitionMode = value.acquisitionMode === true;
   const bleSampleRateHz = isBleSampleRate(value.bleSampleRateHz)
     ? value.bleSampleRateHz
     : base.bleSampleRateHz;
@@ -330,12 +333,15 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
     || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8777'
     || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8778'
     || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8779'
+    || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8780'
     ? base.sleepMusic.serviceEndpoint
     : value.sleepMusic?.serviceEndpoint;
   return {
     ...base,
     ...value,
     bleSampleRateHz,
+    acquisitionMode,
+    showChartsOnly: acquisitionMode ? false : (value.showChartsOnly ?? base.showChartsOnly),
     visibleChannels: {
       ...base.visibleChannels,
       ...value.visibleChannels

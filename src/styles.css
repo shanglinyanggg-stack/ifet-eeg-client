@@ -455,6 +455,12 @@ input:disabled {
   gap: 10px;
 }
 
+.acquisition-mode-toggle.is-active {
+  border-color: color-mix(in srgb, var(--success) 58%, var(--border));
+  background: var(--success-soft);
+  color: var(--success);
+}
+
 .theme-switcher {
   min-height: 40px;
   gap: 8px;
@@ -1076,6 +1082,75 @@ input::placeholder {
   z-index: 10;
   background: var(--surface-strong);
   box-shadow: 0 1px 0 var(--border);
+}
+
+.settings-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-strong) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.settings-tabs button {
+  min-height: 31px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 10px;
+}
+
+.settings-tabs button.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.acquisition-settings-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--success) 42%, var(--border));
+  border-radius: var(--radius-xs);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.acquisition-settings-notice span {
+  display: grid;
+  gap: 2px;
+}
+
+.acquisition-settings-notice small {
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.acquisition-mode-setting {
+  border-color: color-mix(in srgb, var(--success) 34%, var(--border));
+}
+
+.settings-command-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-command-row button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  gap: 5px;
+  padding: 0 10px;
 }
 
 .settings-panel > label,
@@ -2451,6 +2526,144 @@ input::placeholder {
 }
 
 /* EEGSleepUpper-compatible debug workstation. */
+.acquisition-mode {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  gap: 8px;
+}
+
+.acquisition-toolbar {
+  border-color: color-mix(in srgb, var(--success) 28%, var(--border));
+}
+
+.acquisition-controls > label {
+  flex: 0 1 230px;
+}
+
+.acquisition-body {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(300px, 1fr)) clamp(280px, 23vw, 370px);
+  min-width: 0;
+  min-height: 0;
+  gap: 8px;
+}
+
+.acquisition-waveform-column {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  gap: 6px;
+}
+
+.acquisition-waveform-column > header,
+.acquisition-marker-panel > header {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-elevated);
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.acquisition-waveform-column > header strong,
+.acquisition-marker-panel > header strong {
+  color: var(--text-main);
+  font-size: 10px;
+}
+
+.acquisition-waveform-column > header span {
+  margin-left: auto;
+}
+
+.acquisition-waveform-stack {
+  display: grid;
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+  min-height: 0;
+  gap: 6px;
+}
+
+.acquisition-marker-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.acquisition-marker-panel > header {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.acquisition-marker-body {
+  display: grid;
+  align-content: start;
+  min-height: 0;
+  gap: 7px;
+  padding: 8px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.acquisition-alignment-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 31px;
+  gap: 5px;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--accent);
+}
+
+.acquisition-marker-buttons {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.acquisition-event-log {
+  max-height: 210px;
+}
+
+.workspace.with-settings .acquisition-body {
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  grid-template-rows: minmax(0, 1fr) minmax(190px, 0.48fr);
+}
+
+.workspace.with-settings .acquisition-marker-panel {
+  grid-column: 1 / -1;
+}
+
+.workspace.with-settings .acquisition-marker-body {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workspace.with-settings .acquisition-marker-body > .debug-marker-buttons,
+.workspace.with-settings .acquisition-marker-body > .debug-paths,
+.workspace.with-settings .acquisition-marker-body > .debug-event-log {
+  grid-column: span 1;
+}
+
+@media (max-width: 1120px) {
+  .acquisition-body {
+    grid-template-columns: repeat(2, minmax(260px, 1fr));
+    grid-template-rows: minmax(0, 1fr) minmax(210px, 0.5fr);
+  }
+
+  .acquisition-marker-panel {
+    grid-column: 1 / -1;
+  }
+}
+
 .debug-mode {
   display: flex;
   flex-direction: column;

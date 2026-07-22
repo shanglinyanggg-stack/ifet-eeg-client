@@ -14,17 +14,14 @@ describe('DevicePanel connection identity', () => {
         scanning={false}
         recording={false}
         selectedDeviceId="AA:BB:CC:DD"
-        commandText=""
         selectedSampleRateHz={125}
         activeSampleRateHz={125}
         status="设备已连接"
         recordPath=""
-        onCommandTextChange={vi.fn()}
         onSelectedDeviceChange={vi.fn()}
         onScan={vi.fn()}
         onConnect={vi.fn()}
         onDisconnect={vi.fn()}
-        onSend={vi.fn()}
         onSelectedSampleRateChange={vi.fn()}
         onApplySampleRate={vi.fn()}
         onToggleRecording={vi.fn()}
@@ -33,6 +30,7 @@ describe('DevicePanel connection identity', () => {
 
     expect(screen.getByText('已连接：iFET Headset')).toBeInTheDocument();
     expect(screen.getByText('AA:BB:CC:DD · 设备已连接')).toBeInTheDocument();
+    expect(screen.queryByLabelText('十六进制命令')).not.toBeInTheDocument();
   });
 
   test('lets the user stop an active continuous scan', () => {
@@ -44,17 +42,14 @@ describe('DevicePanel connection identity', () => {
         scanning
         recording={false}
         selectedDeviceId=""
-        commandText=""
         selectedSampleRateHz={500}
         activeSampleRateHz={250}
         status="正在持续扫描"
         recordPath=""
-        onCommandTextChange={vi.fn()}
         onSelectedDeviceChange={vi.fn()}
         onScan={onScan}
         onConnect={vi.fn()}
         onDisconnect={vi.fn()}
-        onSend={vi.fn()}
         onSelectedSampleRateChange={vi.fn()}
         onApplySampleRate={vi.fn()}
         onToggleRecording={vi.fn()}
@@ -76,18 +71,15 @@ describe('DevicePanel connection identity', () => {
         scanning={false}
         recording={false}
         selectedDeviceId="headset"
-        commandText=""
         selectedSampleRateHz={1000}
         activeSampleRateHz={500}
         status="设备已连接"
         recordPath=""
-        onCommandTextChange={vi.fn()}
         onSelectedDeviceChange={vi.fn()}
         onSelectedSampleRateChange={vi.fn()}
         onScan={vi.fn()}
         onConnect={vi.fn()}
         onDisconnect={vi.fn()}
-        onSend={vi.fn()}
         onApplySampleRate={onApplySampleRate}
         onToggleRecording={vi.fn()}
       />
@@ -106,7 +98,6 @@ describe('DevicePanel connection identity', () => {
         scanning={false}
         recording={false}
         selectedDeviceId="headset"
-        commandText=""
         selectedSampleRateHz={125}
         activeSampleRateHz={125}
         batteryStatus={{
@@ -118,13 +109,11 @@ describe('DevicePanel connection identity', () => {
         }}
         status="设备已连接"
         recordPath=""
-        onCommandTextChange={vi.fn()}
         onSelectedDeviceChange={vi.fn()}
         onSelectedSampleRateChange={vi.fn()}
         onScan={vi.fn()}
         onConnect={vi.fn()}
         onDisconnect={vi.fn()}
-        onSend={vi.fn()}
         onApplySampleRate={vi.fn()}
         onToggleRecording={vi.fn()}
       />
@@ -143,18 +132,15 @@ describe('DevicePanel connection identity', () => {
         recording
         recordingElapsedSeconds={3_723}
         selectedDeviceId=""
-        commandText=""
         selectedSampleRateHz={125}
         activeSampleRateHz={125}
         status="记录中"
         recordPath="/tmp/record.csv"
-        onCommandTextChange={vi.fn()}
         onSelectedDeviceChange={vi.fn()}
         onSelectedSampleRateChange={vi.fn()}
         onScan={vi.fn()}
         onConnect={vi.fn()}
         onDisconnect={vi.fn()}
-        onSend={vi.fn()}
         onApplySampleRate={vi.fn()}
         onToggleRecording={vi.fn()}
       />

@@ -1,3 +1,4 @@
+import { useEffect, useState, type ReactNode } from 'react';
 import type React from 'react';
 import {
   displayDelayOptions,
@@ -21,7 +22,7 @@ import {
 import { channelLabels, type ChannelKey } from '../domain/protocol';
 import type { BlinkGestureSnapshot } from '../domain/blink-gesture';
 import { ThemedSelect } from './ThemedSelect';
-import { ChevronRight, Eye, FolderOpen, ListMusic, Music2, Play, RotateCcw, ServerCog, SlidersHorizontal, Speaker, Square } from 'lucide-react';
+import { ChevronRight, Database, Eye, FolderOpen, ListMusic, Music2, Play, RotateCcw, Send, ServerCog, SlidersHorizontal, Speaker, Square } from 'lucide-react';
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -61,6 +62,10 @@ interface SettingsPanelProps {
   onRefreshAudioOutputs?: () => void;
   onTestAudioOutput?: () => void;
   onOpenMusicLibrary?: () => void;
+  connected?: boolean;
+  commandText?: string;
+  onCommandTextChange?: (value: string) => void;
+  onSendCommand?: () => void;
 }
 
 const channels = Object.keys(channelLabels) as ChannelKey[];
@@ -112,8 +117,13 @@ export function SettingsPanel({
   onAudioOutputDeviceChange,
   onRefreshAudioOutputs,
   onTestAudioOutput,
-  onOpenMusicLibrary
+  onOpenMusicLibrary,
+  connected = false,
+  commandText = 'AA 55 01 01',
+  onCommandTextChange,
+  onSendCommand
 }: SettingsPanelProps) {
+  const [section, setSection] = useState<'general' | 'signal' | 'sleep' | 'device'>('general');
   const update = (patch: Partial<AppSettings>) => onChange({ ...settings, ...patch });
   const updateEeg = (patch: Partial<AppSettings['eeg']>) =>
     onChange({ ...settings, eeg: { ...settings.eeg, ...patch } });
@@ -150,11 +160,39 @@ export function SettingsPanel({
     blinkResponse?.state.blink_calibration_progress ?? blinkStatus?.calibrationProgress
   );
 
+  useEffect(() => {
+    if (settings.acquisitionMode && section === 'sleep') setSection('general');
+  }, [section, settings.acquisitionMode]);
+
   return (
     <aside className="settings-panel" aria-label="后台设置">
       <div className="panel-header">
         <h2>后台设置</h2>
       </div>
+      <nav className="settings-tabs" aria-label="设置分类">
+        <SettingsTab active={section === 'general'} onClick={() => setSection('general')}>常规</SettingsTab>
+        <SettingsTab active={section === 'signal'} onClick={() => setSection('signal')}>信号</SettingsTab>
+        <SettingsTab active={section === 'sleep'} disabled={settings.acquisitionMode} onClick={() => setSection('sleep')}>助眠</SettingsTab>
+        <SettingsTab active={section === 'device'} onClick={() => setSection('device')}>设备</SettingsTab>
+      </nav>
+      {settings.acquisitionMode && (
+        <div className="acquisition-settings-notice">
+          <Database size={15} />
+          <span><strong>数据采集模式运行中</strong><small>音乐、基线、分期与眨眼控制均不会运行。</small></span>
+        </div>
+      )}
+      {section === 'general' && <>
+      <label className="check-row acquisition-mode-setting">
+        <input
+          type="checkbox"
+          checked={settings.acquisitionMode}
+          onChange={(event) => update({
+            acquisitionMode: event.target.checked,
+            showChartsOnly: event.target.checked ? false : settings.showChartsOnly
+          })}
+        />
+        <Database size={14} />数据采集模式
+      </label>
       <div className="field-control">
         <span className="field-label">显示模式</span>
         <ThemedSelect
@@ -162,6 +200,7 @@ export function SettingsPanel({
           value={settings.displayMode}
           options={displayModeOptions}
           onChange={(displayMode) => update({ displayMode: displayMode as AppSettings['displayMode'] })}
+          disabled={settings.acquisitionMode}
         />
       </div>
       <div className="field-control">
@@ -221,7 +260,9 @@ export function SettingsPanel({
           </button>
         </div>
       </label>
+      </>}
 
+      {section === 'sleep' && !settings.acquisitionMode && <>
       <div className="setting-group sleep-settings-group">
         <h3><span className="group-dot" /><Music2 size={14} />睡眠音乐引导</h3>
         <div className="sleep-setting-switches">
@@ -620,7 +661,9 @@ export function SettingsPanel({
           </div>
         </details>
       </div>
+      </>}
 
+      {section === 'signal' && <>
       <div className="setting-group">
         <h3><span className="group-dot" />原始滤波（全部波形）</h3>
         <label className="check-row">
@@ -752,7 +795,49 @@ export function SettingsPanel({
           ))}
         </div>
       </div>
+      </>}
+
+      {section === 'device' && (
+        <div className="setting-group device-advanced-settings">
+          <h3><span className="group-dot" />设备高级指令</h3>
+          <p className="setting-help">仅在协议调试或工程排查时使用；常规采集无需发送。</p>
+          <label>
+            FFF5 十六进制指令
+            <div className="settings-command-row">
+              <input
+                className="command-input"
+                value={commandText}
+                onChange={(event) => onCommandTextChange?.(event.target.value)}
+                aria-label="十六进制命令"
+                placeholder="AA 55 01 01"
+              />
+              <button type="button" onClick={onSendCommand} disabled={!connected || !onSendCommand}>
+                <Send size={14} />发送
+              </button>
+            </div>
+          </label>
+          <small className="setting-help">设备未连接时禁止发送。采样率命令仍使用顶部的专用采样率按钮。</small>
+        </div>
+      )}
     </aside>
+  );
+}
+
+function SettingsTab({
+  active,
+  disabled = false,
+  onClick,
+  children
+}: {
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button type="button" className={active ? 'is-active' : ''} disabled={disabled} onClick={onClick}>
+      {children}
+    </button>
   );
 }
 
