@@ -60,6 +60,7 @@ interface PureWaveformViewProps {
   batteryStatus?: BatteryEvent | null;
   recording?: boolean;
   recordingElapsedSeconds?: number;
+  sleepPreventionActive?: boolean;
   warmupRemaining: number;
   onSleepMetrics?: (metrics: SleepMetrics) => void;
   musicPanel?: Omit<SleepMusicPanelProps, 'variant' | 'metrics'>;
@@ -95,6 +96,7 @@ export function PureWaveformView({
   batteryStatus = null,
   recording = false,
   recordingElapsedSeconds = 0,
+  sleepPreventionActive = false,
   warmupRemaining,
   onSleepMetrics,
   musicPanel,
@@ -277,6 +279,7 @@ export function PureWaveformView({
                 ? `${batteryStatus.voltage.toFixed(2)} V${batteryStatus.charging ? '（充电中）' : ''}`
                 : '等待上报'}</em>}
               {recording && <em>· 记录 {formatRecordingDuration(recordingElapsedSeconds)}</em>}
+              {sleepPreventionActive && <em>· Windows 防睡眠已开启</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
               {status && <em>· {status}</em>}
             </span>

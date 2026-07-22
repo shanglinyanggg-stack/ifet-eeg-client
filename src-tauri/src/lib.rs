@@ -1,10 +1,12 @@
 mod ble;
 mod models;
+mod power;
 mod protocol;
 mod sleep_staging;
 
 use ble::BleManagerState;
 use models::{DeviceInfo, StatusEvent};
+use power::{PowerManagerState, PowerPreventionStatus};
 use serde_json::Value;
 use sleep_staging::SleepStagingClientState;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -51,6 +53,7 @@ async fn set_sample_rate(
 async fn start_recording(
     app: AppHandle,
     state: State<'_, BleManagerState>,
+    power: State<'_, PowerManagerState>,
     directory: Option<String>,
 ) -> Result<String, String> {
     let directory = match directory.filter(|value| !value.trim().is_empty()) {
@@ -64,15 +67,39 @@ async fn start_recording(
             Some(path.to_string_lossy().to_string())
         }
     };
-    state
-        .start_recording(directory)
-        .await
-        .map_err(to_user_error)
+    power.set_recording(true)?;
+    match state.start_recording(directory).await {
+        Ok(path) => Ok(path),
+        Err(error) => {
+            let _ = power.set_recording(false);
+            Err(to_user_error(error))
+        }
+    }
 }
 
 #[tauri::command]
-async fn stop_recording(state: State<'_, BleManagerState>) -> Result<(), String> {
-    state.stop_recording().await.map_err(to_user_error)
+async fn stop_recording(
+    state: State<'_, BleManagerState>,
+    power: State<'_, PowerManagerState>,
+) -> Result<(), String> {
+    state.stop_recording().await.map_err(to_user_error)?;
+    power.set_recording(false)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_acquisition_sleep_prevention(
+    state: State<'_, PowerManagerState>,
+    active: bool,
+) -> Result<PowerPreventionStatus, String> {
+    state.set_acquisition_mode(active)
+}
+
+#[tauri::command]
+fn power_prevention_status(
+    state: State<'_, PowerManagerState>,
+) -> Result<PowerPreventionStatus, String> {
+    state.status()
 }
 
 #[tauri::command]
@@ -243,6 +270,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(BleManagerState::default())
+        .manage(PowerManagerState::default())
         .manage(SleepStagingClientState::default())
         .setup(|app| {
             let _ = app.emit(
@@ -262,6 +290,8 @@ pub fn run() {
             set_sample_rate,
             start_recording,
             stop_recording,
+            set_acquisition_sleep_prevention,
+            power_prevention_status,
             append_debug_marker,
             sleep_staging_health,
             sleep_staging_reset,

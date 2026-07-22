@@ -41,6 +41,8 @@ interface AcquisitionModeViewProps {
   recording: boolean;
   recordingPending: boolean;
   recordingElapsedSeconds: number;
+  sleepPreventionActive: boolean;
+  sleepPreventionSupported: boolean;
   recordPath: string;
   markerPath: string;
   markerStatus: string;
@@ -92,6 +94,8 @@ export function AcquisitionModeView({
   recording,
   recordingPending,
   recordingElapsedSeconds,
+  sleepPreventionActive,
+  sleepPreventionSupported,
   recordPath,
   markerPath,
   markerStatus,
@@ -164,6 +168,11 @@ export function AcquisitionModeView({
           <span>{sampleCount} samples</span>
           <span>{acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}</span>
           <span>丢包 {formatPercent(lossRate)}</span>
+          <span data-state={sleepPreventionActive ? 'ready' : 'idle'}>
+            {sleepPreventionSupported
+              ? sleepPreventionActive ? '整夜保护 已开启' : '整夜保护 待机'
+              : '整夜保护 Windows 专用'}
+          </span>
           <button type="button" className={recording ? 'is-recording' : ''} onClick={onToggleRecording} disabled={recordingPending}>
             {recording ? <CircleStop size={15} /> : <Play size={15} />}
             {recordingPending ? '处理中…' : recording ? `停止记录 ${formatRecordingDuration(recordingElapsedSeconds)}` : '开始记录'}

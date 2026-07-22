@@ -30,6 +30,8 @@ describe('AcquisitionModeView', () => {
         recording
         recordingPending={false}
         recordingElapsedSeconds={12}
+        sleepPreventionActive
+        sleepPreventionSupported
         recordPath="/tmp/test.csv"
         markerPath="/tmp/test_markers.csv"
         markerStatus="可添加标记"
@@ -45,6 +47,7 @@ describe('AcquisitionModeView', () => {
     );
 
     expect(screen.getByLabelText('数据采集模式界面')).toHaveTextContent('音乐、基线、分期和眨眼控制均已停用');
+    expect(screen.getByText('整夜保护 已开启')).toBeInTheDocument();
     const eegGroup = screen.getByLabelText('四通道原始 EEG');
     expect(eegGroup).toHaveClass('debug-waveforms');
     expect(within(eegGroup).getAllByLabelText(/EEG[1-4] · 显示 0.5–30 Hz/)).toHaveLength(4);

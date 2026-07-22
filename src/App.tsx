@@ -143,6 +143,13 @@ interface SleepServiceUiState {
   lastResponse: SleepStagingStepResponse | null;
 }
 
+interface PowerPreventionStatus {
+  supported: boolean;
+  active: boolean;
+  recording: boolean;
+  acquisition_mode: boolean;
+}
+
 type SleepDemoServicePhase = 'local' | 'calibrating' | 'ready' | 'fallback';
 
 interface SleepDemoServiceUiState {
@@ -289,6 +296,12 @@ export default function App() {
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [recordingElapsedSeconds, setRecordingElapsedSeconds] = useState(0);
   const [recordingPending, setRecordingPending] = useState(false);
+  const [powerPrevention, setPowerPrevention] = useState<PowerPreventionStatus>({
+    supported: false,
+    active: false,
+    recording: false,
+    acquisition_mode: false
+  });
   const [recordPath, setRecordPath] = useState('');
   const [status, setStatus] = useState('待机');
   const [batteryStatus, setBatteryStatus] = useState<BatteryEvent | null>(null);
@@ -405,6 +418,34 @@ export default function App() {
     const timer = window.setInterval(updateElapsed, 1_000);
     return () => window.clearInterval(timer);
   }, [recording, recordingStartedAt]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    void invokeCommand<PowerPreventionStatus>('set_acquisition_sleep_prevention', {
+      active: settings.acquisitionMode
+    }).then((next) => {
+      if (!cancelled) setPowerPrevention(next);
+    }).catch((error) => {
+      if (!cancelled) setStatus(`整夜防睡眠配置失败：${String(error)}`);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.acquisitionMode]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    void invokeCommand<PowerPreventionStatus>('power_prevention_status').then((next) => {
+      if (!cancelled) setPowerPrevention(next);
+    }).catch((error) => {
+      if (!cancelled) setStatus(`读取整夜防睡眠状态失败：${String(error)}`);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [recording]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2155,6 +2196,7 @@ export default function App() {
           batteryStatus={batteryStatus}
           recording={recording}
           recordingElapsedSeconds={recordingElapsedSeconds}
+          sleepPreventionActive={powerPrevention.active}
           warmupRemaining={warmupRemaining}
           onSleepMetrics={handleSleepMetrics}
           musicPanel={musicPanel}
@@ -2185,6 +2227,7 @@ export default function App() {
               {recording && <em>· 记录 {formatRecordingDuration(recordingElapsedSeconds)}</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
               {settings.acquisitionMode && <em>· 数据采集模式</em>}
+              {powerPrevention.active && <em>· Windows 防睡眠已开启</em>}
             </span>
           </div>
         </div>
@@ -2291,6 +2334,8 @@ export default function App() {
               recording={recording}
               recordingPending={recordingPending}
               recordingElapsedSeconds={recordingElapsedSeconds}
+              sleepPreventionActive={powerPrevention.active}
+              sleepPreventionSupported={powerPrevention.supported}
               recordPath={recordPath}
               markerPath={debugMarkerPath}
               markerStatus={debugMarkerStatus}
@@ -2629,9 +2674,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8782;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8783;
   } catch {
-    return 8782;
+    return 8783;
   }
 }
 
