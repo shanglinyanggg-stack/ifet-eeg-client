@@ -206,98 +206,99 @@ export function AcquisitionModeView({
         </div>
       </div>
 
-      <div className="acquisition-body">
-        <section className="acquisition-waveform-column" aria-label="四通道原始 EEG">
-          <header><Activity size={13} /><strong>四通道 EEG</strong><span>{debugEegFilterOptions.find((item) => item.value === filterMode)?.label}</span></header>
-          <div className="acquisition-waveform-stack">
-            {EEG_CHANNELS.map(({ key, color }) => (
-              <WaveformCanvas
-                key={key}
-                title={`${key.toUpperCase()} · 采集波形`}
-                series={[{
-                  label: key.toUpperCase(),
-                  color,
-                  values: displayedEeg[key],
-                  scale: resolveDebugScale(eegScale)
-                }]}
-                fill
-              />
-            ))}
-          </div>
+      <div className="debug-body acquisition-body">
+        <section className="debug-waveforms acquisition-eeg-waveforms" data-view="eeg" aria-label="四通道原始 EEG">
+          {EEG_CHANNELS.map(({ key, color }) => (
+            <WaveformCanvas
+              key={key}
+              title={`${key.toUpperCase()} · ${debugEegFilterOptions.find((item) => item.value === filterMode)?.label}`}
+              series={[{
+                label: key.toUpperCase(),
+                color,
+                values: displayedEeg[key],
+                scale: resolveDebugScale(eegScale)
+              }]}
+              fill
+            />
+          ))}
         </section>
 
-        <section className="acquisition-waveform-column" aria-label="所选通道四频带">
-          <header><Waves size={13} /><strong>{eegSettings.selectedChannel.toUpperCase()} 四频带</strong><span>独立 FIR 带通</span></header>
-          <div className="acquisition-waveform-stack">
-            {bandSeries.map((band) => (
-              <WaveformCanvas
-                key={band.label}
-                title={`${band.label} · ${band.range}`}
-                sideLabel={{ text: band.label, color: band.color, sub: band.range }}
-                series={[band]}
-              />
-            ))}
-          </div>
-        </section>
-
-        <aside className="acquisition-marker-panel panel" aria-label="事件标记栏">
-          <header><Flag size={14} /><strong>事件标记</strong></header>
-          <div className="acquisition-marker-body">
-            <label className="debug-participant-id">
-              <span>匿名受试者 ID</span>
-              <input
-                value={participantId}
-                maxLength={32}
-                placeholder="例如 P001"
-                onChange={(event) => onParticipantIdChange(event.target.value)}
-                disabled={recording}
-              />
-            </label>
-            <button
-              type="button"
-              className="acquisition-alignment-button"
-              disabled={!recording || blinkTrial?.status === 'active'}
-              onClick={onStartAlignment}
-            >
-              <TimerReset size={13} />PSG 对齐：连续眨眼 10 秒
-            </button>
-            {blinkTrial?.expectedCount === 'continuous' && (
-              <div className="debug-trial-status" data-state={blinkTrial.status === 'active' ? 'active' : 'ready'}>
-                <strong>{blinkTrial.status === 'active'
-                  ? `连续眨眼中 · 剩余 ${(alignmentRemaining / 1000).toFixed(1)} 秒`
-                  : 'PSG 对齐标记已完成'}</strong>
-                <span>开始与结束时间均写入标记文件</span>
-              </div>
-            )}
-            <div className="debug-marker-buttons acquisition-marker-buttons">
-              {ACQUISITION_MARKERS.map((label) => (
-                <button key={label} type="button" disabled={!recording} onClick={() => onAddMarker(label, note)}>
-                  <Flag size={12} />{label}
-                </button>
-              ))}
-            </div>
-            <label className="debug-note">
-              备注
-              <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="事件、动作、佩戴或接触状态" />
-            </label>
-            <button type="button" className="debug-custom-marker" disabled={!recording || !note.trim()} onClick={() => onAddMarker('自定义标记', note)}>
-              <Save size={13} />保存自定义标记
-            </button>
-            <div className="debug-paths">
-              <span>数据文件<code>{recordPath || '--'}</code></span>
-              <span>标记文件<code>{markerPath || '--'}</code></span>
-              <small>{markerStatus}</small>
-            </div>
-            <div className="debug-event-log acquisition-event-log" aria-label="采集事件日志">
-              {markers.length === 0 ? <span>等待人工标记</span> : markers.slice(-12).reverse().map((marker) => (
-                <div key={`${marker.timestamp}-${marker.sampleCount}-${marker.label}`} data-kind="marker">
-                  <time>{formatClock(marker.timestamp)}</time>
-                  <strong>{marker.label}</strong>
-                  <small>sample {marker.sampleCount}{marker.note ? ` · ${marker.note}` : ''}</small>
+        <aside className="debug-inspector acquisition-inspector" aria-label="采集频带与事件标记">
+          <section className="debug-section panel acquisition-band-section">
+            <header><span><Waves size={14} /></span><strong>{eegSettings.selectedChannel.toUpperCase()} 四频带 · 独立 FIR 带通</strong></header>
+            <div className="debug-section-body acquisition-band-stack">
+              {bandSeries.map((band) => (
+                <div className="acquisition-band-chart" key={band.label}>
+                  <WaveformCanvas
+                    title={`${band.label} · ${band.range}`}
+                    series={[band]}
+                    height={132}
+                    gridStyle="dots"
+                  />
                 </div>
               ))}
             </div>
-          </div>
+          </section>
+
+          <section className="debug-section panel acquisition-marker-panel" aria-label="事件标记栏">
+            <header><span><Flag size={14} /></span><strong>事件标记</strong></header>
+            <div className="debug-section-body acquisition-marker-body">
+              <label className="debug-participant-id">
+                <span>匿名受试者 ID</span>
+                <input
+                  value={participantId}
+                  maxLength={32}
+                  placeholder="例如 P001"
+                  onChange={(event) => onParticipantIdChange(event.target.value)}
+                  disabled={recording}
+                />
+              </label>
+              <button
+                type="button"
+                className="acquisition-alignment-button"
+                disabled={!recording || blinkTrial?.status === 'active'}
+                onClick={onStartAlignment}
+              >
+                <TimerReset size={13} />PSG 对齐：连续眨眼 10 秒
+              </button>
+              {blinkTrial?.expectedCount === 'continuous' && (
+                <div className="debug-trial-status" data-state={blinkTrial.status === 'active' ? 'active' : 'ready'}>
+                  <strong>{blinkTrial.status === 'active'
+                    ? `连续眨眼中 · 剩余 ${(alignmentRemaining / 1000).toFixed(1)} 秒`
+                    : 'PSG 对齐标记已完成'}</strong>
+                  <span>开始与结束时间均写入标记文件</span>
+                </div>
+              )}
+              <div className="debug-marker-buttons acquisition-marker-buttons">
+                {ACQUISITION_MARKERS.map((label) => (
+                  <button key={label} type="button" disabled={!recording} onClick={() => onAddMarker(label, note)}>
+                    <Flag size={12} />{label}
+                  </button>
+                ))}
+              </div>
+              <label className="debug-note">
+                备注
+                <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="事件、动作、佩戴或接触状态" />
+              </label>
+              <button type="button" className="debug-custom-marker" disabled={!recording || !note.trim()} onClick={() => onAddMarker('自定义标记', note)}>
+                <Save size={13} />保存自定义标记
+              </button>
+              <div className="debug-paths">
+                <span>数据文件<code>{recordPath || '--'}</code></span>
+                <span>标记文件<code>{markerPath || '--'}</code></span>
+                <small>{markerStatus}</small>
+              </div>
+              <div className="debug-event-log acquisition-event-log" aria-label="采集事件日志">
+                {markers.length === 0 ? <span>等待人工标记</span> : markers.slice(-12).reverse().map((marker) => (
+                  <div key={`${marker.timestamp}-${marker.sampleCount}-${marker.label}`} data-kind="marker">
+                    <time>{formatClock(marker.timestamp)}</time>
+                    <strong>{marker.label}</strong>
+                    <small>sample {marker.sampleCount}{marker.note ? ` · ${marker.note}` : ''}</small>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
         </aside>
       </div>
     </div>

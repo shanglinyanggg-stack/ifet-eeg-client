@@ -2544,76 +2544,44 @@ input::placeholder {
 }
 
 .acquisition-body {
-  flex: 1 1 auto;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(300px, 1fr)) clamp(280px, 23vw, 370px);
+  /* Keep the same two-column proportions as DebugModeView. */
+  grid-template-columns: minmax(0, 1fr) clamp(390px, 35vw, 560px);
+}
+
+.acquisition-inspector {
   min-width: 0;
   min-height: 0;
+  scrollbar-gutter: stable;
+}
+
+.acquisition-band-stack {
   gap: 8px;
 }
 
-.acquisition-waveform-column {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+.acquisition-band-chart {
   min-width: 0;
-  min-height: 0;
-  gap: 6px;
 }
 
-.acquisition-waveform-column > header,
-.acquisition-marker-panel > header {
-  display: flex;
-  align-items: center;
-  min-height: 30px;
-  gap: 5px;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
+.acquisition-band-chart .waveform-panel {
+  min-width: 0;
   border-radius: var(--radius-xs);
-  background: var(--surface-elevated);
-  color: var(--text-soft);
+}
+
+.acquisition-band-chart .panel-header {
+  min-height: 34px;
+  padding: 6px 9px;
+}
+
+.acquisition-band-chart .panel-header h2 {
+  font-size: 10.5px;
+}
+
+.acquisition-band-chart .panel-meta {
   font-size: 9px;
 }
 
-.acquisition-waveform-column > header strong,
-.acquisition-marker-panel > header strong {
-  color: var(--text-main);
-  font-size: 10px;
-}
-
-.acquisition-waveform-column > header span {
-  margin-left: auto;
-}
-
-.acquisition-waveform-stack {
-  display: grid;
-  grid-template-rows: repeat(4, minmax(0, 1fr));
-  min-width: 0;
-  min-height: 0;
-  gap: 6px;
-}
-
-.acquisition-marker-panel {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.acquisition-marker-panel > header {
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
-}
-
 .acquisition-marker-body {
-  display: grid;
   align-content: start;
-  min-height: 0;
-  gap: 7px;
-  padding: 8px;
-  overflow-y: auto;
-  scrollbar-width: thin;
 }
 
 .acquisition-alignment-button {
@@ -2632,36 +2600,6 @@ input::placeholder {
 
 .acquisition-event-log {
   max-height: 210px;
-}
-
-.workspace.with-settings .acquisition-body {
-  grid-template-columns: repeat(2, minmax(260px, 1fr));
-  grid-template-rows: minmax(0, 1fr) minmax(190px, 0.48fr);
-}
-
-.workspace.with-settings .acquisition-marker-panel {
-  grid-column: 1 / -1;
-}
-
-.workspace.with-settings .acquisition-marker-body {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.workspace.with-settings .acquisition-marker-body > .debug-marker-buttons,
-.workspace.with-settings .acquisition-marker-body > .debug-paths,
-.workspace.with-settings .acquisition-marker-body > .debug-event-log {
-  grid-column: span 1;
-}
-
-@media (max-width: 1120px) {
-  .acquisition-body {
-    grid-template-columns: repeat(2, minmax(260px, 1fr));
-    grid-template-rows: minmax(0, 1fr) minmax(210px, 0.5fr);
-  }
-
-  .acquisition-marker-panel {
-    grid-column: 1 / -1;
-  }
 }
 
 .debug-mode {

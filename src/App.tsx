@@ -2629,9 +2629,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8781;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8782;
   } catch {
-    return 8781;
+    return 8782;
   }
 }
 
