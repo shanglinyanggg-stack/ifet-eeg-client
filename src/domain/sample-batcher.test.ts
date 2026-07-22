@@ -54,4 +54,23 @@ describe('SampleBatcher', () => {
 
     expect(batches).toEqual([[1, 2, 3, 4, 5, 6, 7, 8]]);
   });
+
+  test('drops stale realtime samples when the bounded queue is overloaded', () => {
+    vi.useFakeTimers();
+    const batches: number[][] = [];
+    const dropped: number[] = [];
+    const batcher = new SampleBatcher<number>({
+      intervalMs: 100,
+      maxItems: 4,
+      onFlush: (items) => batches.push(items),
+      onDrop: (count) => dropped.push(count)
+    });
+
+    batcher.pushMany([1, 2, 3]);
+    batcher.pushMany([4, 5, 6]);
+    vi.advanceTimersByTime(100);
+
+    expect(dropped).toEqual([2]);
+    expect(batches).toEqual([[3, 4, 5, 6]]);
+  });
 });

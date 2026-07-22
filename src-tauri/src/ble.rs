@@ -57,6 +57,8 @@ struct Recorder {
 }
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
+const FRONTEND_EMIT_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_FRONTEND_BATCH_SAMPLES: usize = 512;
 // 设备协议没有硬件绝对时间。逻辑采样时钟与主机到达时间偏差过大时，
 // 重新锚定到本次 BLE 通知，避免长时间记录逐步偏离 PSG 的墙钟时间。
 const SAMPLE_CLOCK_REANCHOR_THRESHOLD_MS: i64 = 250;
@@ -146,6 +148,8 @@ impl BleManagerState {
             let mut active_sample_rate = selected_sample_rate.load(Ordering::Relaxed);
             let mut decoder = PacketStreamDecoder::new(active_sample_rate);
             let mut next_sample_timestamp: Option<chrono::DateTime<Utc>> = None;
+            let mut pending_frontend_samples = Vec::<SampleEvent>::with_capacity(128);
+            let mut last_frontend_emit = Instant::now();
             while let Some(notification) = notifications.next().await {
                 if notification.uuid != PPG_TX_UUID {
                     continue;
@@ -206,30 +210,34 @@ impl BleManagerState {
                         packet: row.packet.clone(),
                     };
                     sample_events.push(event);
-                    if let Err(error) = write_record(
-                        &recorder,
-                        &timestamp,
-                        active_sample_rate,
-                        row.valid,
-                        row.device_sequence,
-                        &row.packet,
-                    )
-                    .await
-                    {
-                        let _ = task_app.emit(
-                            "ble://status",
-                            crate::models::StatusEvent {
-                                message: format!("记录写入失败，已停止录制: {error}"),
-                                connected: true,
-                            },
-                        );
-                        // 写盘失败后主动停止录制，避免后续样本继续往坏掉的 writer 写
-                        abort_recorder(&recorder).await;
-                    }
                 }
-                if !sample_events.is_empty() {
-                    let _ = task_app.emit("ble://samples", &sample_events);
+
+                // 一次锁定写完整包；记录成功（或当前未记录）后，才把数据交给
+                // UI 实时链路。这样记录数据不会因前端清理或过载而丢失。
+                if let Err(error) = write_records(&recorder, &sample_events).await {
+                    let _ = task_app.emit(
+                        "ble://status",
+                        crate::models::StatusEvent {
+                            message: format!("记录写入失败，已停止录制: {error}"),
+                            connected: true,
+                        },
+                    );
+                    // 写盘失败后主动停止录制，避免后续样本继续往坏掉的 writer 写
+                    abort_recorder(&recorder).await;
                 }
+
+                pending_frontend_samples.extend(sample_events);
+                if pending_frontend_samples.len() >= MAX_FRONTEND_BATCH_SAMPLES
+                    || last_frontend_emit.elapsed() >= FRONTEND_EMIT_INTERVAL
+                {
+                    let batch = std::mem::take(&mut pending_frontend_samples);
+                    let _ = task_app.emit("ble://samples", &batch);
+                    // emit 序列化完成后 batch 离开作用域，立即释放本批原始样本。
+                    last_frontend_emit = Instant::now();
+                }
+            }
+            if !pending_frontend_samples.is_empty() {
+                let _ = task_app.emit("ble://samples", &pending_frontend_samples);
             }
         });
 
@@ -476,55 +484,63 @@ fn parse_hex(raw: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-async fn write_record(
+async fn write_records(
     recorder: &Arc<Mutex<Option<Recorder>>>,
-    timestamp: &str,
-    sample_rate_hz: u32,
-    valid: bool,
-    device_sequence: Option<u8>,
-    packet: &crate::models::DecodedPacket,
+    events: &[SampleEvent],
 ) -> Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
     let mut recorder = recorder.lock().await;
     let Some(recording) = recorder.as_mut() else {
         return Ok(());
     };
 
-    let eeg = packet.eeg.as_ref();
-    writeln!(
-        recording.writer,
-        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-        timestamp,
-        sample_rate_hz,
-        packet
-            .sequence
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
-        packet.ppg.ir1,
-        packet.ppg.red1,
-        packet.ppg.green1,
-        packet.ppg.ir2,
-        packet.ppg.red2,
-        packet.ppg.green2,
-        packet.ppg.acc_x,
-        packet.ppg.acc_y,
-        packet.ppg.acc_z,
-        eeg.map(|value| value.eeg1.to_string()).unwrap_or_default(),
-        eeg.map(|value| value.eeg2.to_string()).unwrap_or_default(),
-        eeg.map(|value| value.eeg3.to_string()).unwrap_or_default(),
-        eeg.map(|value| value.eeg4.to_string()).unwrap_or_default(),
-        eeg.and_then(|value| value.flag)
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
-        valid,
-        device_sequence
-            .map(|value| value.to_string())
-            .unwrap_or_default()
-    )?;
+    write_record_rows(&mut recording.writer, events)?;
     // 定时 flush，避免每个样本都触发系统调用拖垮采集线程
     if recording.last_flush.elapsed() >= FLUSH_INTERVAL {
         recording.writer.flush()?;
         recording.marker_writer.flush()?;
         recording.last_flush = Instant::now();
+    }
+    Ok(())
+}
+
+fn write_record_rows(writer: &mut impl Write, events: &[SampleEvent]) -> Result<()> {
+    for event in events {
+        let packet = &event.packet;
+        let eeg = packet.eeg.as_ref();
+        writeln!(
+            writer,
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            event.timestamp,
+            event.sample_rate_hz,
+            packet
+                .sequence
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            packet.ppg.ir1,
+            packet.ppg.red1,
+            packet.ppg.green1,
+            packet.ppg.ir2,
+            packet.ppg.red2,
+            packet.ppg.green2,
+            packet.ppg.acc_x,
+            packet.ppg.acc_y,
+            packet.ppg.acc_z,
+            eeg.map(|value| value.eeg1.to_string()).unwrap_or_default(),
+            eeg.map(|value| value.eeg2.to_string()).unwrap_or_default(),
+            eeg.map(|value| value.eeg3.to_string()).unwrap_or_default(),
+            eeg.map(|value| value.eeg4.to_string()).unwrap_or_default(),
+            eeg.and_then(|value| value.flag)
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            event.valid,
+            event
+                .device_sequence
+                .map(|value| value.to_string())
+                .unwrap_or_default()
+        )?;
     }
     Ok(())
 }
@@ -578,7 +594,8 @@ fn arrival_aligned_packet_start(
 
 #[cfg(test)]
 mod tests {
-    use super::{arrival_aligned_packet_start, local_rfc3339, parse_hex};
+    use super::{arrival_aligned_packet_start, local_rfc3339, parse_hex, write_record_rows};
+    use crate::models::{DecodedPacket, EegSample, PpgSample, SampleEvent};
     use chrono::{DateTime, Duration as ChronoDuration, Local, TimeZone, Utc};
 
     #[test]
@@ -607,5 +624,43 @@ mod tests {
         let start = arrival_aligned_packet_start(arrival, 8, 1_000);
         assert_eq!(start, arrival - ChronoDuration::milliseconds(7));
         assert_eq!(start + ChronoDuration::milliseconds(7), arrival);
+    }
+
+    #[test]
+    fn writes_every_sample_in_a_recording_batch_before_release() {
+        let event = |sequence: u8| SampleEvent {
+            timestamp: format!("2026-07-22T17:00:00.{sequence:06}+08:00"),
+            sample_rate_hz: 1_000,
+            valid: true,
+            device_sequence: Some(sequence),
+            packet: DecodedPacket {
+                sequence: Some(sequence),
+                ppg: PpgSample {
+                    ir1: 1,
+                    red1: 2,
+                    green1: 3,
+                    ir2: 4,
+                    red2: 5,
+                    green2: 6,
+                    acc_x: 7,
+                    acc_y: 8,
+                    acc_z: 9,
+                },
+                eeg: Some(EegSample {
+                    eeg1: 10,
+                    eeg2: 11,
+                    eeg3: 12,
+                    eeg4: 13,
+                    flag: Some(14),
+                }),
+            },
+        };
+        let mut csv = Vec::new();
+        write_record_rows(&mut csv, &[event(1), event(2)]).unwrap();
+        let text = String::from_utf8(csv).unwrap();
+        let rows: Vec<&str> = text.lines().collect();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].contains(",1000,1,"));
+        assert!(rows[1].contains(",1000,2,"));
     }
 }

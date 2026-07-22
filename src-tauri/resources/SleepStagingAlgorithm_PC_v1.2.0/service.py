@@ -21,6 +21,7 @@ from realtime_sleep_staging.demo_signal_flags import (  # noqa: E402
 from realtime_sleep_staging.desktop_upper_runtime import (  # noqa: E402
     DesktopUpperRuntime,
 )
+from service_lifecycle import watch_parent  # noqa: E402
 
 
 def _jsonable(value: Any) -> Any:
@@ -495,9 +496,21 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
 
-def serve(runtime: CombinedRuntime, host: str, port: int) -> None:
+def serve(
+    runtime: CombinedRuntime,
+    host: str,
+    port: int,
+    parent_pid: int | None = None,
+) -> None:
     handler = type("IfetSleepRuntimeHandler", (_Handler,), {"runtime": runtime})
     server = ThreadingHTTPServer((host, port), handler)
+    if parent_pid is not None:
+        threading.Thread(
+            target=watch_parent,
+            args=(server, parent_pid),
+            name="desktop-parent-watchdog",
+            daemon=True,
+        ).start()
     print(
         json.dumps(
             {
@@ -506,6 +519,7 @@ def serve(runtime: CombinedRuntime, host: str, port: int) -> None:
                 "health": f"http://{host}:{port}/health",
                 "demo_schema": "headset-demo-flags/v9",
                 "blink_algorithm": "1.0.21",
+                "parent_pid": parent_pid,
             },
             ensure_ascii=False,
         ),
@@ -526,6 +540,7 @@ def main() -> None:
     parser.add_argument("--no-restore", action="store_true")
     parser.add_argument("--intra-op-threads", type=int, default=1)
     parser.add_argument("--state-path", type=Path)
+    parser.add_argument("--parent-pid", type=int)
     args = parser.parse_args()
     runtime = CombinedRuntime(
         pipeline_config=ROOT / "config/online_pipeline_config.json",
@@ -533,7 +548,7 @@ def main() -> None:
         restore=not args.no_restore,
         intra_op_threads=args.intra_op_threads,
     )
-    serve(runtime, args.host, args.port)
+    serve(runtime, args.host, args.port, args.parent_pid)
 
 
 if __name__ == "__main__":

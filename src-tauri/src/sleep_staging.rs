@@ -219,6 +219,8 @@ impl SleepStagingClientState {
             .arg("127.0.0.1")
             .arg("--port")
             .arg(port.to_string())
+            .arg("--parent-pid")
+            .arg(std::process::id().to_string())
             .arg("--state-path")
             .arg(algorithm_dir.join("runtime_state").join("sleep_state.npz"))
             .stdin(Stdio::null())

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -18,6 +20,7 @@ ALGORITHM = (
     / "realtime_sleep_staging"
     / "demo_signal_flags.py"
 )
+SERVICE_LIFECYCLE = ALGORITHM.parents[2] / "service_lifecycle.py"
 
 
 def load_algorithm():
@@ -31,6 +34,22 @@ def load_algorithm():
 
 
 ALGO = load_algorithm()
+
+
+def load_service_lifecycle():
+    spec = importlib.util.spec_from_file_location(
+        "ifet_sleep_service_lifecycle_v1021",
+        SERVICE_LIFECYCLE,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load {SERVICE_LIFECYCLE}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+SERVICE_LIFECYCLE_MODULE = load_service_lifecycle()
 
 
 def calibration_signal(channel_count: int) -> np.ndarray:
@@ -63,6 +82,26 @@ def run_calibration(channel_count: int):
 
 
 class DemoSignalFlagsV1021Tests(unittest.TestCase):
+    def test_parent_watchdog_detects_current_and_terminated_processes(self) -> None:
+        self.assertTrue(SERVICE_LIFECYCLE_MODULE.process_is_alive(os.getpid()))
+        self.assertFalse(SERVICE_LIFECYCLE_MODULE.process_is_alive(2_147_483_647))
+
+        class FakeServer:
+            def __init__(self) -> None:
+                self.stopped = threading.Event()
+
+            def shutdown(self) -> None:
+                self.stopped.set()
+
+        server = FakeServer()
+        watcher = threading.Thread(
+            target=SERVICE_LIFECYCLE_MODULE.watch_parent,
+            args=(server, 2_147_483_647, 0.001),
+            daemon=True,
+        )
+        watcher.start()
+        self.assertTrue(server.stopped.wait(timeout=0.5))
+
     def test_four_channel_calibration_reaches_v9_ready_state(self) -> None:
         detector, output = run_calibration(4)
         packet = output.to_packet()

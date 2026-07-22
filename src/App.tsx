@@ -112,8 +112,14 @@ import {
 } from './domain/display-decimation';
 
 const BUFFER_SECONDS = 12;
-// 10 FPS 足以连续观察 EEG；算法与 CSV 在 flush 中仍接收全部原始样本。
+// 10 FPS 足以连续观察 EEG；正常负载下算法接收全部样本，CSV 始终由后端完整记录。
 const SAMPLE_FLUSH_INTERVAL_MS = 100;
+// 前端最多积压 2 秒的 1 kHz 实时样本。CSV 已由 Rust 后端先写入，
+// 因此超载时丢弃过期 UI/实时分析数据不会影响原始记录完整性。
+const MAX_PENDING_FRONTEND_SAMPLES = 2_000;
+const MAX_PENDING_STAGING_CHUNKS = 2;
+const MAX_PENDING_DEMO_CHUNKS = 6;
+const MAX_DEBUG_EVENT_KEYS = 1_000;
 const allChannels = Object.keys(channelLabels) as ChannelKey[];
 const DROWSINESS_BANDS = createEegBands();
 
@@ -348,6 +354,8 @@ export default function App() {
   const sleepDemoAssembler = useRef(new SleepDemoChunkAssembler(sleepAssembler.current.currentSessionId));
   const sleepStepQueue = useRef<Promise<void>>(Promise.resolve());
   const sleepDemoStepQueue = useRef<Promise<void>>(Promise.resolve());
+  const pendingSleepStepCount = useRef(0);
+  const pendingSleepDemoStepCount = useRef(0);
   const remoteStagingSession = useRef<string | null>(null);
   const remoteBlinkState = useRef<{ sessionId: string; enabled: boolean } | null>(null);
   const resumeAfterLibraryRef = useRef(false);
@@ -522,80 +530,92 @@ export default function App() {
   const sampleBatcher = useRef<SampleBatcher<SampleEvent> | null>(null);
   const enqueueSleepChunks = useCallback((chunks: SleepStagingStepRequest[]) => {
     for (const chunk of chunks) {
-      sleepStepQueue.current = sleepStepQueue.current.then(async () => {
-        const current = settingsRef.current.sleepMusic;
-        if (
-          !current.serviceEnabled
-          || !isTauriRuntime()
-          || remoteStagingSession.current !== chunk.session_id
-        ) return;
-        try {
-          const response = await submitSleepStagingStep(current.serviceEndpoint, chunk);
-          setSleepService((previous) => {
-            const chunksSeen = response.chunks_seen
-              ?? (response.end_seconds ? Math.max(1, Math.round(response.end_seconds / 5)) : previous.chunksSeen + 1);
-            return {
-              phase: response.decision_valid ? 'ready' : 'warming',
-              message: response.decision_valid
-                ? `PC 分期 ${response.selected_stage ?? '分析中'}`
-                : `PC 算法预热 ${Math.min(30, chunksSeen * 5)}/30s`,
-              chunksSeen,
-              lastResponse: response
-            };
-          });
-        } catch (error) {
-          remoteStagingSession.current = null;
-          setSleepService({
-            phase: 'fallback',
-            message: 'PC 服务中断，已切换本地判定',
-            chunksSeen: 0,
-            lastResponse: null
-          });
-          console.warn('Sleep staging step failed', error);
-        }
-      });
+      if (pendingSleepStepCount.current >= MAX_PENDING_STAGING_CHUNKS) continue;
+      pendingSleepStepCount.current += 1;
+      sleepStepQueue.current = sleepStepQueue.current
+        .then(async () => {
+          const current = settingsRef.current.sleepMusic;
+          if (
+            !current.serviceEnabled
+            || !isTauriRuntime()
+            || remoteStagingSession.current !== chunk.session_id
+          ) return;
+          try {
+            const response = await submitSleepStagingStep(current.serviceEndpoint, chunk);
+            setSleepService((previous) => {
+              const chunksSeen = response.chunks_seen
+                ?? (response.end_seconds ? Math.max(1, Math.round(response.end_seconds / 5)) : previous.chunksSeen + 1);
+              return {
+                phase: response.decision_valid ? 'ready' : 'warming',
+                message: response.decision_valid
+                  ? `PC 分期 ${response.selected_stage ?? '分析中'}`
+                  : `PC 算法预热 ${Math.min(30, chunksSeen * 5)}/30s`,
+                chunksSeen,
+                lastResponse: response
+              };
+            });
+          } catch (error) {
+            remoteStagingSession.current = null;
+            setSleepService({
+              phase: 'fallback',
+              message: 'PC 服务中断，已切换本地判定',
+              chunksSeen: 0,
+              lastResponse: null
+            });
+            console.warn('Sleep staging step failed', error);
+          }
+        })
+        .finally(() => {
+          pendingSleepStepCount.current = Math.max(0, pendingSleepStepCount.current - 1);
+        });
     }
   }, []);
 
   const enqueueSleepDemoChunks = useCallback((chunks: SleepDemoStepRequest[]) => {
     for (const chunk of chunks) {
-      sleepDemoStepQueue.current = sleepDemoStepQueue.current.then(async () => {
-        const current = settingsRef.current.sleepMusic;
-        const remoteState = remoteBlinkState.current;
-        if (
-          !current.serviceEnabled
-          || !isTauriRuntime()
-          || !remoteState
-          || remoteState.sessionId !== chunk.session_id
-        ) return;
-        try {
-          const response = await submitSleepDemoStep(current.serviceEndpoint, chunk);
-          remoteBlinkState.current = {
-            sessionId: chunk.session_id,
-            enabled: response.state.blink_interaction_enabled
-          };
-          const calibrationReady = response.state.calibration_complete;
-          const blinkStatus = response.state.blink_calibration_status;
-          setSleepDemoService((previous) => ({
-            ...previous,
-            phase: calibrationReady ? 'ready' : 'calibrating',
-            message: calibrationReady
-              ? `Alpha 在线 · 眨眼${blinkStatus === 'complete' ? '就绪' : blinkStatus === 'running' ? '校准中' : '待校准'}`
-              : 'Alpha 个体基线校准中',
-            lastResponse: response
-          }));
-          setBlinkSnapshot((previous) => blinkSnapshotFromResponse(response, previous));
-        } catch (error) {
-          remoteBlinkState.current = null;
-          setSleepDemoService((previous) => ({
-            ...previous,
-            phase: 'fallback',
-            message: 'v1.2 Demo 流中断，已使用本地检测',
-            lastResponse: null
-          }));
-          console.warn('Sleep demo signal step failed', error);
-        }
-      });
+      if (pendingSleepDemoStepCount.current >= MAX_PENDING_DEMO_CHUNKS) continue;
+      pendingSleepDemoStepCount.current += 1;
+      sleepDemoStepQueue.current = sleepDemoStepQueue.current
+        .then(async () => {
+          const current = settingsRef.current.sleepMusic;
+          const remoteState = remoteBlinkState.current;
+          if (
+            !current.serviceEnabled
+            || !isTauriRuntime()
+            || !remoteState
+            || remoteState.sessionId !== chunk.session_id
+          ) return;
+          try {
+            const response = await submitSleepDemoStep(current.serviceEndpoint, chunk);
+            remoteBlinkState.current = {
+              sessionId: chunk.session_id,
+              enabled: response.state.blink_interaction_enabled
+            };
+            const calibrationReady = response.state.calibration_complete;
+            const blinkStatus = response.state.blink_calibration_status;
+            setSleepDemoService((previous) => ({
+              ...previous,
+              phase: calibrationReady ? 'ready' : 'calibrating',
+              message: calibrationReady
+                ? `Alpha 在线 · 眨眼${blinkStatus === 'complete' ? '就绪' : blinkStatus === 'running' ? '校准中' : '待校准'}`
+                : 'Alpha 个体基线校准中',
+              lastResponse: response
+            }));
+            setBlinkSnapshot((previous) => blinkSnapshotFromResponse(response, previous));
+          } catch (error) {
+            remoteBlinkState.current = null;
+            setSleepDemoService((previous) => ({
+              ...previous,
+              phase: 'fallback',
+              message: 'v1.2 Demo 流中断，已使用本地检测',
+              lastResponse: null
+            }));
+            console.warn('Sleep demo signal step failed', error);
+          }
+        })
+        .finally(() => {
+          pendingSleepDemoStepCount.current = Math.max(0, pendingSleepDemoStepCount.current - 1);
+        });
     }
   }, []);
 
@@ -614,7 +634,11 @@ export default function App() {
   useEffect(() => {
     sampleBatcher.current = new SampleBatcher({
       intervalMs: SAMPLE_FLUSH_INTERVAL_MS,
-      onFlush: flushSamples
+      maxItems: MAX_PENDING_FRONTEND_SAMPLES,
+      onFlush: flushSamples,
+      onDrop: (count) => {
+        setStatus(`实时处理过载，已清理 ${count} 个过期显示样本；记录文件不受影响`);
+      }
     });
     return () => {
       sampleBatcher.current?.flush();
@@ -1598,6 +1622,9 @@ export default function App() {
     for (const event of onlineDemoSignal.events) {
       const key = `${onlineDemoSignal.session_id ?? 'session'}|${onlineDemoSignal.timestamp_ms}|${event.flag}|${event.time_seconds}`;
       if (debugAlgorithmEventKeys.current.has(key)) continue;
+      if (debugAlgorithmEventKeys.current.size >= MAX_DEBUG_EVENT_KEYS) {
+        debugAlgorithmEventKeys.current.clear();
+      }
       debugAlgorithmEventKeys.current.add(key);
       incoming.push({
         timestamp: new Date().toISOString(),
@@ -2420,9 +2447,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8779;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8780;
   } catch {
-    return 8779;
+    return 8780;
   }
 }
 
