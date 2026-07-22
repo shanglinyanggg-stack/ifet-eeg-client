@@ -45,6 +45,7 @@ import {
 } from './SleepMusicPanel';
 import type { DeviceFlagRecord } from '../App';
 import { formatRecordingDuration } from '../domain/recording-time';
+import { formatBatterySummary } from '../domain/battery';
 
 interface PureWaveformViewProps {
   values: TimedValue[];
@@ -276,7 +277,7 @@ export function PureWaveformView({
               {sampleCount} samples
               <em>· {acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}</em>
               {connected && <em>· 电量 {batteryStatus
-                ? `${batteryStatus.voltage.toFixed(2)} V${batteryStatus.charging ? '（充电中）' : ''}`
+                ? formatBatterySummary(batteryStatus)
                 : '等待上报'}</em>}
               {recording && <em>· 记录 {formatRecordingDuration(recordingElapsedSeconds)}</em>}
               {sleepPreventionActive && <em>· Windows 防睡眠已开启</em>}

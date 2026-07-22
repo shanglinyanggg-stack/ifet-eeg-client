@@ -1,3 +1,4 @@
+use crate::battery::BatteryLevel;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
@@ -23,6 +24,9 @@ pub struct BatteryEvent {
     pub charging: bool,
     pub raw_value: u32,
     pub voltage: f64,
+    pub smoothed_voltage: f64,
+    pub estimated_percent: u8,
+    pub level: BatteryLevel,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

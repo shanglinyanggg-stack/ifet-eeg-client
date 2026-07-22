@@ -1,5 +1,6 @@
 import {
   BatteryCharging,
+  BatteryLow,
   BatteryMedium,
   Bluetooth,
   CircleStop,
@@ -11,6 +12,12 @@ import {
   Save
 } from 'lucide-react';
 import { bleSampleRateOptions, type BatteryEvent, type DeviceInfo } from '../domain/protocol';
+import {
+  batteryDisplayVoltage,
+  batteryEstimatedPercent,
+  batteryLevel,
+  batteryStateLabel
+} from '../domain/battery';
 import type { BleSampleRate } from '../domain/settings';
 import { formatRecordingDuration } from '../domain/recording-time';
 import { ThemedSelect } from './ThemedSelect';
@@ -74,6 +81,7 @@ export function DevicePanel({
     : status;
 
   const stateValue = connected ? 'connected' : scanning ? 'scanning' : 'disconnected';
+  const displayedBatteryLevel = batteryStatus ? batteryLevel(batteryStatus) : 'normal';
 
   return (
     <section className="device-strip" aria-label="设备控制">
@@ -117,18 +125,23 @@ export function DevicePanel({
       <div
         className="device-group battery-group"
         aria-label="设备电量"
+        data-level={displayedBatteryLevel}
         title={batteryStatus
-          ? `原始计量值 ${batteryStatus.rawValue} · 序号 ${batteryStatus.sequence}`
+          ? `原始计量值 ${batteryStatus.rawValue} · 原始电压 ${batteryStatus.voltage.toFixed(3)} V · 3.29 V=0% · 序号 ${batteryStatus.sequence}`
           : connected ? '等待设备发送 0x03/0x04 电压帧' : '连接设备后显示电量'}
       >
         {batteryStatus?.charging
           ? <BatteryCharging size={20} aria-hidden="true" />
-          : <BatteryMedium size={20} aria-hidden="true" />}
+          : displayedBatteryLevel === 'low' || displayedBatteryLevel === 'empty'
+            ? <BatteryLow size={20} aria-hidden="true" />
+            : <BatteryMedium size={20} aria-hidden="true" />}
         <div className="battery-copy">
           <span>设备电量</span>
-          <strong>{batteryStatus ? `${batteryStatus.voltage.toFixed(2)} V` : '--'}</strong>
+          <strong>{batteryStatus
+            ? `${batteryEstimatedPercent(batteryStatus)}% · ${batteryDisplayVoltage(batteryStatus).toFixed(2)} V`
+            : '--'}</strong>
           <small>{batteryStatus
-            ? batteryStatus.charging ? '正在充电' : '正常使用'
+            ? batteryStateLabel(batteryStatus)
             : connected ? '等待上报' : '未连接'}</small>
         </div>
       </div>

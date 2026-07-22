@@ -1,3 +1,4 @@
+use crate::battery::BatteryEstimator;
 use crate::models::{BatteryEvent, DeviceInfo, SampleEvent};
 use crate::protocol::{
     parse_battery_frame, sample_interval_nanoseconds, sample_rate_command,
@@ -52,6 +53,7 @@ struct BleRuntime {
 struct Recorder {
     writer: BufWriter<File>,
     marker_writer: BufWriter<File>,
+    battery_writer: BufWriter<File>,
     marker_path: PathBuf,
     last_flush: Instant,
 }
@@ -149,22 +151,35 @@ impl BleManagerState {
             let mut decoder = PacketStreamDecoder::new(active_sample_rate);
             let mut next_sample_timestamp: Option<chrono::DateTime<Utc>> = None;
             let mut pending_frontend_samples = Vec::<SampleEvent>::with_capacity(128);
+            let mut battery_estimator = BatteryEstimator::default();
             let mut last_frontend_emit = Instant::now();
             while let Some(notification) = notifications.next().await {
                 if notification.uuid != PPG_TX_UUID {
                     continue;
                 }
                 if let Some(battery) = parse_battery_frame(&notification.value) {
-                    let _ = task_app.emit(
-                        "ble://battery",
-                        BatteryEvent {
-                            timestamp: local_now_rfc3339(),
-                            sequence: battery.sequence,
-                            charging: battery.charging,
-                            raw_value: battery.raw_value,
-                            voltage: battery.voltage,
-                        },
-                    );
+                    let estimate = battery_estimator.update(battery.voltage, battery.charging);
+                    let battery_event = BatteryEvent {
+                        timestamp: local_now_rfc3339(),
+                        sequence: battery.sequence,
+                        charging: battery.charging,
+                        raw_value: battery.raw_value,
+                        voltage: battery.voltage,
+                        smoothed_voltage: estimate.smoothed_voltage,
+                        estimated_percent: estimate.estimated_percent,
+                        level: estimate.level,
+                    };
+                    if let Err(error) = write_battery_record(&recorder, &battery_event).await {
+                        let _ = task_app.emit(
+                            "ble://status",
+                            crate::models::StatusEvent {
+                                message: format!("电池记录写入失败，已停止录制: {error}"),
+                                connected: true,
+                            },
+                        );
+                        abort_recorder(&recorder).await;
+                    }
+                    let _ = task_app.emit("ble://battery", battery_event);
                     continue;
                 }
                 let requested_sample_rate = selected_sample_rate.load(Ordering::Relaxed);
@@ -342,10 +357,20 @@ impl BleManagerState {
         )?;
         marker_writer.flush()?;
 
+        let battery_path = path.with_file_name(format!("{stem}_battery.csv"));
+        let battery_file = File::create(&battery_path)?;
+        let mut battery_writer = BufWriter::new(battery_file);
+        writeln!(
+            battery_writer,
+            "time,sequence,rawValue,voltage,smoothedVoltage,estimatedPercent,charging,level"
+        )?;
+        battery_writer.flush()?;
+
         let mut recorder = self.recorder.lock().await;
         *recorder = Some(Recorder {
             writer,
             marker_writer,
+            battery_writer,
             marker_path,
             last_flush: Instant::now(),
         });
@@ -357,6 +382,7 @@ impl BleManagerState {
         if let Some(recording) = recorder.as_mut() {
             recording.writer.flush()?;
             recording.marker_writer.flush()?;
+            recording.battery_writer.flush()?;
         }
         *recorder = None;
         Ok(())
@@ -501,6 +527,7 @@ async fn write_records(
     if recording.last_flush.elapsed() >= FLUSH_INTERVAL {
         recording.writer.flush()?;
         recording.marker_writer.flush()?;
+        recording.battery_writer.flush()?;
         recording.last_flush = Instant::now();
     }
     Ok(())
@@ -545,11 +572,42 @@ fn write_record_rows(writer: &mut impl Write, events: &[SampleEvent]) -> Result<
     Ok(())
 }
 
+async fn write_battery_record(
+    recorder: &Arc<Mutex<Option<Recorder>>>,
+    battery: &BatteryEvent,
+) -> Result<()> {
+    let mut recorder = recorder.lock().await;
+    let Some(recording) = recorder.as_mut() else {
+        return Ok(());
+    };
+    write_battery_row(&mut recording.battery_writer, battery)?;
+    // 电压帧频率远低于 EEG；逐帧 flush 可保证意外断电前的电量轨迹落盘。
+    recording.battery_writer.flush()?;
+    Ok(())
+}
+
+fn write_battery_row(writer: &mut impl Write, battery: &BatteryEvent) -> Result<()> {
+    writeln!(
+        writer,
+        "{},{},{},{:.6},{:.6},{},{},{}",
+        battery.timestamp,
+        battery.sequence,
+        battery.raw_value,
+        battery.voltage,
+        battery.smoothed_voltage,
+        battery.estimated_percent,
+        battery.charging,
+        battery.level.as_str()
+    )?;
+    Ok(())
+}
+
 async fn abort_recorder(recorder: &Arc<Mutex<Option<Recorder>>>) {
     let mut recorder = recorder.lock().await;
     if let Some(recording) = recorder.as_mut() {
         let _ = recording.writer.flush();
         let _ = recording.marker_writer.flush();
+        let _ = recording.battery_writer.flush();
     }
     *recorder = None;
 }
@@ -594,8 +652,12 @@ fn arrival_aligned_packet_start(
 
 #[cfg(test)]
 mod tests {
-    use super::{arrival_aligned_packet_start, local_rfc3339, parse_hex, write_record_rows};
-    use crate::models::{DecodedPacket, EegSample, PpgSample, SampleEvent};
+    use super::{
+        arrival_aligned_packet_start, local_rfc3339, parse_hex, write_battery_row,
+        write_record_rows,
+    };
+    use crate::battery::BatteryLevel;
+    use crate::models::{BatteryEvent, DecodedPacket, EegSample, PpgSample, SampleEvent};
     use chrono::{DateTime, Duration as ChronoDuration, Local, TimeZone, Utc};
 
     #[test]
@@ -662,5 +724,26 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows[0].contains(",1000,1,"));
         assert!(rows[1].contains(",1000,2,"));
+    }
+
+    #[test]
+    fn writes_raw_and_calibrated_battery_values_to_the_auxiliary_log() {
+        let mut csv = Vec::new();
+        write_battery_row(
+            &mut csv,
+            &BatteryEvent {
+                timestamp: "2026-07-23T01:02:03.000000+08:00".to_string(),
+                sequence: 9,
+                charging: false,
+                raw_value: 444,
+                voltage: 444.0 / 135.0,
+                smoothed_voltage: 3.29,
+                estimated_percent: 0,
+                level: BatteryLevel::Empty,
+            },
+        )
+        .unwrap();
+        let csv = String::from_utf8(csv).unwrap();
+        assert!(csv.contains(",9,444,3.288889,3.290000,0,false,empty"));
     }
 }

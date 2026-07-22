@@ -106,6 +106,7 @@ import { ThemedSelect } from './components/ThemedSelect';
 import { WaveformCanvas } from './components/WaveformCanvas';
 import { useMusicPlayer } from './hooks/useMusicPlayer';
 import { formatRecordingDuration } from './domain/recording-time';
+import { formatBatterySummary } from './domain/battery';
 import {
   decimateDisplayValues,
   DISPLAY_PROCESSING_SAMPLE_RATE_HZ,
@@ -2222,7 +2223,7 @@ export default function App() {
               {sampleCount} samples
               <em>· {formatSampleRate(activeSampleRateHz)}</em>
               {connected && <em>· 电量 {batteryStatus
-                ? `${batteryStatus.voltage.toFixed(2)} V${batteryStatus.charging ? '（充电中）' : ''}`
+                ? formatBatterySummary(batteryStatus)
                 : '等待上报'}</em>}
               {recording && <em>· 记录 {formatRecordingDuration(recordingElapsedSeconds)}</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
@@ -2674,9 +2675,9 @@ function endpointPort(endpoint: string): number {
   try {
     const url = new URL(endpoint);
     const port = Number(url.port || 80);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8783;
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8784;
   } catch {
-    return 8783;
+    return 8784;
   }
 }
 

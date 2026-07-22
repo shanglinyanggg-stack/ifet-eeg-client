@@ -56,7 +56,12 @@ export interface BatteryEvent {
   charging: boolean;
   rawValue: number;
   voltage: number;
+  smoothedVoltage?: number;
+  estimatedPercent?: number;
+  level?: BatteryLevel;
 }
+
+export type BatteryLevel = 'charging' | 'normal' | 'low' | 'empty';
 
 export type ChannelKey =
   | keyof PpgSample

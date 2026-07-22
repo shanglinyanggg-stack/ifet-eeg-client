@@ -600,6 +600,20 @@ input:disabled {
   margin-top: 2px;
 }
 
+.battery-group[data-level="low"],
+.battery-group[data-level="empty"] {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface-elevated));
+}
+
+.battery-group[data-level="low"] .battery-copy strong,
+.battery-group[data-level="low"] .battery-copy small,
+.battery-group[data-level="empty"] .battery-copy strong,
+.battery-group[data-level="empty"] .battery-copy small {
+  color: var(--danger);
+}
+
 @keyframes status-spin {
   from { transform: rotate(0deg); box-shadow: 0 0 0 4px var(--accent-soft); }
   to { transform: rotate(360deg); box-shadow: 0 0 0 4px var(--accent-soft); }

@@ -105,7 +105,10 @@ describe('DevicePanel connection identity', () => {
           sequence: 8,
           charging: true,
           rawValue: 567,
-          voltage: 4.2
+          voltage: 4.2,
+          smoothedVoltage: 4.2,
+          estimatedPercent: 100,
+          level: 'charging'
         }}
         status="设备已连接"
         recordPath=""
@@ -119,8 +122,45 @@ describe('DevicePanel connection identity', () => {
       />
     );
 
-    expect(screen.getByLabelText('设备电量')).toHaveTextContent('4.20 V');
+    expect(screen.getByLabelText('设备电量')).toHaveTextContent('100% · 4.20 V');
     expect(screen.getByLabelText('设备电量')).toHaveTextContent('正在充电');
+  });
+
+  test('shows the measured cutoff as an empty-battery warning', () => {
+    render(
+      <DevicePanel
+        devices={[{ id: 'headset', name: 'TD10', rssi: -50 }]}
+        connected
+        scanning={false}
+        recording={false}
+        selectedDeviceId="headset"
+        selectedSampleRateHz={125}
+        activeSampleRateHz={125}
+        batteryStatus={{
+          timestamp: '2026-07-23T00:00:00Z',
+          sequence: 9,
+          charging: false,
+          rawValue: 444,
+          voltage: 444 / 135,
+          smoothedVoltage: 3.29,
+          estimatedPercent: 0,
+          level: 'empty'
+        }}
+        status="设备已连接"
+        recordPath=""
+        onSelectedDeviceChange={vi.fn()}
+        onSelectedSampleRateChange={vi.fn()}
+        onScan={vi.fn()}
+        onConnect={vi.fn()}
+        onDisconnect={vi.fn()}
+        onApplySampleRate={vi.fn()}
+        onToggleRecording={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText('设备电量')).toHaveAttribute('data-level', 'empty');
+    expect(screen.getByLabelText('设备电量')).toHaveTextContent('0% · 3.29 V');
+    expect(screen.getByLabelText('设备电量')).toHaveTextContent('已到实测耗尽电压');
   });
 
   test('shows live recording duration as HH:MM:SS', () => {

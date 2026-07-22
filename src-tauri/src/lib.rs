@@ -1,3 +1,4 @@
+mod battery;
 mod ble;
 mod models;
 mod power;
