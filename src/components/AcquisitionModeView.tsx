@@ -23,6 +23,7 @@ import {
   type TimedValue
 } from '../domain/dsp';
 import { formatRecordingDuration } from '../domain/recording-time';
+import type { LinkQualitySnapshot } from '../domain/link-quality';
 import type { EegChannel, EegSettings } from '../domain/settings';
 import type { DebugBlinkTrial, DebugMarkerRecord } from './DebugModeView';
 import { ThemedSelect } from './ThemedSelect';
@@ -38,6 +39,7 @@ interface AcquisitionModeViewProps {
   sampleRateHz: number;
   acquisitionSampleRateHz: number;
   invalidSampleCount: number;
+  linkQuality?: LinkQualitySnapshot;
   recording: boolean;
   recordingPending: boolean;
   recordingElapsedSeconds: number;
@@ -91,6 +93,7 @@ export function AcquisitionModeView({
   sampleRateHz,
   acquisitionSampleRateHz,
   invalidSampleCount,
+  linkQuality,
   recording,
   recordingPending,
   recordingElapsedSeconds,
@@ -148,7 +151,9 @@ export function AcquisitionModeView({
     };
   }), [eegSettings.bandRanges, eegSettings.notch, eegSettings.selectedChannel, sampleRateHz, selectedValues]);
 
-  const lossRate = sampleCount > 0 ? invalidSampleCount / sampleCount : 0;
+  const lossRate = linkQuality?.ready
+    ? linkQuality.lossRatePercent / 100
+    : sampleCount > 0 ? invalidSampleCount / sampleCount : 0;
   const alignmentRemaining = blinkTrial?.status === 'active'
     ? Math.max(0, blinkTrial.endsAt - now)
     : 0;
@@ -166,8 +171,10 @@ export function AcquisitionModeView({
         <div className="debug-toolbar-status">
           <span data-state={connected ? 'ready' : 'idle'}>{connected ? `已连接 ${deviceName}` : 'BLE 未连接'}</span>
           <span>{sampleCount} samples</span>
-          <span>{acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}</span>
-          <span>丢包 {formatPercent(lossRate)}</span>
+          <span>{linkQuality?.ready
+            ? `10s 实收 ${linkQuality.effectiveSampleRateHz.toFixed(1)}/${acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}`
+            : `目标 ${acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}`}</span>
+          <span>{linkQuality?.ready ? '10s ' : '累计 '}丢包 {formatPercent(lossRate)}</span>
           <span data-state={sleepPreventionActive ? 'ready' : 'idle'}>
             {sleepPreventionSupported
               ? sleepPreventionActive ? '整夜保护 已开启' : '整夜保护 待机'

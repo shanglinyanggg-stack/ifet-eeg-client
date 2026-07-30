@@ -141,7 +141,7 @@ describe('App settings bootstrapping', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '扫描' }));
 
-    expect(await screen.findByText('已连接：Preview BLE')).toBeInTheDocument();
+    expect(await screen.findByText('已连接：TD10 Preview')).toBeInTheDocument();
     expect(screen.getByText(/preview-device · 采样率已设置为 125 Hz/)).toBeInTheDocument();
   });
 });

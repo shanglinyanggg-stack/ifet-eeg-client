@@ -43,6 +43,7 @@ import {
 } from '../domain/wearable-drowsiness';
 import { ThemedSelect } from './ThemedSelect';
 import { WaveformCanvas } from './WaveformCanvas';
+import type { LinkQualitySnapshot } from '../domain/link-quality';
 
 export interface DebugMarkerRecord {
   timestamp: string;
@@ -78,6 +79,7 @@ interface DebugModeViewProps {
   sampleRateHz?: number;
   acquisitionSampleRateHz?: number;
   invalidSampleCount: number;
+  linkQuality?: LinkQualitySnapshot;
   latestDeviceFlag: number | null;
   recording: boolean;
   recordingPending?: boolean;
@@ -144,6 +146,7 @@ export function DebugModeView({
   sampleRateHz = EEG_SAMPLE_RATE,
   acquisitionSampleRateHz = sampleRateHz,
   invalidSampleCount,
+  linkQuality,
   latestDeviceFlag,
   recording,
   recordingPending = false,
@@ -208,7 +211,9 @@ export function DebugModeView({
 
   const telemetry = demoResponse?.telemetry;
   const state = demoResponse?.state;
-  const lossRate = sampleCount > 0 ? invalidSampleCount / sampleCount : 0;
+  const lossRate = linkQuality?.ready
+    ? linkQuality.lossRatePercent / 100
+    : sampleCount > 0 ? invalidSampleCount / sampleCount : 0;
   const initialBaseline = telemetry?.open_eye_alpha_initial_baseline;
   const currentBaseline = telemetry?.open_eye_alpha_baseline;
   const baselineChange = initialBaseline && currentBaseline !== null && currentBaseline !== undefined
@@ -232,8 +237,10 @@ export function DebugModeView({
         <div className="debug-toolbar-status">
           <span data-state={connected ? 'ready' : 'idle'}>{connected ? `已连接 ${deviceName}` : 'BLE 未连接'}</span>
           <span>{sampleCount} samples</span>
-          <span>{acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}</span>
-          <span>丢包 {formatPercent(lossRate)}</span>
+          <span>{linkQuality?.ready
+            ? `10s 实收 ${linkQuality.effectiveSampleRateHz.toFixed(1)}/${acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}`
+            : `目标 ${acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}`}</span>
+          <span>{linkQuality?.ready ? '10s ' : '累计 '}丢包 {formatPercent(lossRate)}</span>
           <button type="button" className={recording ? 'is-recording' : ''} onClick={onToggleRecording} disabled={recordingPending}>
             {recording ? <CircleStop size={15} /> : <Play size={15} />}
             {recordingPending ? '处理中…' : recording ? '停止记录' : '开始记录'}

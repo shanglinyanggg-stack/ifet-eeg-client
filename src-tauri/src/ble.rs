@@ -85,9 +85,12 @@ impl BleManagerState {
                 // 系统缓存中偶尔会残留已离线外设，不能让单个读取错误终止持续扫描。
                 Ok(None) | Err(_) => continue,
             };
-            let name = props
-                .local_name
-                .unwrap_or_else(|| "(未命名设备)".to_string());
+            let Some(name) = props.local_name else {
+                continue;
+            };
+            if !is_td_device_name(&name) {
+                continue;
+            }
             // 0 dBm 会被误认为信号极强，未上报时用 i16::MIN 占位
             let rssi = props.rssi.unwrap_or(i16::MIN);
             devices.push(DeviceInfo {
@@ -513,6 +516,12 @@ impl BleManagerState {
     }
 }
 
+fn is_td_device_name(name: &str) -> bool {
+    name.trim_start()
+        .get(..2)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("TD"))
+}
+
 fn parse_hex(raw: &str) -> Result<Vec<u8>> {
     let compact = raw.trim();
     if !compact.is_empty() && compact.chars().all(|ch| ch.is_ascii_hexdigit()) {
@@ -695,8 +704,8 @@ fn arrival_aligned_packet_start(
 #[cfg(test)]
 mod tests {
     use super::{
-        arrival_aligned_packet_start, local_rfc3339, parse_hex, write_battery_row,
-        write_record_rows, BleManagerState,
+        arrival_aligned_packet_start, is_td_device_name, local_rfc3339, parse_hex,
+        write_battery_row, write_record_rows, BleManagerState,
     };
     use crate::battery::BatteryLevel;
     use crate::models::{BatteryEvent, DecodedPacket, EegSample, PpgSample, SampleEvent};
@@ -709,6 +718,15 @@ mod tests {
         assert_eq!(parse_hex("72 04").unwrap(), vec![0x72, 0x04]);
         assert_eq!(parse_hex("0x72, 0x03").unwrap(), vec![0x72, 0x03]);
         assert!(parse_hex("721").is_err());
+    }
+
+    #[test]
+    fn filters_scanned_devices_to_td_prefix() {
+        assert!(is_td_device_name("TD10"));
+        assert!(is_td_device_name("  td-headset"));
+        assert!(!is_td_device_name("iFET TD10"));
+        assert!(!is_td_device_name("EEG Headset"));
+        assert!(!is_td_device_name(""));
     }
 
     #[test]

@@ -46,6 +46,7 @@ import {
 import type { DeviceFlagRecord } from '../App';
 import { formatRecordingDuration } from '../domain/recording-time';
 import { formatBatterySummary } from '../domain/battery';
+import type { LinkQualitySnapshot } from '../domain/link-quality';
 
 interface PureWaveformViewProps {
   values: TimedValue[];
@@ -58,6 +59,7 @@ interface PureWaveformViewProps {
   sampleCount: number;
   sampleRateHz?: number;
   acquisitionSampleRateHz?: number;
+  linkQuality?: LinkQualitySnapshot;
   batteryStatus?: BatteryEvent | null;
   recording?: boolean;
   recordingElapsedSeconds?: number;
@@ -94,6 +96,7 @@ export function PureWaveformView({
   sampleCount,
   sampleRateHz = EEG_SAMPLE_RATE,
   acquisitionSampleRateHz = sampleRateHz,
+  linkQuality,
   batteryStatus = null,
   recording = false,
   recordingElapsedSeconds = 0,
@@ -275,7 +278,14 @@ export function PureWaveformView({
             <h1>纯波形监测</h1>
             <span className={`status-chip ${connected ? 'is-online' : ''}`}>
               {sampleCount} samples
-              <em>· {acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}</em>
+              {connected
+                ? linkQuality?.ready
+                  ? <>
+                      <em>· 10s 实收 {linkQuality.effectiveSampleRateHz.toFixed(1)}/{acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}</em>
+                      <em>· 丢包 {linkQuality.lossRatePercent.toFixed(1)}%</em>
+                    </>
+                  : <em>· 10s 采样统计中 / 目标 {acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}</em>
+                : <em>· 目标 {acquisitionSampleRateHz === 1_000 ? '1 kHz' : `${acquisitionSampleRateHz} Hz`}</em>}
               {connected && <em>· 电量 {batteryStatus
                 ? formatBatterySummary(batteryStatus)
                 : '等待上报'}</em>}

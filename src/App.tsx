@@ -80,7 +80,15 @@ import { SampleBatcher } from './domain/sample-batcher';
 import { filterPpgDisplayWindow } from './domain/debug-signal';
 import type { SleepDeltaArtifactContext } from './domain/delta-artifact-filter';
 import { matchedFilterSleepTheta } from './domain/theta-matched-filter';
-import { connectionCandidates, mergeDiscoveredDevices } from './domain/ble-discovery';
+import {
+  connectionCandidates,
+  filterTdDevices,
+  mergeDiscoveredDevices
+} from './domain/ble-discovery';
+import {
+  createEmptyLinkQuality,
+  RollingLinkQualityMonitor
+} from './domain/link-quality';
 import {
   channelColors,
   channelLabels,
@@ -282,6 +290,7 @@ function blinkSnapshotFromResponse(
 
 export default function App() {
   const blinkDetector = useRef(new BlinkGestureDetector());
+  const linkQualityMonitor = useRef(new RollingLinkQualityMonitor());
   const wearableDrowsinessEstimator = useRef(new QualityGatedWearableDrowsinessEstimator());
   const wearableBandFilters = useRef(
     Array.from({ length: 2 }, () => DROWSINESS_BANDS.map(() => new StreamingFilterCache()))
@@ -320,6 +329,7 @@ export default function App() {
   const [musicLibraryOpen, setMusicLibraryOpen] = useState(false);
   const [sampleCount, setSampleCount] = useState(0);
   const [invalidSampleCount, setInvalidSampleCount] = useState(0);
+  const [linkQuality, setLinkQuality] = useState(createEmptyLinkQuality);
   const [deviceFlags, setDeviceFlags] = useState<DeviceFlagRecord[]>([]);
   const [debugMarkers, setDebugMarkers] = useState<DebugMarkerRecord[]>([]);
   const [debugParticipantId, setDebugParticipantId] = useState('');
@@ -759,6 +769,8 @@ export default function App() {
 
   const pushSamples = useCallback((events: SampleEvent[]) => {
     if (events.length === 0) return;
+    const eventSampleRate = normalizeBleSampleRate(events[events.length - 1].sampleRateHz);
+    setLinkQuality(linkQualityMonitor.current.push(events, eventSampleRate));
     // 算法输入不经过可丢弃的绘图队列；显示过载只清理旧画面，不破坏
     // 30 s epoch + 5 s 步长的连续分期输入。
     processAlgorithmSamples(events);
@@ -814,6 +826,7 @@ export default function App() {
       setDeviceFlags([]);
       setSampleCount(0);
       setInvalidSampleCount(0);
+      setLinkQuality(linkQualityMonitor.current.reset());
       setActiveSampleRateHz(sampleRateHz);
       setBlinkSnapshot(blinkDetector.current.snapshot());
       setWearableDrowsiness(createWearableDrowsinessSnapshot());
@@ -895,6 +908,7 @@ export default function App() {
       setStatus(event.payload.message);
       if (!event.payload.connected) {
         setBatteryStatus(null);
+        setLinkQuality(linkQualityMonitor.current.reset());
         handleUnexpectedDisconnect();
       }
     }).then((unlisten) => {
@@ -1106,7 +1120,7 @@ export default function App() {
       while (scanActive.current && scanSession.current === session && !connectedRef.current) {
         let discovered: DeviceInfo[];
         try {
-          discovered = await invokeCommand<DeviceInfo[]>('scan_devices');
+          discovered = filterTdDevices(await invokeCommand<DeviceInfo[]>('scan_devices'));
         } catch (error) {
           if (!scanActive.current || scanSession.current !== session) break;
           setStatus(`扫描暂时失败：${String(error)}；1 秒后自动重试`);
@@ -1121,8 +1135,8 @@ export default function App() {
 
         if (candidates.length === 0) {
           setStatus(discovered.length > 1
-            ? `发现 ${discovered.length} 个设备，请选择目标设备；扫描将继续`
-            : '尚未发现头戴设备，正在继续扫描');
+            ? `发现 ${discovered.length} 个 TD 设备，请选择目标设备；扫描将继续`
+            : '尚未发现 TD 头戴设备，正在继续扫描');
           continue;
         }
 
@@ -1184,6 +1198,7 @@ export default function App() {
       await invokeCommand('disconnect_device');
       setConnected(false);
       setBatteryStatus(null);
+      setLinkQuality(linkQualityMonitor.current.reset());
       setStatus('已断开连接');
     } catch (error) {
       setStatus(String(error));
@@ -2234,6 +2249,7 @@ export default function App() {
           sampleCount={sampleCount}
           sampleRateHz={displaySampleRateHz}
           acquisitionSampleRateHz={activeSampleRateHz}
+          linkQuality={linkQuality}
           batteryStatus={batteryStatus}
           recording={recording}
           recordingElapsedSeconds={recordingElapsedSeconds}
@@ -2261,7 +2277,14 @@ export default function App() {
             <h1>iFET EEG Client</h1>
             <span className="status-chip">
               {sampleCount} samples
-              <em>· {formatSampleRate(activeSampleRateHz)}</em>
+              {connected
+                ? linkQuality.ready
+                  ? <>
+                      <em>· 10s 实收 {linkQuality.effectiveSampleRateHz.toFixed(1)}/{formatSampleRate(activeSampleRateHz)}</em>
+                      <em>· 丢包 {linkQuality.lossRatePercent.toFixed(1)}%</em>
+                    </>
+                  : <em>· 10s 采样统计中 / 目标 {formatSampleRate(activeSampleRateHz)}</em>
+                : <em>· 目标 {formatSampleRate(activeSampleRateHz)}</em>}
               {connected && <em>· 电量 {batteryStatus
                 ? formatBatterySummary(batteryStatus)
                 : '等待上报'}</em>}
@@ -2377,6 +2400,7 @@ export default function App() {
               sampleRateHz={displaySampleRateHz}
               acquisitionSampleRateHz={activeSampleRateHz}
               invalidSampleCount={invalidSampleCount}
+              linkQuality={linkQuality}
               recording={recording}
               recordingPending={recordingPending}
               recordingElapsedSeconds={recordingElapsedSeconds}
@@ -2420,6 +2444,7 @@ export default function App() {
               sampleRateHz={displaySampleRateHz}
               acquisitionSampleRateHz={activeSampleRateHz}
               invalidSampleCount={invalidSampleCount}
+              linkQuality={linkQuality}
               latestDeviceFlag={deviceFlags[deviceFlags.length - 1]?.value ?? null}
               recording={recording}
               recordingPending={recordingPending}
@@ -2629,7 +2654,7 @@ async function toggleFullscreen(): Promise<boolean> {
 async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauriRuntime()) {
     if (command === 'scan_devices') {
-      return [{ id: 'preview-device', name: 'Preview BLE', rssi: -42 }] as T;
+      return [{ id: 'preview-device', name: 'TD10 Preview', rssi: -42 }] as T;
     }
     if (command === 'start_recording') {
       return '浏览器预览模式' as T;
