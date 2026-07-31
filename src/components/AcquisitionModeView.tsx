@@ -26,6 +26,7 @@ import { formatRecordingDuration } from '../domain/recording-time';
 import type { LinkQualitySnapshot } from '../domain/link-quality';
 import type { EegChannel, EegSettings } from '../domain/settings';
 import type { DebugBlinkTrial, DebugMarkerRecord } from './DebugModeView';
+import { SpectrumChart } from './SpectrumChart';
 import { ThemedSelect } from './ThemedSelect';
 import { WaveformCanvas } from './WaveformCanvas';
 
@@ -69,6 +70,13 @@ const EEG_CHANNEL_OPTIONS = EEG_CHANNELS.map(({ key }) => ({
   value: key,
   label: key.toUpperCase()
 }));
+
+type AcquisitionAnalysisView = 'spectrum' | 'bands';
+
+const ACQUISITION_ANALYSIS_OPTIONS = [
+  { value: 'spectrum', label: '实时频谱' },
+  { value: 'bands', label: '频带波形' }
+];
 
 const ACQUISITION_MARKERS = [
   '睁眼',
@@ -114,6 +122,7 @@ export function AcquisitionModeView({
   const [note, setNote] = useState('');
   const [filterMode, setFilterMode] = useState<DebugEegFilterMode>('0.5-30');
   const [eegScale, setEegScale] = useState<DebugEegScale>('5000');
+  const [analysisView, setAnalysisView] = useState<AcquisitionAnalysisView>('spectrum');
   const [now, setNow] = useState(Date.now());
   const bandFilters = useRef(BANDS.map(() => new StreamingFilterCache()));
 
@@ -131,25 +140,28 @@ export function AcquisitionModeView({
   ) as Record<EegChannel, TimedValue[]>, [eegBuffers, filterMode, sampleRateHz]);
 
   const selectedValues = eegBuffers[eegSettings.selectedChannel];
-  const bandSeries = useMemo(() => BANDS.map((band, index) => {
-    const range = eegSettings.bandRanges[band.key] ?? { low: band.low, high: band.high };
-    const values = bandFilters.current[index].update(
-      `acquisition|${eegSettings.selectedChannel}|${band.key}|${range.low}|${range.high}|${eegSettings.notch}|${sampleRateHz}`,
-      selectedValues,
-      () => FilterChain.firBandpass({
-        low: range.low,
-        high: range.high,
-        sampleRate: sampleRateHz,
-        notch: eegSettings.notch
-      })
-    );
-    return {
-      label: band.label,
-      color: band.color,
-      values,
-      range: `${range.low}-${range.high} Hz`
-    };
-  }), [eegSettings.bandRanges, eegSettings.notch, eegSettings.selectedChannel, sampleRateHz, selectedValues]);
+  const bandSeries = useMemo(() => {
+    if (analysisView !== 'bands') return [];
+    return BANDS.map((band, index) => {
+      const range = eegSettings.bandRanges[band.key] ?? { low: band.low, high: band.high };
+      const values = bandFilters.current[index].update(
+        `acquisition|${eegSettings.selectedChannel}|${band.key}|${range.low}|${range.high}|${eegSettings.notch}|${sampleRateHz}`,
+        selectedValues,
+        () => FilterChain.firBandpass({
+          low: range.low,
+          high: range.high,
+          sampleRate: sampleRateHz,
+          notch: eegSettings.notch
+        })
+      );
+      return {
+        label: band.label,
+        color: band.color,
+        values,
+        range: `${range.low}-${range.high} Hz`
+      };
+    });
+  }, [analysisView, eegSettings.bandRanges, eegSettings.notch, eegSettings.selectedChannel, sampleRateHz, selectedValues]);
 
   const lossRate = linkQuality?.ready
     ? linkQuality.lossRatePercent / 100
@@ -207,12 +219,21 @@ export function AcquisitionModeView({
           />
         </label>
         <label>
-          <span>频带分析通道</span>
+          <span>分析通道</span>
           <ThemedSelect
-            ariaLabel="采集频带分析通道"
+            ariaLabel="采集分析通道"
             value={eegSettings.selectedChannel}
             options={EEG_CHANNEL_OPTIONS}
             onChange={(value) => onSelectedChannelChange(value as EegChannel)}
+          />
+        </label>
+        <label>
+          <span>分析显示</span>
+          <ThemedSelect
+            ariaLabel="采集分析显示"
+            value={analysisView}
+            options={ACQUISITION_ANALYSIS_OPTIONS}
+            onChange={(value) => setAnalysisView(value as AcquisitionAnalysisView)}
           />
         </label>
         <div className="debug-link-summary">
@@ -239,11 +260,24 @@ export function AcquisitionModeView({
           ))}
         </section>
 
-        <aside className="debug-inspector acquisition-inspector" aria-label="采集频带与事件标记">
-          <section className="debug-section panel acquisition-band-section">
-            <header><span><Waves size={14} /></span><strong>{eegSettings.selectedChannel.toUpperCase()} 四频带 · 独立 FIR 带通</strong></header>
-            <div className="debug-section-body acquisition-band-stack">
-              {bandSeries.map((band) => (
+        <aside className="debug-inspector acquisition-inspector" aria-label="采集分析与事件标记">
+          <section className="debug-section panel acquisition-band-section acquisition-analysis-section">
+            <header>
+              <span>{analysisView === 'spectrum' ? <Activity size={14} /> : <Waves size={14} />}</span>
+              <strong>
+                {eegSettings.selectedChannel.toUpperCase()} · {analysisView === 'spectrum'
+                  ? '实时频谱'
+                  : '四频带 · 独立 FIR 带通'}
+              </strong>
+            </header>
+            <div className={`debug-section-body ${analysisView === 'spectrum' ? 'acquisition-spectrum-body' : 'acquisition-band-stack'}`}>
+              {analysisView === 'spectrum' ? (
+                <SpectrumChart
+                  values={selectedValues}
+                  sampleRateHz={sampleRateHz}
+                  channelLabel={eegSettings.selectedChannel.toUpperCase()}
+                />
+              ) : bandSeries.map((band) => (
                 <div className="acquisition-band-chart" key={band.label}>
                   <WaveformCanvas
                     title={`${band.label} · ${band.range}`}

@@ -13,7 +13,7 @@ vi.mock('./WaveformCanvas', () => ({
 afterEach(cleanup);
 
 describe('AcquisitionModeView', () => {
-  test('keeps four EEG channels, selected-channel bands and manual markers', () => {
+  test('defaults to live spectrum and can switch to selected-channel bands', () => {
     const onSelectedChannelChange = vi.fn();
     const onAddMarker = vi.fn();
     render(
@@ -52,13 +52,18 @@ describe('AcquisitionModeView', () => {
     expect(eegGroup).toHaveClass('debug-waveforms');
     expect(within(eegGroup).getAllByLabelText(/EEG[1-4] · 显示 0.5–30 Hz/)).toHaveLength(4);
 
-    const inspector = screen.getByLabelText('采集频带与事件标记');
+    const inspector = screen.getByLabelText('采集分析与事件标记');
+    expect(within(inspector).getByLabelText('EEG1 实时频谱')).toBeInTheDocument();
+    expect(within(inspector).queryByLabelText(/Delta|Theta|Alpha|Beta/)).not.toBeInTheDocument();
+    expect(within(inspector).getByLabelText('事件标记栏')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('采集分析显示'));
+    fireEvent.click(screen.getByRole('option', { name: '频带波形' }));
     const bandCharts = within(inspector).getAllByLabelText(/Delta|Theta|Alpha|Beta/);
     expect(bandCharts).toHaveLength(4);
     expect(bandCharts.every((chart) => chart.dataset.sideLabel === '')).toBe(true);
-    expect(within(inspector).getByLabelText('事件标记栏')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('采集频带分析通道'));
+    fireEvent.click(screen.getByLabelText('采集分析通道'));
     fireEvent.click(screen.getByRole('option', { name: 'EEG3' }));
     expect(onSelectedChannelChange).toHaveBeenCalledWith('eeg3');
 

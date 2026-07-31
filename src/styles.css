@@ -2600,6 +2600,109 @@ input::placeholder {
   gap: 8px;
 }
 
+.acquisition-spectrum-body {
+  padding: 8px;
+}
+
+.spectrum-chart {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.spectrum-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.spectrum-summary > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 8px;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--control-bg);
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.spectrum-summary strong {
+  color: var(--text-main);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.spectrum-empty {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--control-bg);
+  color: var(--text-soft);
+  font-size: 10px;
+}
+
+.spectrum-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 240px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--control-bg);
+}
+
+.spectrum-plot-bg {
+  fill: color-mix(in srgb, var(--surface-elevated) 82%, transparent);
+}
+
+.spectrum-grid-line {
+  stroke: var(--border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.spectrum-grid-line.is-vertical {
+  stroke-dasharray: 3 5;
+}
+
+.spectrum-axis-label,
+.spectrum-axis-title {
+  fill: var(--text-soft);
+  font-size: 10px;
+}
+
+.spectrum-axis-title {
+  font-weight: 600;
+}
+
+.spectrum-band-label {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.spectrum-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.spectrum-peak {
+  fill: var(--surface-strong);
+  stroke: var(--accent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
 .acquisition-band-chart {
   min-width: 0;
 }
