@@ -16,6 +16,7 @@ import { cleanSleepDeltaWave, type SleepDeltaArtifactContext } from '../domain/d
 import { applyRobustMedianReference } from '../domain/eeg-reference';
 import { compensateAwakeAperiodicSlope } from '../domain/band-share-compensation';
 import { matchedFilterSleepTheta } from '../domain/theta-matched-filter';
+import { enhanceShortBetaBursts } from '../domain/beta-burst-enhancement';
 import type { EegChannel, EegSettings } from '../domain/settings';
 import { WaveformCanvas, type WaveformSeries } from './WaveformCanvas';
 import { BandShareChart } from './BandShareChart';
@@ -173,13 +174,17 @@ function useBandFilters(
         streamKey: `${channel}|${range.low}|${range.high}|${sampleRateHz}`,
         sampleRateHz
       }).weight)
-      : filtered;
+      : definition.key === 'beta'
+        ? enhanceShortBetaBursts(filtered, sampleRateHz)
+        : filtered;
     const analysisValues = definition.key === 'theta'
       ? matchedFilterSleepTheta(filtered, values, sampleRateHz, artifactContext, {
         lowHz: range.low,
         highHz: range.high
       }).values
-      : displayValues;
+      : definition.key === 'beta'
+        ? filtered
+        : displayValues;
     return {
       label: definition.label,
       color: definition.color,

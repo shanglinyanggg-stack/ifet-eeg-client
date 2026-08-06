@@ -25,6 +25,7 @@ import {
 import { formatRecordingDuration } from '../domain/recording-time';
 import type { LinkQualitySnapshot } from '../domain/link-quality';
 import type { EegChannel, EegSettings } from '../domain/settings';
+import { enhanceShortBetaBursts } from '../domain/beta-burst-enhancement';
 import type { DebugBlinkTrial, DebugMarkerRecord } from './DebugModeView';
 import { SpectrumChart } from './SpectrumChart';
 import { ThemedSelect } from './ThemedSelect';
@@ -157,8 +158,8 @@ export function AcquisitionModeView({
       return {
         label: band.label,
         color: band.color,
-        values,
-        range: `${range.low}-${range.high} Hz`
+        values: band.key === 'beta' ? enhanceShortBetaBursts(values, sampleRateHz) : values,
+        range: `${range.low}-${range.high} Hz${band.key === 'beta' ? ' · short-burst enhanced' : ''}`
       };
     });
   }, [analysisView, eegSettings.bandRanges, eegSettings.notch, eegSettings.selectedChannel, sampleRateHz, selectedValues]);

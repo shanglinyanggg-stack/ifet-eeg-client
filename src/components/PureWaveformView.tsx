@@ -23,6 +23,7 @@ import { applySlowWaveGate, AdaptiveSlowWaveGate } from '../domain/adaptive-slow
 import { cleanSleepDeltaWave, type SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
 import { applyRobustMedianReference } from '../domain/eeg-reference';
 import { matchedFilterSleepTheta } from '../domain/theta-matched-filter';
+import { enhanceShortBetaBursts } from '../domain/beta-burst-enhancement';
 import { translateAlgorithmState } from '../domain/sleep-demo-signal';
 import {
   eegScaleOptions,
@@ -171,9 +172,11 @@ export function PureWaveformView({
           streamKey: `${channel}|pure|${range.low}|${range.high}|${sampleRateHz}`,
           sampleRateHz
         }).weight)
-        : cleaned;
+        : band.key === 'beta'
+          ? enhanceShortBetaBursts(cleaned, sampleRateHz)
+          : cleaned;
       const scale = resolveScale(eeg.pure.bandScales[band.key], displayValues.map((p) => p.value));
-      return { ...band, values: displayValues, scale };
+      return { ...band, values: displayValues, analysisValues: cleaned, scale };
     });
   }, [analysisValues, bands, channel, deltaArtifactContext, eeg.pure.bandRanges, eeg.pure.bandScales, eeg.notch, realtimeStage, sampleRateHz]);
 
@@ -259,7 +262,7 @@ export function PureWaveformView({
       symbol: b.symbol,
       label: b.label,
       color: b.color,
-      value: Math.max(0, averageAbs(b.values))
+      value: Math.max(0, averageAbs(b.analysisValues))
     }));
     const total = energies.reduce((sum, item) => sum + item.value, 0);
     return energies.map((item) => ({
