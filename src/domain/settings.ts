@@ -12,6 +12,12 @@ export type AlphaVolumeMode = '3' | '10' | '20' | 'smooth';
 export type DrowsinessMode = 'v025' | 'wearable-trial';
 export type BleSampleRate = 125 | 250 | 500 | 1000;
 
+export interface LslSettings {
+  enabled: boolean;
+  streamName: string;
+  sourceId: string;
+}
+
 export interface SleepMusicTrack {
   id: string;
   name: string;
@@ -173,6 +179,7 @@ export interface AppSettings {
   kalmanR: number;
   visibleChannels: Record<string, boolean>;
   eeg: EegSettings;
+  lsl: LslSettings;
   sleepMusic: SleepMusicSettings;
 }
 
@@ -238,6 +245,11 @@ export const defaultSettings: AppSettings = {
         gamma: 'auto'
       }
     }
+  },
+  lsl: {
+    enabled: false,
+    streamName: 'iFET-TD10',
+    sourceId: 'ifet-td10-headset'
   },
   sleepMusic: {
     enabled: true,
@@ -369,6 +381,10 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
           ...value.eeg?.pure?.bandScales
         }
       }
+    },
+    lsl: {
+      ...base.lsl,
+      ...value.lsl
     },
     sleepMusic: {
       ...base.sleepMusic,

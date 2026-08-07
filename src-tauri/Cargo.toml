@@ -1,6 +1,6 @@
 [package]
 name = "ifet-eeg-client"
-version = "0.2.26"
+version = "0.2.27"
 description = "iFET EEG desktop BLE client"
 authors = ["iFET"]
 edition = "2021"
@@ -23,6 +23,7 @@ tauri-plugin-dialog = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["serde", "v4"] }
+lsl = "0.1.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -35,3 +36,8 @@ windows-sys = { version = "0.61", features = [
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[patch.crates-io]
+# Local MIT-licensed copy of lsl-sys 0.1.1. Only the Apple Clang compatibility
+# flag in build.rs differs; Windows continues to use the upstream MSVC flags.
+lsl-sys = { path = "vendor/lsl-sys" }

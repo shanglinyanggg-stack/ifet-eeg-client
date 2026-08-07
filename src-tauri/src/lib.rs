@@ -1,11 +1,13 @@
 mod battery;
 mod ble;
+mod lsl;
 mod models;
 mod power;
 mod protocol;
 mod sleep_staging;
 
 use ble::BleManagerState;
+use lsl::{LslConfig, LslManagerState, LslStatus};
 use models::{DeviceInfo, StatusEvent};
 use power::{PowerManagerState, PowerPreventionStatus};
 use serde_json::Value;
@@ -21,10 +23,11 @@ async fn scan_devices(state: State<'_, BleManagerState>) -> Result<Vec<DeviceInf
 async fn connect_device(
     app: AppHandle,
     state: State<'_, BleManagerState>,
+    lsl: State<'_, LslManagerState>,
     device_id: String,
 ) -> Result<(), String> {
     state
-        .connect_device(app, device_id)
+        .connect_device(app, device_id, lsl.publisher())
         .await
         .map_err(to_user_error)
 }
@@ -139,6 +142,7 @@ fn power_prevention_status(
 #[allow(clippy::too_many_arguments)]
 async fn append_debug_marker(
     state: State<'_, BleManagerState>,
+    lsl: State<'_, LslManagerState>,
     participant_id: String,
     label: String,
     note: String,
@@ -150,7 +154,11 @@ async fn append_debug_marker(
     eeg3: Option<f64>,
     eeg4: Option<f64>,
 ) -> Result<String, String> {
-    state
+    let marker_participant_id = participant_id.clone();
+    let marker_label = label.clone();
+    let marker_note = note.clone();
+    let marker_action = algorithm_action.clone();
+    let path = state
         .append_debug_marker(
             participant_id,
             label,
@@ -164,7 +172,46 @@ async fn append_debug_marker(
             eeg4,
         )
         .await
-        .map_err(to_user_error)
+        .map_err(to_user_error)?;
+    // LSL 是并行输出：未启用或临时失败不能破坏本地 CSV 标记。
+    let _ = lsl
+        .publish_marker(
+            marker_label,
+            marker_note,
+            marker_participant_id,
+            sample_count,
+            device_flag,
+            marker_action,
+        )
+        .await;
+    Ok(path)
+}
+
+#[tauri::command]
+async fn lsl_configure(
+    state: State<'_, LslManagerState>,
+    config: LslConfig,
+) -> Result<LslStatus, String> {
+    state.configure(config).await
+}
+
+#[tauri::command]
+fn lsl_status(state: State<'_, LslManagerState>) -> LslStatus {
+    state.status()
+}
+
+#[tauri::command]
+async fn lsl_test_marker(state: State<'_, LslManagerState>) -> Result<LslStatus, String> {
+    state
+        .publish_marker(
+            "LSL 测试标记".to_string(),
+            "由上位机设置页发送".to_string(),
+            String::new(),
+            0,
+            None,
+            "LSL 测试".to_string(),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -303,6 +350,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(BleManagerState::default())
+        .manage(LslManagerState::default())
         .manage(PowerManagerState::default())
         .manage(SleepStagingClientState::default())
         .setup(|app| {
@@ -328,6 +376,9 @@ pub fn run() {
             set_acquisition_sleep_prevention,
             power_prevention_status,
             append_debug_marker,
+            lsl_configure,
+            lsl_status,
+            lsl_test_marker,
             sleep_staging_health,
             sleep_staging_reset,
             sleep_staging_step,

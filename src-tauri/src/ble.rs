@@ -1,4 +1,5 @@
 use crate::battery::BatteryEstimator;
+use crate::lsl::LslPublisher;
 use crate::models::{BatteryEvent, DeviceInfo, SampleEvent};
 use crate::protocol::{
     parse_battery_frame, sample_interval_nanoseconds, sample_rate_command,
@@ -103,7 +104,12 @@ impl BleManagerState {
         Ok(devices)
     }
 
-    pub async fn connect_device(&self, app: AppHandle, device_id: String) -> Result<()> {
+    pub async fn connect_device(
+        &self,
+        app: AppHandle,
+        device_id: String,
+        lsl_publisher: LslPublisher,
+    ) -> Result<()> {
         if let Err(error) = self.disconnect_device().await {
             // 旧连接清理失败不阻断新连接，但要让用户看到
             let _ = app.emit(
@@ -253,6 +259,8 @@ impl BleManagerState {
                     abort_recorder(&recorder).await;
                 }
 
+                // LSL 使用独立有界队列，接收端过慢时只丢 LSL 批次，绝不阻塞 BLE 与写盘。
+                lsl_publisher.publish_samples(&sample_events, active_sample_rate);
                 pending_frontend_samples.extend(sample_events);
                 if pending_frontend_samples.len() >= MAX_FRONTEND_BATCH_SAMPLES
                     || last_frontend_emit.elapsed() >= FRONTEND_EMIT_INTERVAL

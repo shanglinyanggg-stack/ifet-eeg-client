@@ -21,7 +21,9 @@ import {
 } from '../domain/sleep-demo-signal';
 import { channelLabels, type ChannelKey } from '../domain/protocol';
 import type { BlinkGestureSnapshot } from '../domain/blink-gesture';
+import type { LslStatus } from '../domain/lsl';
 import { ThemedSelect } from './ThemedSelect';
+import { LslSettingsSection } from './LslSettingsSection';
 import { ChevronRight, Database, Eye, FolderOpen, ListMusic, Music2, Play, RotateCcw, Send, ServerCog, SlidersHorizontal, Speaker, Square } from 'lucide-react';
 
 interface SettingsPanelProps {
@@ -66,6 +68,10 @@ interface SettingsPanelProps {
   commandText?: string;
   onCommandTextChange?: (value: string) => void;
   onSendCommand?: () => void;
+  lslStatus?: LslStatus;
+  lslPending?: boolean;
+  onLslRefresh?: () => void;
+  onLslTestMarker?: () => void;
 }
 
 const channels = Object.keys(channelLabels) as ChannelKey[];
@@ -121,9 +127,13 @@ export function SettingsPanel({
   connected = false,
   commandText = 'AA 55 01 01',
   onCommandTextChange,
-  onSendCommand
+  onSendCommand,
+  lslStatus,
+  lslPending = false,
+  onLslRefresh,
+  onLslTestMarker
 }: SettingsPanelProps) {
-  const [section, setSection] = useState<'general' | 'signal' | 'sleep' | 'device'>('general');
+  const [section, setSection] = useState<'general' | 'signal' | 'sleep' | 'device' | 'lsl'>('general');
   const update = (patch: Partial<AppSettings>) => onChange({ ...settings, ...patch });
   const updateEeg = (patch: Partial<AppSettings['eeg']>) =>
     onChange({ ...settings, eeg: { ...settings.eeg, ...patch } });
@@ -174,6 +184,7 @@ export function SettingsPanel({
         <SettingsTab active={section === 'signal'} onClick={() => setSection('signal')}>信号</SettingsTab>
         <SettingsTab active={section === 'sleep'} disabled={settings.acquisitionMode} onClick={() => setSection('sleep')}>助眠</SettingsTab>
         <SettingsTab active={section === 'device'} onClick={() => setSection('device')}>设备</SettingsTab>
+        <SettingsTab active={section === 'lsl'} onClick={() => setSection('lsl')}>LSL</SettingsTab>
       </nav>
       {settings.acquisitionMode && (
         <div className="acquisition-settings-notice">
@@ -818,6 +829,17 @@ export function SettingsPanel({
           </label>
           <small className="setting-help">设备未连接时禁止发送。采样率命令仍使用顶部的专用采样率按钮。</small>
         </div>
+      )}
+
+      {section === 'lsl' && lslStatus && (
+        <LslSettingsSection
+          settings={settings}
+          status={lslStatus}
+          pending={lslPending}
+          onChange={onChange}
+          onRefresh={onLslRefresh}
+          onTestMarker={onLslTestMarker}
+        />
       )}
     </aside>
   );

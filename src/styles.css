@@ -1131,7 +1131,7 @@ input::placeholder {
   top: 0;
   z-index: 3;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 3px;
   padding: 4px;
   border: 1px solid var(--border);
@@ -1153,6 +1153,189 @@ input::placeholder {
 .settings-tabs button.is-active {
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+.lsl-settings {
+  gap: 11px;
+}
+
+.lsl-intro {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.lsl-enable-row {
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: var(--radius-xs);
+  background: var(--accent-soft);
+  color: var(--text-strong);
+}
+
+.lsl-status-card {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+
+.lsl-status-card[data-state='connected'] {
+  border-color: color-mix(in srgb, var(--success) 50%, var(--border));
+}
+
+.lsl-status-card[data-state='error'] {
+  border-color: color-mix(in srgb, var(--danger) 56%, var(--border));
+}
+
+.lsl-status-heading,
+.lsl-status-heading > span,
+.lsl-status-heading button {
+  display: flex;
+  align-items: center;
+}
+
+.lsl-status-heading {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.lsl-status-heading > span {
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.lsl-status-heading i {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-soft);
+}
+
+.lsl-status-card[data-state='waiting'] .lsl-status-heading i {
+  background: var(--warning);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 14%, transparent);
+}
+
+.lsl-status-card[data-state='connected'] .lsl-status-heading i {
+  background: var(--success);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.lsl-status-card[data-state='error'] .lsl-status-heading i {
+  background: var(--danger);
+}
+
+.lsl-status-heading button,
+.lsl-test-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.lsl-status-heading button {
+  min-height: 27px;
+  padding: 0 8px;
+  font-size: 10px;
+}
+
+.lsl-status-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.lsl-status-card dl div {
+  display: grid;
+  gap: 2px;
+  padding: 6px 7px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-strong);
+}
+
+.lsl-status-card dt {
+  color: var(--text-soft);
+  font-size: 9px;
+}
+
+.lsl-status-card dd {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.lsl-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.lsl-stream-list {
+  display: grid;
+  gap: 5px;
+}
+
+.lsl-stream-list > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-muted);
+}
+
+.lsl-stream-list span {
+  display: grid;
+  min-width: 0;
+}
+
+.lsl-stream-list strong {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lsl-stream-list small,
+.lsl-stream-list em {
+  color: var(--text-soft);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.lsl-stream-list em {
+  text-align: right;
+}
+
+.lsl-test-button {
+  width: 100%;
+}
+
+.lsl-notes {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  background: var(--accent-soft);
+  color: var(--text-soft);
+  font-size: 10px;
+}
+
+.lsl-notes strong {
+  color: var(--text-strong);
 }
 
 .acquisition-settings-notice {

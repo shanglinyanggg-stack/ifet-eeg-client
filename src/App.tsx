@@ -115,6 +115,7 @@ import { WaveformCanvas } from './components/WaveformCanvas';
 import { useMusicPlayer } from './hooks/useMusicPlayer';
 import { formatRecordingDuration } from './domain/recording-time';
 import { formatBatterySummary } from './domain/battery';
+import { initialLslStatus, type LslStatus } from './domain/lsl';
 import {
   decimateDisplayValues,
   DISPLAY_PROCESSING_SAMPLE_RATE_HZ,
@@ -323,6 +324,8 @@ export default function App() {
     settings.bleSampleRateHz
   );
   const [sampleRatePending, setSampleRatePending] = useState(false);
+  const [lslStatus, setLslStatus] = useState<LslStatus>(initialLslStatus);
+  const [lslPending, setLslPending] = useState(false);
   const displaySampleRateHz = resolveDisplaySampleRate(activeSampleRateHz);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
@@ -398,6 +401,79 @@ export default function App() {
     settingsRef.current = settings;
     saveSettings(settings);
   }, [settings]);
+
+  const refreshLslStatus = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      setLslStatus(await invokeCommand<LslStatus>('lsl_status'));
+    } catch (error) {
+      setLslStatus((current) => ({
+        ...current,
+        running: false,
+        hasConsumers: false,
+        message: 'LSL 状态读取失败',
+        lastError: String(error)
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setLslPending(true);
+      void invokeCommand<LslStatus>('lsl_configure', {
+        config: {
+          enabled: settings.lsl.enabled,
+          streamName: settings.lsl.streamName,
+          sourceId: settings.lsl.sourceId,
+          sampleRateHz: settings.bleSampleRateHz
+        }
+      }).then((next) => {
+        if (!cancelled) setLslStatus(next);
+      }).catch((error) => {
+        if (!cancelled) {
+          setLslStatus((current) => ({
+            ...current,
+            enabled: settings.lsl.enabled,
+            running: false,
+            hasConsumers: false,
+            message: 'LSL 配置失败',
+            lastError: String(error)
+          }));
+        }
+      }).finally(() => {
+        if (!cancelled) setLslPending(false);
+      });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [settings.lsl.enabled, settings.lsl.sourceId, settings.lsl.streamName, settings.bleSampleRateHz]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    void refreshLslStatus();
+    const timer = window.setInterval(() => void refreshLslStatus(), 1_000);
+    return () => window.clearInterval(timer);
+  }, [refreshLslStatus]);
+
+  const handleLslTestMarker = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    setLslPending(true);
+    try {
+      setLslStatus(await invokeCommand<LslStatus>('lsl_test_marker'));
+    } catch (error) {
+      setLslStatus((current) => ({
+        ...current,
+        message: 'LSL 测试标记发送失败',
+        lastError: String(error)
+      }));
+    } finally {
+      setLslPending(false);
+    }
+  }, []);
 
   useEffect(() => {
     selectedDeviceIdRef.current = selectedDeviceId;
@@ -2550,6 +2626,10 @@ export default function App() {
             commandText={commandText}
             onCommandTextChange={setCommandText}
             onSendCommand={() => void sendCommand()}
+            lslStatus={lslStatus}
+            lslPending={lslPending}
+            onLslRefresh={() => void refreshLslStatus()}
+            onLslTestMarker={() => void handleLslTestMarker()}
           />
         )}
       </div>
