@@ -2,6 +2,28 @@
 use super::*;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
+// Acquisition deliberately permits display sleep; a visual experiment does not.
+// Execution state belongs to this worker thread, separate from the recording guard.
+#[cfg(windows)]
+struct DisplayAwake;
+#[cfg(windows)]
+impl DisplayAwake {
+    fn acquire() -> Result<Self> {
+        use windows_sys::Win32::System::Power::{SetThreadExecutionState,ES_CONTINUOUS,ES_DISPLAY_REQUIRED,ES_SYSTEM_REQUIRED};
+        if unsafe {SetThreadExecutionState(ES_CONTINUOUS|ES_DISPLAY_REQUIRED|ES_SYSTEM_REQUIRED)}==0 {
+            bail!("Windows 无法保持光刺激屏幕唤醒：{}",std::io::Error::last_os_error());
+        }
+        Ok(Self)
+    }
+}
+#[cfg(windows)]
+impl Drop for DisplayAwake {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Power::{SetThreadExecutionState,ES_CONTINUOUS};
+        unsafe {SetThreadExecutionState(ES_CONTINUOUS);}
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct VisualSession {
     clock: Clock,
@@ -168,6 +190,8 @@ impl VisualLog<'_> {
 
 pub(super) fn run_visual_experiment(app:&AppHandle,state:&StimulationState,config:StimulusConfig,target:StimulusRecordingTarget,test_only:bool)->Result<()> {
     let _timer=TimerResolution::acquire()?;
+    #[cfg(windows)]
+    let _display_awake=DisplayAwake::acquire()?;
     let serial=open_serial(&config,&state.control)?;
     let clock=Clock::new();let (tx,rx)=mpsc::sync_channel(64);
     let run_id=state.status().run_id;

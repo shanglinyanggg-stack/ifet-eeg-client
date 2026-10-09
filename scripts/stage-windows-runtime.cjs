@@ -9,7 +9,10 @@ const installation = execFileSync(vswhere, ['-latest', '-products', '*', '-requi
 if (!installation) throw new Error('Visual Studio C++ redistributables are required to build the installer');
 const redist = path.join(installation, 'VC', 'Redist', 'MSVC');
 const versions = fs.readdirSync(redist).sort((a,b)=>b.localeCompare(a,undefined,{numeric:true}));
-const candidates = versions.flatMap(version=>['Microsoft.VC143.CRT','Microsoft.VC142.CRT'].map(name=>path.join(redist,version,'x64',name)));
+const candidates = versions.flatMap(version=>{
+  const directory=path.join(redist,version,'x64');
+  return fs.existsSync(directory)?fs.readdirSync(directory).filter(name=>/^Microsoft\.VC\d+\.CRT$/.test(name)).map(name=>path.join(directory,name)):[];
+});
 const source = candidates.find(folder=>fs.existsSync(path.join(folder,'msvcp140.dll')) && fs.existsSync(path.join(folder,'vcruntime140.dll')));
 if (!source) throw new Error('Microsoft x64 release CRT not found; refusing to build an installer missing MSVCP140.dll');
 const target = path.join(root,'src-tauri','target','windows-runtime');
