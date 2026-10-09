@@ -2,7 +2,7 @@ import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState }
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Activity, Database, Maximize2, Minimize2, Palette, Settings2 } from 'lucide-react';
+import { Activity, Database, Maximize2, Minimize2, Settings2 } from 'lucide-react';
 import {
   appendSamples,
   createEegBands,
@@ -37,11 +37,15 @@ import {
 } from './domain/sleep-session';
 import {
   getSleepStagingHealth,
+  activateSleepAlgorithmPackage,
   configureSleepDemo,
+  importSleepAlgorithmPackage,
   openSleepStagingDirectory,
+  pickSleepAlgorithmPackage,
   prepareSleepStagingRuntime,
   resetSleepDemo,
   resetSleepStaging,
+  rollbackSleepAlgorithmPackage,
   setSleepDemoBlinkEnabled,
   startSleepDemoAlphaCalibration,
   startSleepDemoBlinkCalibration,
@@ -71,10 +75,8 @@ import {
 import {
   loadSettings,
   saveSettings,
-  themeOptions,
   type AppSettings,
   type BleSampleRate,
-  type ThemeName
 } from './domain/settings';
 import { SampleBatcher } from './domain/sample-batcher';
 import { filterPpgDisplayWindow } from './domain/debug-signal';
@@ -100,6 +102,9 @@ import {
 } from './domain/protocol';
 import { DevicePanel } from './components/DevicePanel';
 import { AcquisitionModeView } from './components/AcquisitionModeView';
+import { StimulationPanel, StimulationToolbar } from './components/StimulationPanel';
+import { useStimulation } from './hooks/useStimulation';
+import type { StimulusEvent } from './domain/stimulation';
 import {
   DebugModeView,
   type DebugAlgorithmEvent,
@@ -307,6 +312,8 @@ export default function App() {
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [recordingElapsedSeconds, setRecordingElapsedSeconds] = useState(0);
   const [recordingPending, setRecordingPending] = useState(false);
+  const [stimulationActive, setStimulationActive] = useState(false);
+  const [stimulusSettingsRequest,setStimulusSettingsRequest]=useState(0);
   const [batteryRecording, setBatteryRecording] = useState(false);
   const [batteryRecordingPending, setBatteryRecordingPending] = useState(false);
   const [batteryRecordPath, setBatteryRecordPath] = useState('');
@@ -614,13 +621,22 @@ export default function App() {
         preparedRuntime = runtime;
         setSleepRuntime(runtime);
         try {
-          return await getSleepStagingHealth(endpoint);
+          return assertSleepAlgorithmHealth(await getSleepStagingHealth(endpoint), runtime);
         } catch (healthError) {
           if (cancelled || settingsRef.current.acquisitionMode) throw new Error('cancelled');
           if (!runtime.venv_ready) throw healthError;
           const started = await startSleepStagingService(endpointPort(endpoint));
           setSleepRuntime(started);
-          return waitForSleepStagingHealth(endpoint);
+          try {
+            return await waitForSleepStagingHealth(endpoint, started);
+          } catch (startError) {
+            if (started.active_package.release_approved) throw startError;
+            const rolledBack = await rollbackSleepAlgorithmPackage();
+            setSleepRuntime(rolledBack);
+            const fallbackStarted = await startSleepStagingService(endpointPort(endpoint));
+            setSleepRuntime(fallbackStarted);
+            return waitForSleepStagingHealth(endpoint, fallbackStarted);
+          }
         }
       })
       .then(async (health) => {
@@ -1389,6 +1405,12 @@ export default function App() {
     }
   }, [buffers, debugParticipantId, deviceFlags, lastAlgorithmAction, recordPath, recording, sampleCount]);
 
+  const handleStimulusMarker = useCallback((event: StimulusEvent) => {
+    setDebugMarkers(current => [...current, event].slice(-200));
+    setDebugMarkerPath(event.markerPath);
+    setDebugMarkerStatus(`自动保存：${event.label} · ${event.timestamp}`);
+  }, []);
+
   const handleStartDebugBlinkTrial = useCallback((expectedCount: 0 | 3 | 5 | 'continuous') => {
     if (!recording) {
       setDebugMarkerStatus('请先开始记录，再启动眨眼真值测试');
@@ -1646,6 +1668,80 @@ export default function App() {
     }
   }, []);
 
+  const handleImportSleepAlgorithm = useCallback(async () => {
+    if (recording) {
+      setSleepService((current) => ({
+        ...current,
+        message: '记录期间禁止切换算法包，请先停止记录'
+      }));
+      return;
+    }
+    try {
+      const source = await pickSleepAlgorithmPackage();
+      if (!source) return;
+      const runtime = await importSleepAlgorithmPackage(source);
+      remoteStagingSession.current = null;
+      remoteBlinkState.current = null;
+      setSleepRuntime(runtime);
+      setSleepService({
+        phase: 'local',
+        message: `已安装并选择 ${runtime.active_package.display_name}，请启动算法服务`,
+        chunksSeen: 0,
+        lastResponse: null
+      });
+    } catch (error) {
+      setSleepService((current) => ({ ...current, phase: 'fallback', message: String(error) }));
+    }
+  }, [recording]);
+
+  const handleActivateSleepAlgorithm = useCallback(async (packageId: string, version: string) => {
+    if (recording) {
+      setSleepService((current) => ({
+        ...current,
+        message: '记录期间禁止切换算法包，请先停止记录'
+      }));
+      return;
+    }
+    try {
+      const runtime = await activateSleepAlgorithmPackage(packageId, version);
+      remoteStagingSession.current = null;
+      remoteBlinkState.current = null;
+      setSleepRuntime(runtime);
+      setSleepService({
+        phase: 'local',
+        message: `已切换至 ${runtime.active_package.display_name}，基线状态已隔离，请重新测量`,
+        chunksSeen: 0,
+        lastResponse: null
+      });
+    } catch (error) {
+      setSleepService((current) => ({ ...current, phase: 'fallback', message: String(error) }));
+    }
+  }, [recording]);
+
+  const handleRollbackSleepAlgorithm = useCallback(async () => {
+    if (recording) {
+      setSleepService((current) => ({
+        ...current,
+        message: '记录期间禁止切换算法包，请先停止记录'
+      }));
+      return;
+    }
+    try {
+      const runtime = await rollbackSleepAlgorithmPackage();
+      remoteStagingSession.current = null;
+      remoteBlinkState.current = null;
+      setSleepRuntime(runtime);
+      setSleepService({
+        phase: 'local',
+        message: `已回滚至 ${runtime.active_package.display_name}，请重新启动算法服务`,
+        chunksSeen: 0,
+        lastResponse: null
+      });
+    } catch (error) {
+      setSleepService((current) => ({ ...current, phase: 'fallback', message: String(error) }));
+    }
+  }, [recording]);
+
   const handleStartSleepService = useCallback(async () => {
     if (settingsRef.current.acquisitionMode) {
       setSleepService((current) => ({
@@ -1664,7 +1760,7 @@ export default function App() {
     try {
       const runtime = await startSleepStagingService(endpointPort(sleep.serviceEndpoint));
       setSleepRuntime(runtime);
-      const health = await waitForSleepStagingHealth(sleep.serviceEndpoint);
+      const health = await waitForSleepStagingHealth(sleep.serviceEndpoint, runtime);
       const sessionId = sleepAssembler.current.currentSessionId;
       const [, demoResponse] = await Promise.all([
         resetSleepStaging(sleep.serviceEndpoint, sessionId),
@@ -1690,6 +1786,29 @@ export default function App() {
         lastResponse: demoResponse
       });
     } catch (error) {
+      const failedRuntime = await prepareSleepStagingRuntime().catch(() => null);
+      if (failedRuntime && !failedRuntime.active_package.release_approved) {
+        try {
+          const rolledBack = await rollbackSleepAlgorithmPackage();
+          setSleepRuntime(rolledBack);
+          setSleepService({
+            phase: 'fallback',
+            message: `实验算法启动失败，已自动回滚至 ${rolledBack.active_package.display_name}`,
+            chunksSeen: 0,
+            lastResponse: null
+          });
+          remoteBlinkState.current = null;
+          setSleepDemoService((current) => ({
+            ...current,
+            phase: 'fallback',
+            message: '实验算法异常，稳定算法将在下次启动时使用',
+            lastResponse: null
+          }));
+          return;
+        } catch (rollbackError) {
+          console.warn('Automatic algorithm rollback failed', rollbackError);
+        }
+      }
       remoteStagingSession.current = null;
       setSleepService({
         phase: 'fallback',
@@ -1760,7 +1879,7 @@ export default function App() {
     onSelectTrack: handleSelectSleepTrack
   });
 
-  const handleStartSleepGuidance = useCallback(() => {
+  const handleStartSleepGuidance = useCallback(async () => {
     if (settingsRef.current.acquisitionMode) {
       setSleepGuidanceMessage('数据采集模式已关闭音乐引导、基线、分期和眨眼控制');
       return;
@@ -1793,13 +1912,25 @@ export default function App() {
         return;
       }
     }
+    const autoplayAuthorized = sleep.autoMode
+      ? await musicPlayer.authorizeAutoplay()
+      : true;
     setBlinkVolumeOffset(0);
     setSleepSession(createSleepSessionState(toSleepSessionConfig(settingsRef.current)));
     setSleepGuidanceActive(true);
-    setSleepGuidanceMessage('助眠已开始：可自然闭眼，系统将冻结睁眼基线并等待 Alpha 触发音乐');
+    setSleepGuidanceMessage(autoplayAuthorized
+      ? '助眠已开始：可自然闭眼，系统将冻结睁眼基线并等待 Alpha 触发音乐'
+      : '助眠已开始，但音频自动播放未授权；请点击一次播放键后再闭眼');
     musicPlayer.pause();
     if (!sleep.autoMode) void musicPlayer.play();
-  }, [musicPlayer.pause, musicPlayer.selectedTrack, sleepDemoService.lastResponse, sleepDemoService.phase]);
+  }, [
+    musicPlayer.authorizeAutoplay,
+    musicPlayer.pause,
+    musicPlayer.play,
+    musicPlayer.selectedTrack,
+    sleepDemoService.lastResponse,
+    sleepDemoService.phase
+  ]);
 
   const handleStopSleepGuidance = useCallback(() => {
     setSleepGuidanceActive(false);
@@ -1978,6 +2109,10 @@ export default function App() {
         ?? onlineDemoSignal?.telemetry.alpha_ratio
         ?? 0,
       sleepScore: sleepMetrics?.sleepOnsetScore ?? 0,
+      awakeEvidence: isReopenedEyeAwakeEvidence(
+        wearableMetrics ?? sleepMetrics,
+        onlineDemoSignal
+      ),
       demoPhase,
       service,
       demoSignal
@@ -1994,7 +2129,8 @@ export default function App() {
     sleepConfig,
     sleepMetrics,
     onlineDemoSignal,
-    sleepService
+    sleepService,
+    wearableMetrics
   ]);
 
   const usingOnlineDemoDetector = onlineDemoSignal !== null;
@@ -2128,23 +2264,29 @@ export default function App() {
         ? '睁眼基线测量中：平视前方、面部放松、保持头部不动'
         : '闭眼基线测量中：自然闭眼、保持清醒、不要咬牙或转头'
     }));
-    sleepDemoStepQueue.current = sleepDemoStepQueue.current
-      .then(async () => {
+    const startedAt = new Date().toISOString();
+    // Calibration is a user command, not another queued signal chunk. Reset
+    // the pending resampler immediately and send the command directly; the
+    // sidecar rejects any already-queued chunks timestamped before startedAt.
+    sleepDemoAssembler.current.reset(remoteState.sessionId);
+    void (async () => {
+      try {
         const response = await startSleepDemoAlphaCalibration(
           settingsRef.current.sleepMusic.serviceEndpoint,
           remoteState.sessionId,
-          kind
+          kind,
+          startedAt
         );
         setSleepDemoService((current) => ({ ...current, lastResponse: response }));
-      })
-      .catch((error) => {
+      } catch (error) {
         setSleepDemoService((current) => ({
           ...current,
           phase: 'fallback',
           message: `${kind === 'open-eye' ? '睁眼' : '闭眼'}基线测量启动失败`
         }));
         console.warn('Sleep demo alpha calibration failed', error);
-      });
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -2311,13 +2453,17 @@ export default function App() {
     />
   );
 
+  const stimulation=useStimulation({connected,recording,acquisitionMode:settings.acquisitionMode,demoMode:settings.demoMode,
+    participantId:debugParticipantId,onActiveChange:setStimulationActive,onMarker:handleStimulusMarker,
+    onEnterAcquisition:()=>setSettings(current=>({...current,acquisitionMode:true,demoMode:false,showChartsOnly:false}))});
+
   if (settings.showChartsOnly) {
     return (
       <main className="app-shell pure-shell" data-theme={settings.theme} data-density={density} style={appStyle}>
         <PureWaveformView
           values={visibleBuffers[settings.eeg.selectedChannel]}
           settings={settings}
-          onChange={setSettings}
+          onChange={(next) => setSettings(stimulationActive ? { ...next, acquisitionMode: true, demoMode: false, showChartsOnly: false } : next)}
           onExit={() => setSettings((value) => ({ ...value, showChartsOnly: false }))}
           onToggleFullscreen={handleToggleFullscreen}
           connected={connected}
@@ -2350,7 +2496,7 @@ export default function App() {
             <Activity size={22} />
           </span>
           <div className="brand-text">
-            <h1>iFET EEG Client</h1>
+            <h1>iFET EEG Client · 声光刺激</h1>
             <span className="status-chip">
               {sampleCount} samples
               {connected
@@ -2368,15 +2514,18 @@ export default function App() {
               {batteryRecording && <em>· 电压记录中</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
               {settings.acquisitionMode && <em>· 数据采集模式</em>}
+              {stimulationActive&&<em>· 刺激 {stimulation.status.block}/{stimulation.status.totalBlocks||stimulation.config.blocks}组</em>}
               {powerPrevention.active && <em>· Windows 防睡眠已开启</em>}
             </span>
           </div>
         </div>
         <div className="topbar-actions">
+          <StimulationToolbar controller={stimulation} onOpenSettings={()=>{setSettingsOpen(true);setStimulusSettingsRequest(value=>value+1);}}/>
           <button
             className={`icon-button acquisition-mode-toggle ${settings.acquisitionMode ? 'is-active' : ''}`}
             type="button"
             aria-pressed={settings.acquisitionMode}
+            disabled={stimulationActive}
             onClick={() => setSettings((value) => ({
               ...value,
               acquisitionMode: !value.acquisitionMode,
@@ -2387,16 +2536,6 @@ export default function App() {
             <Database size={18} />
             <span>{settings.acquisitionMode ? '退出采集模式' : '数据采集模式'}</span>
           </button>
-          <div className="theme-switcher">
-            <Palette size={17} />
-            <span>主题</span>
-            <ThemedSelect
-              ariaLabel="界面主题"
-              value={settings.theme}
-              options={themeOptions}
-              onChange={(theme) => setSettings((value) => ({ ...value, theme: theme as ThemeName }))}
-            />
-          </div>
           <button
             className="icon-button"
             type="button"
@@ -2581,8 +2720,10 @@ export default function App() {
         </section>
         {settingsOpen && (
           <SettingsPanel
+            stimulusSettings={<StimulationPanel controller={stimulation}/>}
+            stimulusSettingsRequest={stimulusSettingsRequest}
             settings={settings}
-            onChange={setSettings}
+            onChange={(next) => setSettings(stimulationActive ? { ...next, acquisitionMode: true, demoMode: false, showChartsOnly: false } : next)}
             sleepServiceStatus={{
               phase: sleepService.phase,
               message: sleepService.message,
@@ -2599,6 +2740,9 @@ export default function App() {
             sleepRuntime={sleepRuntime}
             blinkStatus={blinkSnapshot}
             onOpenSleepAlgorithm={() => void handleOpenSleepAlgorithm()}
+            onImportSleepAlgorithm={() => void handleImportSleepAlgorithm()}
+            onActivateSleepAlgorithm={(packageId, version) => void handleActivateSleepAlgorithm(packageId, version)}
+            onRollbackSleepAlgorithm={() => void handleRollbackSleepAlgorithm()}
             onStartSleepService={() => void handleStartSleepService()}
             onStopSleepService={() => void handleStopSleepService()}
             onOpenEyeCalibration={() => handleAlphaCalibration('open-eye')}
@@ -2786,6 +2930,22 @@ function estimateSignalQuality(
   };
 }
 
+function isReopenedEyeAwakeEvidence(
+  metrics: SleepMetrics | null,
+  signal: SleepDemoSignalResponse | null
+): boolean {
+  if (!metrics || !signal?.state.calibration_complete || signal.state.alpha_present) return false;
+  if (signal.telemetry.signal_quality < 0.72 || metrics.n2Candidate) return false;
+
+  // Alpha absence already includes the detector's sustained off-hold. Require
+  // a simultaneous fast-frequency profile so one Alpha dropout cannot
+  // override a true NREM decision from the 30 s staging window.
+  const betaDominant = metrics.betaRelative > metrics.alphaRelative * 1.05
+    && metrics.betaRelative > metrics.deltaRelative * 1.15
+    && metrics.betaRelative >= metrics.thetaRelative * 0.85;
+  return betaDominant && metrics.sleepOnsetScore < 45;
+}
+
 function sleepMetricsEqual(current: SleepMetrics | null, next: SleepMetrics): boolean {
   if (!current) return false;
   return current.alphaRelative === next.alphaRelative
@@ -2872,20 +3032,38 @@ function markerPathFromRecordPath(path: string): string {
     : path ? `${path}_markers.csv` : '';
 }
 
-async function waitForSleepStagingHealth(endpoint: string): Promise<SleepStagingHealth> {
+async function waitForSleepStagingHealth(
+  endpoint: string,
+  runtime?: SleepStagingRuntimeInfo
+): Promise<SleepStagingHealth> {
   let lastError: unknown = null;
   // A freshly installed PyInstaller/ONNX sidecar can need close to one minute
   // for Gatekeeper verification, extraction and first imports on macOS. Keep
   // polling quickly, but do not mistake that cold start for an algorithm fault.
   for (let attempt = 0; attempt < 240; attempt += 1) {
     try {
-      return await getSleepStagingHealth(endpoint);
+      const health = await getSleepStagingHealth(endpoint);
+      return runtime ? assertSleepAlgorithmHealth(health, runtime) : health;
     } catch (error) {
       lastError = error;
       await new Promise((resolve) => window.setTimeout(resolve, 500));
     }
   }
   throw lastError ?? new Error('Sleep staging service did not become ready');
+}
+
+function assertSleepAlgorithmHealth(
+  health: SleepStagingHealth,
+  runtime: SleepStagingRuntimeInfo
+): SleepStagingHealth {
+  const expected = runtime.active_package.package_id;
+  if (health.package_id !== expected) {
+    throw new Error(`算法服务版本不匹配：期望 ${expected}，实际 ${health.package_id ?? '旧版/未知'}`);
+  }
+  if (health.api_version !== 2) {
+    throw new Error(`算法接口不兼容：期望 API 2，实际 ${health.api_version ?? '未知'}`);
+  }
+  return health;
 }
 
 function isTauriRuntime(): boolean {

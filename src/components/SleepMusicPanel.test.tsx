@@ -28,6 +28,7 @@ function createPlayer(): MusicPlayerController {
       outputDeviceSupported: true,
       outputDeviceError: null
     },
+    authorizeAutoplay: vi.fn(async () => true),
     play: vi.fn(),
     pause: vi.fn(),
     toggle: vi.fn(async () => undefined),

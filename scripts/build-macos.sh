@@ -10,6 +10,10 @@ DIST_DIR="$BUILD_DIR/dist"
 WORK_DIR="$BUILD_DIR/work"
 SPEC_DIR="$BUILD_DIR/spec"
 STAGED_DIR="$TAURI_DIR/target/macos-resources/SleepStagingAlgorithm_PC_v1.2.0"
+ALGORITHM_PACKAGE_DIR="$TAURI_DIR/target/algorithm-packages"
+EXPERIMENTAL_PACKAGE="$ALGORITHM_PACKAGE_DIR/ifet-band-alpha-experimental-20260824-r3.ifet-algorithm"
+VALIDATION_REPORT="${VALIDATION_REPORT:-/Users/ysl/Developer/EEGDM/result/ifet_algorithm_validation_2026_08_24_band_alpha_r3/validation_report.json}"
+ALGORITHM_SIGNING_KEY="${IFET_ALGORITHM_SIGNING_KEY:-/Users/ysl/Library/Application Support/iFET Algorithm Signing/algorithm_update_ed25519_private.pem}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "macOS bundles must be built on macOS." >&2
@@ -95,9 +99,24 @@ fi
 
 chmod +x "$STAGED_DIR/runtime/ifet-sleep-service"
 
+# Stimulus edition does not update the independent experimental algorithms.
+# Building a normal app must not require a private algorithm signing key.
+if [[ "${BUILD_EXPERIMENTAL_ALGORITHM_PACKAGE:-0}" == "1" ]]; then
+  mkdir -p "$ALGORITHM_PACKAGE_DIR"
+  "$PYTHON" "$ROOT/scripts/build_algorithm_package.py" \
+    --staged-stable "$STAGED_DIR" \
+    --validation-report "$VALIDATION_REPORT" \
+    --signing-key "$ALGORITHM_SIGNING_KEY" \
+    --output "$EXPERIMENTAL_PACKAGE"
+fi
+
 cd "$ROOT"
 if [[ ! -x "node_modules/.bin/tauri" ]]; then
   npm ci
 fi
 rustup target add "$TARGET"
 npm run tauri -- build --target "$TARGET" --bundles app,dmg
+
+if [[ "${BUILD_EXPERIMENTAL_ALGORITHM_PACKAGE:-0}" == "1" ]]; then
+  echo "Independent experimental algorithm package: $EXPERIMENTAL_PACKAGE"
+fi

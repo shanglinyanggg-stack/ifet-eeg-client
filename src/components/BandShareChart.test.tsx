@@ -29,4 +29,20 @@ describe('BandShareChart', () => {
     expect(screen.getByText('Beta')).toBeInTheDocument();
     expect(screen.getByText('40%')).toBeInTheDocument();
   });
+
+  test('labels state-enhanced shares as non-physical visual indices', () => {
+    render(
+      <BandShareChart
+        shares={shares}
+        colors={colors}
+        mode="state_enhanced_visual_index"
+        visualState="eyes_closed"
+        visualConfidence={0.82}
+      />
+    );
+
+    expect(screen.getByText('状态增强视觉占比')).toBeInTheDocument();
+    expect(screen.getByText(/交互\/分期映射 · 非真实功率 · 闭眼增强 82%/)).toBeInTheDocument();
+    expect(screen.getByText('视觉')).toBeInTheDocument();
+  });
 });

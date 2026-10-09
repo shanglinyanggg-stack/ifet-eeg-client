@@ -26,7 +26,9 @@ interface StagingSample {
 const DEFAULT_ACQUISITION_SAMPLE_RATE = 125;
 const MODEL_SAMPLE_RATE = 100;
 const STAGING_STEP_SAMPLES = MODEL_SAMPLE_RATE * 5;
-const DEMO_STEP_SAMPLES = MODEL_SAMPLE_RATE / 2;
+// Alpha candidate validation uses a 250 ms causal update step.  Keeping this
+// boundary explicit also avoids tying algorithm cadence to the BLE packet rate.
+const DEMO_STEP_SAMPLES = MODEL_SAMPLE_RATE / 4;
 
 abstract class AlgorithmChunkAssembler<TRequest> {
   private samples: StagingSample[] = [];

@@ -1,0 +1,43 @@
+刺激实验版 0.3.0 构建交接
+
+代码来自原项目当前工作文件的独立副本，不覆盖原工作区的未提交修改。
+本地工作区：/Users/ysl/Developer/ifet-eeg-client-stimulation
+独立分支：codex/stimulation-lab-20261009
+原 Git 基点：f51e4c2415e2bc362042d7b4022b3b51468960d6
+源码压缩包包含当前已修改内容，不等同于仅拉取上述 Git 基点。
+不含 EEG 实验数据、系统凭证、签名私钥、node_modules 或编译缓存。
+
+核心新增文件
+src-tauri/src/stimulation.rs：WAV/测试音、原生输出、串口、记录、时序自测。
+src-tauri/src/stimulus_timeline.rs：纯样本级状态机和单元测试。
+src-tauri/src/bin/stimulus_timing.rs：独立静音自测入口。
+src/components/StimulationPanel.tsx：实验界面，不承担实时定时。
+src/domain/stimulation.ts：界面配置与前置条件。
+src-tauri/src/ble.rs：捕获时间的自动事件写入和记录目标校验。
+scripts/export_original_don_chirp.m：原 MATLAB 环境的无播放 WAV 导出助手。
+
+Mac
+Apple Silicon / macOS 12+。本次复用原 0.2.29 项目中已打包的稳定算法 sidecar，
+未更新独立实验算法包。刺激采集模式本身不启动算法。
+新机器完整构建：安装 Node、Rust、Python 3.10+、Xcode Command Line Tools/CMake，
+执行 npm ci，再执行 bash scripts/build-macos.sh。
+脚本默认不生成实验算法更新包，因此不需要原算法签名私钥或原验证数据路径。
+本次应用采用 ad-hoc 签名，已本地验证；未做 Apple 公证。其他 Mac 可能提示未验证开发者，
+正式分发需开发者签名和公证，不能声称已通过 Apple 审核。
+
+Windows x64
+源码使用 CPAL/WASAPI、serialport 和原 Tauri Windows 构建流程。
+现有 .github/workflows/build-windows.yml 可生成 NSIS EXE 与 MSI。
+在发布本地新代码前，仍需用户确认：当前关联 GitHub 仓库为公开仓库，推送将公开源码。
+本交付不包含尚未生成的 Windows EXE，不能将源码 ZIP 或 Mac 文件当作 EXE。
+确认后：提交独立分支、推送该分支、workflow_dispatch 构建，检查算法测试、
+前端测试、Windows 编译、sidecar smoke test 和安装包；然后下载并校验 EXE/MSI。
+不得上传研究数据、原受试者记录、系统凭证或签名密钥。
+Windows 设备需 WebView2，以及 Microsoft Visual C++ x64 Redistributable，后者用于
+LSL C++ 依赖，缺少时会出现 MSVCP140.dll 错误。交付 Windows 包时须一并核查此依赖。
+Windows 运行时仅在刺激/时序自测期间请求 1 ms 定时粒度，结束后释放；这不是硬实时保证。
+必须在目标 Windows 电脑再运行静音自测及声音/TTL 回环，不能套用 Mac 延迟数字。
+
+待用户补充
+原 CochleaChirp.m（或原始 Don chirp WAV）与 Arduino_TTL_Trigger.ino。
+收到前只交付通用 WAV 声音刺激及明确标识的 1000 Hz 测试音，不冒充原 Don chirp。

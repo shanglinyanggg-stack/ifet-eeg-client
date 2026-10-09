@@ -25,6 +25,7 @@ export const SYSTEM_DEFAULT_AUDIO_OUTPUT_ID = 'default';
 export interface MusicPlayerController {
   selectedTrack: SleepMusicTrack | null;
   snapshot: MusicPlayerSnapshot;
+  authorizeAutoplay: () => Promise<boolean>;
   play: () => Promise<void>;
   pause: () => void;
   toggle: () => Promise<void>;

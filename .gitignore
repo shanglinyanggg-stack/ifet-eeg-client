@@ -1,5 +1,6 @@
 # dependencies
 node_modules/
+node_modules
 
 # build output
 dist/
@@ -40,6 +41,8 @@ Thumbs.db
 
 # Codex isolated worktrees
 .worktrees/
+source_before_stimulation.patch
+deliverables/
 
 # Python bytecode
 __pycache__/

@@ -3,7 +3,7 @@
   "app": {
     "windows": [
       {
-        "title": "iFET EEG Client Sleep LSL 0.2.27",
+        "title": "iFET EEG Client Stimulus 0.3.1",
         "width": 1280,
         "height": 800,
         "minWidth": 1080,
@@ -20,7 +20,7 @@
     "icon": ["icons/icon.icns"],
     "macOS": {
       "minimumSystemVersion": "12.0",
-      "bundleName": "iFET EEG Client Sleep LSL 0.2.27",
+      "bundleName": "iFET EEG Client Stimulus 0.3.1",
       "hardenedRuntime": true,
       "signingIdentity": "-",
       "entitlements": "Entitlements.plist",

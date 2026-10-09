@@ -14,7 +14,17 @@ fn main() {
 fn build_liblsl() {
     let target = env::var("TARGET").unwrap();
     let liblsl_source = unpack_liblsl();
-    
+    // Backport the Boost.MPL 1.86 C++11 branch selection. Clang 20+ no longer
+    // permits suppressing enum-constexpr-conversion; the older flag alone fails.
+    // Upstream: boostorg/mpl boost-1.86.0 include/boost/mpl/aux_/integral_wrapper.hpp
+    let wrapper = liblsl_source.join("lslboost/boost/mpl/aux_/integral_wrapper.hpp");
+    let text = fs::read_to_string(&wrapper).expect("read bundled Boost.MPL header");
+    let old = "#if BOOST_WORKAROUND(__EDG_VERSION__, <= 243)\n";
+    let new = "#if BOOST_WORKAROUND(__EDG_VERSION__, <= 243) || __cplusplus >= 201103L\n";
+    if text.contains(old) {
+        fs::write(&wrapper, text.replace(old, new)).expect("apply upstream Boost.MPL compatibility fix");
+    }
+
     // build with cmake
     let mut cfg = cmake::Config::new(liblsl_source);
     cfg
@@ -37,10 +47,10 @@ fn build_liblsl() {
             .define("CMAKE_C_FLAGS_RELEASE", cxx_args)
             .define("CMAKE_CXX_FLAGS_RELEASE", cxx_args);
     } else if target.contains("apple") {
+        cfg.define("CMAKE_CXX_STANDARD", "11");
         // liblsl 1.13 bundles an older Boost.MPL implementation. Apple Clang 16+
-        // promotes this formerly accepted enum constexpr conversion to an error.
-        // The conversion is intentional Boost template metaprogramming, so keep
-        // the upstream source unchanged and disable only this diagnostic.
+        // also emits numerous legacy warnings. The source fix above handles
+        // Clang 20+; retain warning suppression for supported older compilers.
         cfg.define(
             "CMAKE_CXX_FLAGS",
             "-Wno-enum-constexpr-conversion -Wno-deprecated-declarations",

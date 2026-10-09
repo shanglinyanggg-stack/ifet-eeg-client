@@ -1,0 +1,27 @@
+声光刺激版 0.3.1 Windows 构建说明
+
+用户已于 2026-10-09 授权：将本次源码推送到现有公开 GitHub 仓库并生成 Windows EXE。
+独立分支 codex/stimulation-lab-20261009；不修改普通上位机分支或上传实验数据和凭证。
+
+构建
+沿用 .github/workflows/build-windows.yml。不更改 workflow 文件或扩展 GitHub 凭证权限。
+npm run build 在 Windows 上将 Visual Studio x64 发布版 CRT DLL 复制到构建目录。
+Windows Tauri 配置把这些 DLL 安装在主 EXE 同目录，处理 MSVCP140.dll 缺失问题。
+仅使用 Visual Studio Redistributable 文件，不从系统目录复制 DLL，不分发 Debug CRT。
+运行库再分发受 Microsoft Visual Studio 许可及 REDIST 清单约束。
+https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files
+
+验收
+算法单元测试和 stable-v0.2.27 sidecar 启动检查。
+前端类型检查、175 项测试；Tauri Windows x64 编译与 NSIS EXE / MSI 打包。
+构建后在 Windows runner 上静默安装到新建测试目录，检查三个主要 CRT DLL 和算法 sidecar。
+确认安装后的应用创建正确名称的主窗口，且不在启动后立即退出。
+构建日志中 IFET_WINDOWS_INSTALLER_VERIFIED= 行包含结构化验收结果。
+
+限制
+启动验收不是头带 BLE、实际声音、屏幕光、串口 TTL 或整夜运行的硬件测试。
+Windows 的刺激时序须在目标电脑、目标显示器和实际 EEG 采集负载下重新测试。
+Mac 的 17–18 ms 软件屏幕时序不能直接套用于 Windows。
+安装包未做商业代码签名，Windows SmartScreen 可能提示未识别发布者。
+安装器内嵌官方 WebView2 引导程序；目标机缺少 WebView2 时需要网络安装此组件。
+应用独立名称 iFET EEG Client Stimulus 0.3.1，Bundle ID com.ifet.eeg-client.stimulus-v031。

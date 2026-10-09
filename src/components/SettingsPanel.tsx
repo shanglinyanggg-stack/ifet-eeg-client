@@ -22,11 +22,14 @@ import {
 import { channelLabels, type ChannelKey } from '../domain/protocol';
 import type { BlinkGestureSnapshot } from '../domain/blink-gesture';
 import type { LslStatus } from '../domain/lsl';
+import type { SleepStagingRuntimeInfo } from '../domain/sleep-staging-client';
 import { ThemedSelect } from './ThemedSelect';
 import { LslSettingsSection } from './LslSettingsSection';
-import { ChevronRight, Database, Eye, FolderOpen, ListMusic, Music2, Play, RotateCcw, Send, ServerCog, SlidersHorizontal, Speaker, Square } from 'lucide-react';
+import { ChevronRight, Database, Eye, FolderOpen, ListMusic, Music2, PackagePlus, Play, RotateCcw, Send, ServerCog, SlidersHorizontal, Speaker, Square } from 'lucide-react';
 
 interface SettingsPanelProps {
+  stimulusSettings?: ReactNode;
+  stimulusSettingsRequest?: number;
   settings: AppSettings;
   onChange: (settings: AppSettings) => void;
   sleepServiceStatus?: {
@@ -42,13 +45,12 @@ interface SettingsPanelProps {
     blinkCalibrationSeconds: number;
     lastResponse: SleepDemoSignalResponse | null;
   };
-  sleepRuntime?: {
-    algorithm_dir: string;
-    venv_ready: boolean;
-    service_running: boolean;
-  } | null;
+  sleepRuntime?: SleepStagingRuntimeInfo | null;
   blinkStatus?: BlinkGestureSnapshot;
   onOpenSleepAlgorithm?: () => void;
+  onImportSleepAlgorithm?: () => void;
+  onActivateSleepAlgorithm?: (packageId: string, version: string) => void;
+  onRollbackSleepAlgorithm?: () => void;
   onStartSleepService?: () => void;
   onStopSleepService?: () => void;
   onOpenEyeCalibration?: () => void;
@@ -107,6 +109,8 @@ const alphaVolumeModeOptions = [
 ];
 
 export function SettingsPanel({
+  stimulusSettings,
+  stimulusSettingsRequest=0,
   settings,
   onChange,
   sleepServiceStatus,
@@ -114,6 +118,9 @@ export function SettingsPanel({
   sleepRuntime,
   blinkStatus,
   onOpenSleepAlgorithm,
+  onImportSleepAlgorithm,
+  onActivateSleepAlgorithm,
+  onRollbackSleepAlgorithm,
   onStartSleepService,
   onStopSleepService,
   onOpenEyeCalibration,
@@ -133,7 +140,8 @@ export function SettingsPanel({
   onLslRefresh,
   onLslTestMarker
 }: SettingsPanelProps) {
-  const [section, setSection] = useState<'general' | 'signal' | 'sleep' | 'device' | 'lsl'>('general');
+  const [section, setSection] = useState<'general' | 'signal' | 'sleep' | 'device' | 'lsl' | 'stimulus'>(stimulusSettings?'stimulus':'general');
+  useEffect(()=>{if(stimulusSettingsRequest>0)setSection('stimulus');},[stimulusSettingsRequest]);
   const update = (patch: Partial<AppSettings>) => onChange({ ...settings, ...patch });
   const updateEeg = (patch: Partial<AppSettings['eeg']>) =>
     onChange({ ...settings, eeg: { ...settings.eeg, ...patch } });
@@ -180,12 +188,14 @@ export function SettingsPanel({
         <h2>后台设置</h2>
       </div>
       <nav className="settings-tabs" aria-label="设置分类">
+        {stimulusSettings&&<SettingsTab active={section==='stimulus'} onClick={()=>setSection('stimulus')}>刺激</SettingsTab>}
         <SettingsTab active={section === 'general'} onClick={() => setSection('general')}>常规</SettingsTab>
         <SettingsTab active={section === 'signal'} onClick={() => setSection('signal')}>信号</SettingsTab>
         <SettingsTab active={section === 'sleep'} disabled={settings.acquisitionMode} onClick={() => setSection('sleep')}>助眠</SettingsTab>
         <SettingsTab active={section === 'device'} onClick={() => setSection('device')}>设备</SettingsTab>
         <SettingsTab active={section === 'lsl'} onClick={() => setSection('lsl')}>LSL</SettingsTab>
       </nav>
+      {section==='stimulus'&&stimulusSettings}
       {settings.acquisitionMode && (
         <div className="acquisition-settings-notice">
           <Database size={15} />
@@ -641,12 +651,15 @@ export function SettingsPanel({
               <input
                 value={settings.sleepMusic.serviceEndpoint}
                 onChange={(event) => updateSleepMusic({ serviceEndpoint: event.target.value })}
-                placeholder="http://127.0.0.1:8774"
+                placeholder="http://127.0.0.1:8787"
               />
             </label>
             <div className="sleep-service-actions">
               <button type="button" onClick={onOpenSleepAlgorithm} disabled={!onOpenSleepAlgorithm}>
                 <FolderOpen size={14} />算法目录
+              </button>
+              <button type="button" onClick={onImportSleepAlgorithm} disabled={!onImportSleepAlgorithm || sleepRuntime?.service_running}>
+                <PackagePlus size={14} />安装算法包
               </button>
               {sleepRuntime?.service_running ? (
                 <button type="button" onClick={onStopSleepService} disabled={!onStopSleepService}>
@@ -664,10 +677,50 @@ export function SettingsPanel({
               )}
             </div>
             {sleepRuntime && (
-              <div className="sleep-runtime-state" title={sleepRuntime.algorithm_dir}>
-                <span>{sleepRuntime.venv_ready ? '算法环境就绪' : '算法环境未安装'}</span>
-                <strong>{sleepRuntime.service_running ? '运行中' : '未运行'}</strong>
-              </div>
+              <>
+                <div className="sleep-runtime-state" title={sleepRuntime.algorithm_dir}>
+                  <span>{sleepRuntime.active_package.display_name}</span>
+                  <strong>{sleepRuntime.service_running ? '运行中' : '未运行'}</strong>
+                </div>
+                <div className="algorithm-package-list" role="list" aria-label="已安装算法包">
+                  {sleepRuntime.available_packages.map((algorithmPackage) => (
+                    <div
+                      className="algorithm-package-item"
+                      data-active={algorithmPackage.active}
+                      data-channel={algorithmPackage.channel}
+                      key={`${algorithmPackage.package_id}@${algorithmPackage.version}`}
+                      role="listitem"
+                    >
+                      <span>
+                        <strong>{algorithmPackage.display_name}</strong>
+                        <small>{algorithmPackage.version} · {algorithmPackage.release_approved ? '已批准' : '实验/未批准'}</small>
+                      </span>
+                      {!algorithmPackage.active && (
+                        <button
+                          type="button"
+                          onClick={() => onActivateSleepAlgorithm?.(algorithmPackage.package_id, algorithmPackage.version)}
+                          disabled={!onActivateSleepAlgorithm || sleepRuntime.service_running || !algorithmPackage.compatible}
+                        >
+                          切换
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {!sleepRuntime.active_package.release_approved && (
+                  <p className="algorithm-package-warning">
+                    当前为实验算法，离线硬门槛未通过；不得作为正式结论，异常时请立即回滚。
+                  </p>
+                )}
+                <button
+                  className="algorithm-rollback-button"
+                  type="button"
+                  onClick={onRollbackSleepAlgorithm}
+                  disabled={!onRollbackSleepAlgorithm || sleepRuntime.service_running || sleepRuntime.active_package.release_approved}
+                >
+                  <RotateCcw size={13} />回滚到上一稳定算法
+                </button>
+              </>
             )}
           </div>
         </details>

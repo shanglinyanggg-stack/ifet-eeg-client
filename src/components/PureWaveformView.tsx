@@ -123,7 +123,11 @@ export function PureWaveformView({
   const pureSlowWaveGate = useRef(new AdaptiveSlowWaveGate());
   const sleepSlowWaveGate = useRef(new AdaptiveSlowWaveGate());
   const stagingResponse = musicPanel?.serviceStatus?.lastResponse ?? null;
-  const realtimeStage = resolveRealtimeStage(musicPanel?.serviceStatus?.phase, stagingResponse);
+  const realtimeStage = resolveRealtimeStage(
+    musicPanel?.serviceStatus?.phase,
+    stagingResponse,
+    musicPanel?.session
+  );
   const analysisValues = useMemo(
     () => applyRobustMedianReference(values, deltaArtifactContext?.eegChannels),
     [deltaArtifactContext?.eegChannels, values]

@@ -26,12 +26,15 @@ use uuid::Uuid;
 const PPG_SERVICE_UUID: Uuid = Uuid::from_u128(0x0000_fff0_0000_1000_8000_0080_5f9b_34fb);
 const PPG_RX_UUID: Uuid = Uuid::from_u128(0x0000_fff5_0000_1000_8000_0080_5f9b_34fb);
 const PPG_TX_UUID: Uuid = Uuid::from_u128(0x0000_fff9_0000_1000_8000_0080_5f9b_34fb);
+const START_STREAM_COMMAND: [u8; 4] = [0xaa, 0x55, 0x01, 0x01];
+const NO_DATA_DIAGNOSTIC_BATTERY_FRAMES: usize = 3;
 
 pub struct BleManagerState {
     inner: Mutex<BleRuntime>,
     recorder: Arc<Mutex<Option<Recorder>>>,
     battery_recorder: Arc<Mutex<Option<BatteryRecorder>>>,
     sample_rate_hz: Arc<AtomicU32>,
+    last_eeg_received: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 impl Default for BleManagerState {
@@ -41,6 +44,7 @@ impl Default for BleManagerState {
             recorder: Arc::new(Mutex::new(None)),
             battery_recorder: Arc::new(Mutex::new(None)),
             sample_rate_hz: Arc::new(AtomicU32::new(DEFAULT_SAMPLE_RATE_HZ)),
+            last_eeg_received: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -58,6 +62,14 @@ struct Recorder {
     marker_writer: BufWriter<File>,
     marker_path: PathBuf,
     last_flush: Instant,
+    samples_written: u64,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StimulusRecordingTarget {
+    pub marker_path: String,
+    pub recording_path: String,
 }
 
 struct BatteryRecorder {
@@ -143,6 +155,21 @@ impl BleManagerState {
 
             peripheral.subscribe(&notify_char).await?;
             let notifications = peripheral.notifications().await?;
+            // Some TD10 firmware reports battery frames immediately after
+            // subscribe but does not start the 0x01 EEG stream until FFF5 is
+            // explicitly armed.  Do this before returning "connected", then
+            // apply the currently selected multi-sample rate.
+            peripheral
+                .write(&write_char, &START_STREAM_COMMAND, WriteType::WithoutResponse)
+                .await?;
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            if let Some(rate_command) =
+                sample_rate_command(self.sample_rate_hz.load(Ordering::Relaxed))
+            {
+                peripheral
+                    .write(&write_char, &rate_command, WriteType::WithoutResponse)
+                    .await?;
+            }
             Ok::<_, anyhow::Error>((write_char, notifications))
         }
         .await;
@@ -160,7 +187,10 @@ impl BleManagerState {
         let recorder = Arc::clone(&self.recorder);
         let battery_recorder = Arc::clone(&self.battery_recorder);
         let selected_sample_rate = Arc::clone(&self.sample_rate_hz);
+        let last_eeg_received = Arc::clone(&self.last_eeg_received);
         let task_app = app.clone();
+        let recovery_peripheral = peripheral.clone();
+        let recovery_write_char = write_char.clone();
         let notify_task = tokio::spawn(async move {
             let mut active_sample_rate = selected_sample_rate.load(Ordering::Relaxed);
             let mut decoder = PacketStreamDecoder::new(active_sample_rate);
@@ -168,11 +198,18 @@ impl BleManagerState {
             let mut pending_frontend_samples = Vec::<SampleEvent>::with_capacity(128);
             let mut battery_estimator = BatteryEstimator::default();
             let mut last_frontend_emit = Instant::now();
+            let mut battery_notifications_before_data = 0usize;
+            let mut rejected_notifications_before_data = 0usize;
+            let mut data_notifications = 0usize;
+            let mut recovery_command_sent = false;
             while let Some(notification) = notifications.next().await {
                 if notification.uuid != PPG_TX_UUID {
                     continue;
                 }
                 if let Some(battery) = parse_battery_frame(&notification.value) {
+                    if data_notifications == 0 {
+                        battery_notifications_before_data += 1;
+                    }
                     let estimate = battery_estimator.update(battery.voltage, battery.charging);
                     let battery_event = BatteryEvent {
                         timestamp: local_now_rfc3339(),
@@ -198,6 +235,46 @@ impl BleManagerState {
                         let _ = task_app.emit("ble://battery-recording", false);
                     }
                     let _ = task_app.emit("ble://battery", battery_event);
+                    if data_notifications == 0
+                        && battery_notifications_before_data
+                            >= NO_DATA_DIAGNOSTIC_BATTERY_FRAMES
+                        && !recovery_command_sent
+                    {
+                        recovery_command_sent = true;
+                        let charging_hint = if battery.charging {
+                            "；设备正在充电，固件可能暂停EEG，请拔掉充电线后重连"
+                        } else {
+                            ""
+                        };
+                        let _ = task_app.emit(
+                            "ble://status",
+                            crate::models::StatusEvent {
+                                message: format!(
+                                    "FFF9仅收到电量包，未收到EEG数据{charging_hint}；正在自动重发启动与采样率命令"
+                                ),
+                                connected: true,
+                            },
+                        );
+                        let _ = recovery_peripheral
+                            .write(
+                                &recovery_write_char,
+                                &START_STREAM_COMMAND,
+                                WriteType::WithoutResponse,
+                            )
+                            .await;
+                        tokio::time::sleep(Duration::from_millis(60)).await;
+                        if let Some(command) = sample_rate_command(
+                            selected_sample_rate.load(Ordering::Relaxed),
+                        ) {
+                            let _ = recovery_peripheral
+                                .write(
+                                    &recovery_write_char,
+                                    &command,
+                                    WriteType::WithoutResponse,
+                                )
+                                .await;
+                        }
+                    }
                     continue;
                 }
                 let requested_sample_rate = selected_sample_rate.load(Ordering::Relaxed);
@@ -208,8 +285,45 @@ impl BleManagerState {
                 }
                 let rows = decoder.push(&notification.value);
                 if rows.is_empty() {
+                    if data_notifications == 0 {
+                        rejected_notifications_before_data += 1;
+                        if rejected_notifications_before_data == 3 {
+                            let prefix = notification
+                                .value
+                                .iter()
+                                .take(4)
+                                .map(|byte| format!("{byte:02X}"))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            let _ = task_app.emit(
+                                "ble://status",
+                                crate::models::StatusEvent {
+                                    message: format!(
+                                        "FFF9收到但协议解析失败：长度 {} 字节，帧头 {}",
+                                        notification.value.len(),
+                                        prefix
+                                    ),
+                                    connected: true,
+                                },
+                            );
+                        }
+                    }
                     continue;
                 }
+                if data_notifications == 0 {
+                    let _ = task_app.emit(
+                        "ble://status",
+                        crate::models::StatusEvent {
+                            message: format!(
+                                "EEG数据流已恢复：每通知 {} 个样本，当前 {} Hz",
+                                rows.len(),
+                                active_sample_rate
+                            ),
+                            connected: true,
+                        },
+                    );
+                }
+                data_notifications += 1;
                 let now = Utc::now();
                 // 一包多数据代表到达通知之前的一段采样；让最后一个样本落在
                 // 主机实际接收时刻，避免把整包样本写到未来。
@@ -245,6 +359,9 @@ impl BleManagerState {
                     sample_events.push(event);
                 }
 
+                if sample_events.iter().any(|event| event.valid && event.packet.eeg.is_some()) {
+                    if let Ok(mut last) = last_eeg_received.lock() { *last = Some(Instant::now()); }
+                }
                 // 一次锁定写完整包；记录成功（或当前未记录）后，才把数据交给
                 // UI 实时链路。这样记录数据不会因前端清理或过载而丢失。
                 if let Err(error) = write_records(&recorder, &sample_events).await {
@@ -294,6 +411,7 @@ impl BleManagerState {
     }
 
     pub async fn disconnect_device(&self) -> Result<()> {
+        if let Ok(mut last) = self.last_eeg_received.lock() { *last = None; }
         let (peripheral, task) = {
             let mut inner = self.inner.lock().await;
             (inner.peripheral.take(), inner.notify_task.take())
@@ -322,6 +440,10 @@ impl BleManagerState {
         let command = sample_rate_command(sample_rate_hz)
             .ok_or_else(|| anyhow!("不支持的采样率 {sample_rate_hz} Hz"))?;
         debug_assert!(samples_per_notification(sample_rate_hz).is_some());
+        // Re-arm the stream around a rate change.  This also recovers TD10
+        // units that stay connected and keep reporting battery, but stop EEG.
+        self.write_bytes(&START_STREAM_COMMAND).await?;
+        tokio::time::sleep(Duration::from_millis(60)).await;
         self.write_bytes(&command).await?;
         self.sample_rate_hz.store(sample_rate_hz, Ordering::Relaxed);
         Ok(())
@@ -354,7 +476,7 @@ impl BleManagerState {
             .unwrap_or(std::env::current_dir()?.join("recordings"));
         fs::create_dir_all(&dir)?;
 
-        let filename = format!("ppg_eeg_log_{}.csv", Local::now().format("%Y%m%d_%H%M%S"));
+        let filename = format!("ppg_eeg_log_{}_{}.csv", Local::now().format("%Y%m%d_%H%M%S_%3f"), &Uuid::new_v4().to_string()[..8]);
         let path = dir.join(filename);
         let file = File::create(&path)?;
         let mut writer = BufWriter::new(file);
@@ -383,6 +505,7 @@ impl BleManagerState {
             marker_writer,
             marker_path,
             last_flush: Instant::now(),
+            samples_written: 0,
         });
         Ok(path.to_string_lossy().to_string())
     }
@@ -395,6 +518,35 @@ impl BleManagerState {
         }
         *recorder = None;
         Ok(())
+    }
+
+    pub async fn stimulus_recording_target(&self) -> Result<StimulusRecordingTarget> {
+        let recorder = self.recorder.lock().await;
+        let record = recorder.as_ref().ok_or_else(|| anyhow!("请先开始 EEG 数据记录"))?;
+        let marker_path = record.marker_path.to_string_lossy().to_string();
+        let recording_path = marker_path.strip_suffix("_markers.csv").unwrap_or(&marker_path).to_owned() + ".csv";
+        Ok(StimulusRecordingTarget { marker_path, recording_path })
+    }
+
+    pub fn stimulus_stream_recent(&self) -> bool {
+        self.last_eeg_received.lock().ok().and_then(|last| *last)
+            .map(|last| last.elapsed() <= Duration::from_millis(2500)).unwrap_or(false)
+    }
+
+    /// The event time comes from the audio clock, NOT the time the UI or disk worker runs.
+    /// sampleCount is the current recorder position; alignment must use the time column.
+    pub async fn append_stimulus_marker(&self, target: &StimulusRecordingTarget, timestamp: &str,
+        participant: &str, label: &str, note: &str, action: &str) -> Result<u64> {
+        let mut recorder = self.recorder.lock().await;
+        let record = recorder.as_mut().ok_or_else(|| anyhow!("EEG 记录已停止，刺激已取消"))?;
+        if record.marker_path.to_string_lossy() != target.marker_path {
+            return Err(anyhow!("EEG 记录文件已改变，拒绝把刺激写入另一段记录"));
+        }
+        writeln!(record.marker_writer, "{},{},{},{},{},,{},{},{},{},{}", timestamp,
+            csv_field(participant), csv_field(label), csv_field(note), record.samples_written,
+            csv_field(action), "", "", "", "")?;
+        record.marker_writer.flush()?;
+        Ok(record.samples_written)
     }
 
     pub async fn start_battery_recording(&self, directory: Option<String>) -> Result<String> {
@@ -576,6 +728,7 @@ async fn write_records(
     };
 
     write_record_rows(&mut recording.writer, events)?;
+    recording.samples_written += events.len() as u64;
     // 定时 flush，避免每个样本都触发系统调用拖垮采集线程
     if recording.last_flush.elapsed() >= FLUSH_INTERVAL {
         recording.writer.flush()?;
@@ -814,6 +967,28 @@ mod tests {
         .unwrap();
         let csv = String::from_utf8(csv).unwrap();
         assert!(csv.contains(",9,444,3.288889,3.290000,0,false,empty"));
+    }
+
+    #[tokio::test]
+    async fn stimulus_marker_preserves_audio_time_and_rejects_changed_recording() {
+        let directory = std::env::temp_dir().join(format!("ifet-stimulus-marker-test-{}", Uuid::new_v4()));
+        let state = BleManagerState::default();
+        let path = state.start_recording(Some(directory.to_string_lossy().to_string())).await.unwrap();
+        let target = state.stimulus_recording_target().await.unwrap();
+        assert_eq!(target.recording_path, path);
+        let timestamp = "2026-10-09T12:34:56.123456+08:00";
+        state.append_stimulus_marker(&target, timestamp, "test", "声音刺激开始", "captured audio time", "sound_on").await.unwrap();
+        let data = std::fs::read_to_string(&target.marker_path).unwrap();
+        assert_eq!(data.lines().count(), 2);
+        assert!(data.lines().nth(1).unwrap().starts_with(timestamp));
+        assert_eq!(data.lines().nth(1).unwrap().split(',').count(), 11);
+        let mut wrong = target.clone(); wrong.marker_path.push_str(".wrong");
+        assert!(state.append_stimulus_marker(&wrong, timestamp, "", "", "", "").await.is_err());
+        state.stop_recording().await.unwrap();
+        assert!(state.append_stimulus_marker(&target, timestamp, "", "", "", "").await.is_err());
+        std::fs::remove_file(&target.marker_path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
     }
 
     #[tokio::test]

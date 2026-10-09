@@ -32,6 +32,9 @@ try {
     if ($Health.demo.algorithm_version -ne "1.0.21") {
         throw "Unexpected blink algorithm version: $($Health.demo.algorithm_version)"
     }
+    if ($Health.demo.algorithm_profile -ne "stable-v0.2.27" -or $Health.demo.experimental) {
+        throw "Windows stimulus release must use the stable algorithm profile"
+    }
     if ($Health.demo.blink_calibration_seconds -ne 10) {
         throw "Unexpected blink calibration duration"
     }

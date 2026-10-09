@@ -157,7 +157,7 @@ export function SleepMusicPanel({
     : stagingResponse?.decision_valid && stagingResponse.selected_sleep_probability !== null
       ? Math.round(stagingResponse.selected_sleep_probability * 100)
       : null;
-  const realtimeStage = resolveRealtimeStage(serviceStatus?.phase, stagingResponse);
+  const realtimeStage = resolveRealtimeStage(serviceStatus?.phase, stagingResponse, session);
 
   useEffect(() => {
     if (!settings.audienceCues || session.phase === 'ready') {
@@ -437,13 +437,20 @@ function DemoSignalTelemetry({
   const enabledPairs = formatEnabledBlinkPairs(
     telemetry?.blink_enabled_channel_pairs ?? blink.enabledPairs ?? []
   );
-  const openEyeProgressHint = response?.state.calibration_complete
+  const alphaCalibrationFailed = response?.state.alpha_calibration_failed ?? false;
+  const openValidFraction = telemetry?.open_eye_calibration_valid_fraction ?? null;
+  const closedValidFraction = telemetry?.closed_eye_calibration_valid_fraction ?? null;
+  const openEyeProgressHint = alphaCalibrationFailed && !response?.state.calibration_complete
+    ? `20秒已结束，有效数据${openValidFraction == null ? '不足' : `${Math.round(openValidFraction * 100)}%`}，请重试`
+    : response?.state.calibration_complete
     ? `参考 ${formatReferenceStrength(telemetry?.open_eye_alpha_baseline) ?? '--'}`
-    : '睁眼平视，保持静止';
-  const closedEyeProgressHint = response?.state.closed_eye_calibration_complete
+    : '睁眼平视，保持静止（固定20秒）';
+  const closedEyeProgressHint = alphaCalibrationFailed && response?.state.calibration_complete && !response?.state.closed_eye_calibration_complete
+    ? `20秒已结束，有效数据${closedValidFraction == null ? '不足' : `${Math.round(closedValidFraction * 100)}%`}，请重试`
+    : response?.state.closed_eye_calibration_complete
     ? `参考 ${formatReferenceStrength(telemetry?.closed_eye_alpha_reference) ?? '--'}`
     : response?.state.calibration_complete
-      ? '自然闭眼，保持清醒'
+      ? '自然闭眼，保持清醒（固定20秒）'
       : '先测睁眼基线';
   const blinkProgressHint = stale
     ? '漂移恢复中'
@@ -496,7 +503,7 @@ function DemoSignalTelemetry({
           <span style={{ width: `${alphaProgress * 100}%` }} />
           <em>{openEyeProgressHint}</em>
         </div>
-        <strong>{response?.state.calibration_complete ? '就绪' : response ? `${Math.round(alphaProgress * 100)}%` : '本地'}</strong>
+        <strong>{response?.state.calibration_complete ? '就绪' : alphaCalibrationFailed ? '失败' : response ? `${Math.round(alphaProgress * 100)}%` : '本地'}</strong>
         <button type="button" className="sleep-blink-calibration-button" onClick={onOpenEyeCalibration}>
           <RotateCcw size={13} />{response?.state.calibration_complete ? '重新测量' : '开始测量'}
         </button>
@@ -507,7 +514,7 @@ function DemoSignalTelemetry({
           <span style={{ width: `${closedEyeProgress * 100}%` }} />
           <em>{closedEyeProgressHint}</em>
         </div>
-        <strong>{response?.state.closed_eye_calibration_complete ? '就绪' : `${Math.round(closedEyeProgress * 100)}%`}</strong>
+        <strong>{response?.state.closed_eye_calibration_complete ? '就绪' : alphaCalibrationFailed && response?.state.calibration_complete ? '失败' : `${Math.round(closedEyeProgress * 100)}%`}</strong>
         <button
           type="button"
           className="sleep-blink-calibration-button"
@@ -607,8 +614,11 @@ function DemoSignalTelemetry({
 
 export function resolveRealtimeStage(
   phase: 'local' | 'checking' | 'warming' | 'ready' | 'fallback' | undefined,
-  response: SleepStagingStepResponse | null
+  response: SleepStagingStepResponse | null,
+  session?: SleepSessionState
 ): string {
+  if (session?.reason === 'confirming-eyes-reopened') return 'W 快速复核';
+  if (session?.reason === 'eyes-reopened-awake-veto') return 'W 清醒（重新睁眼）';
   if (phase === 'fallback') return '本地降级';
   if (phase === 'checking') return '连接中';
   if (!response?.decision_valid) return phase === 'warming' ? '分期预热' : '等待分期';
@@ -624,6 +634,8 @@ function resolveActionLabel(session: SleepSessionState, settings: SleepMusicSett
   if (!settings.autoMode) return '人工控制中';
   if (session.reason === 'service-warmup') return '等待 30 秒有效分期';
   if (session.reason === 'demo-alpha-calibrating') return '正在建立个体 Alpha 基线';
+  if (session.reason === 'confirming-eyes-reopened') return '检测到重新睁眼，正在快速复核';
+  if (session.reason === 'eyes-reopened-awake-veto') return '已确认重新睁眼，暂缓浅睡判定';
   if (session.action === 'play') return '自动开始播放';
   if (session.action === 'fade') return `渐弱至 ${Math.round(session.targetVolume * 100)}%`;
   if (session.action === 'stop') return '淡出并停止';

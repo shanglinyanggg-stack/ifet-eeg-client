@@ -21,7 +21,27 @@ from realtime_sleep_staging.demo_signal_flags import (  # noqa: E402
 from realtime_sleep_staging.desktop_upper_runtime import (  # noqa: E402
     DesktopUpperRuntime,
 )
+from realtime_sleep_staging.experimental_band_alpha import (  # noqa: E402
+    ExperimentalBandAlphaRuntime,
+)
 from service_lifecycle import watch_parent  # noqa: E402
+
+
+def _package_manifest() -> dict[str, Any]:
+    candidates = (Path.cwd() / "algorithm_manifest.json", ROOT / "algorithm_manifest.json")
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+PACKAGE_MANIFEST = _package_manifest()
+PACKAGE_ROOT = Path.cwd() if (Path.cwd() / "algorithm_manifest.json").is_file() else ROOT
+ALGORITHM_PROFILE = str(PACKAGE_MANIFEST.get("algorithm_profile", "stable-v0.2.27"))
 
 
 def _jsonable(value: Any) -> Any:
@@ -41,6 +61,11 @@ class DemoRuntime:
 
     def __init__(self) -> None:
         self.detector = DemoSignalFlagger(input_prefiltered=False)
+        self.experimental = (
+            ExperimentalBandAlphaRuntime()
+            if ALGORITHM_PROFILE.startswith("experimental-band-alpha")
+            else None
+        )
         self.session_id: str | None = None
         self.lock = threading.RLock()
         self.blink_calibration_status = "idle"
@@ -52,6 +77,8 @@ class DemoRuntime:
         return {
             "schema_version": "headset-demo-flags/v9",
             "algorithm_version": "1.0.21",
+            "algorithm_profile": ALGORITHM_PROFILE,
+            "experimental": self.experimental is not None,
             "session_id": self.session_id,
             "sample_rate_hz": config.sample_rate_hz,
             "recommended_step_milliseconds": 500,
@@ -71,6 +98,8 @@ class DemoRuntime:
     ) -> dict[str, Any]:
         with self.lock:
             self.detector.reset()
+            if self.experimental is not None:
+                self.experimental.reset()
             self.session_id = None if session_id is None else str(session_id)
             self.blink_calibration_status = "idle"
             self.blink_calibration_failure_reason = None
@@ -106,6 +135,7 @@ class DemoRuntime:
         self,
         kind: str,
         session_id: str | None = None,
+        started_at: Any | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             self._ensure_session(session_id)
@@ -115,6 +145,8 @@ class DemoRuntime:
                 self.detector.begin_closed_eye_calibration()
             else:
                 raise ValueError("alpha calibration kind must be open-eye or closed-eye")
+            if self.experimental is not None:
+                self.experimental.begin_calibration(kind, started_at)
             self.last_packet = self._decorate_packet(self.last_packet)
             return self.last_packet
 
@@ -130,6 +162,8 @@ class DemoRuntime:
                 self.detector.set_alpha_volume_mode(alpha_volume_mode)
             if session_active is not None:
                 self.detector.set_session_active(bool(session_active))
+                if self.experimental is not None:
+                    self.experimental.set_session_active(bool(session_active))
             self.last_packet = self._decorate_packet(self.last_packet)
             return self.last_packet
 
@@ -143,18 +177,151 @@ class DemoRuntime:
     ) -> dict[str, Any]:
         with self.lock:
             self._ensure_session(session_id)
-            output = self.detector.stream_step(
-                np.asarray(eeg, dtype=np.float32),
-                None if imu is None else np.asarray(imu, dtype=np.float32),
-                None if valid is None else np.asarray(valid, dtype=bool),
-            )
+            eeg_values = np.asarray(eeg, dtype=np.float32)
+            imu_values = None if imu is None else np.asarray(imu, dtype=np.float32)
+            valid_values = None if valid is None else np.asarray(valid, dtype=bool)
+            output = self.detector.stream_step(eeg_values, imu_values, valid_values)
             self._sync_blink_calibration_status(output.events)
-            self.last_packet = self._decorate_packet({
+            packet = self._decorate_packet({
                 **output.to_packet(),
                 "session_id": self.session_id,
                 "source_timestamp": timestamp,
             })
+            if self.experimental is not None:
+                packet = self._apply_experimental(
+                    packet,
+                    self.experimental.step(
+                        eeg_values, imu_values, valid_values, timestamp
+                    ),
+                )
+            self.last_packet = packet
             return self.last_packet
+
+    def _apply_experimental(
+        self,
+        packet: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        state = dict(packet.get("state", {}))
+        state.update(
+            {
+                "alpha_present": bool(result["alpha_present"]),
+                "calibration_complete": bool(result["open_complete"]),
+                "calibration_progress": float(result["open_progress"]),
+                "closed_eye_calibration_complete": bool(result["closed_complete"]),
+                "closed_eye_calibration_progress": float(result["closed_progress"]),
+                "alpha_calibration_failed": bool(
+                    result.get("open_failed") or result.get("closed_failed")
+                ),
+                "alpha_calibration_failure_reason": (
+                    "insufficient_valid_samples"
+                    if result.get("open_failed") or result.get("closed_failed")
+                    else None
+                ),
+            }
+        )
+        telemetry = dict(packet.get("telemetry", {}))
+        center = result.get("open_center")
+        closed = result.get("closed_reference")
+        evidence = result.get("alpha_evidence")
+        normalized = None
+        normalized_on_threshold = None
+        normalized_off_threshold = None
+        if center is not None and closed is not None and evidence is not None:
+            reference_span = max(float(closed) - float(center), 0.1)
+            normalized = float(np.clip(
+                (float(evidence) - float(center)) / reference_span,
+                0.0,
+                1.0,
+            ))
+            if result.get("on_threshold") is not None:
+                normalized_on_threshold = float(np.clip(
+                    (float(result["on_threshold"]) - float(center)) / reference_span,
+                    0.0,
+                    1.0,
+                ))
+            if result.get("off_threshold") is not None:
+                normalized_off_threshold = float(np.clip(
+                    (float(result["off_threshold"]) - float(center)) / reference_span,
+                    0.0,
+                    1.0,
+                ))
+        telemetry.update(
+            {
+                "alpha_ratio": normalized,
+                "alpha_score": normalized,
+                "alpha_level": normalized,
+                "recommended_volume": float(result["recommended_volume"]),
+                "signal_quality": float(result["alpha_quality"]),
+                "open_eye_alpha_baseline": center,
+                "open_eye_alpha_initial_baseline": center,
+                "closed_eye_alpha_reference": closed,
+                # UI fields are dimensionless 0..1 ratios.  The detector's
+                # internal evidence is a log score and may legitimately be
+                # negative, so exposing it as a percentage threshold was a
+                # unit/contract bug in the first experimental package.
+                "alpha_on_threshold": normalized_on_threshold,
+                "alpha_off_threshold": normalized_off_threshold,
+                "individual_alpha_hz": result.get("individual_alpha_hz"),
+                "alpha_evidence": evidence,
+                "alpha_quality": result.get("alpha_quality"),
+                "alpha_window_seconds": result.get("alpha_window_seconds"),
+                "alpha_on_hold_seconds": result.get("alpha_on_hold_seconds"),
+                "clean_fraction": result.get("clean_fraction"),
+                "band_shares": result.get("band_shares"),
+                "physical_band_shares": result.get("physical_band_shares"),
+                "band_share_mode": result.get("band_share_mode"),
+                "band_visual_state": result.get("band_visual_state"),
+                "band_visual_confidence": result.get("band_visual_confidence"),
+                "open_eye_calibration_valid_fraction": result.get(
+                    "open_valid_fraction"
+                ),
+                "closed_eye_calibration_valid_fraction": result.get(
+                    "closed_valid_fraction"
+                ),
+                "algorithm_profile": ALGORITHM_PROFILE,
+                "release_approved": False,
+            }
+        )
+        alpha_action_flags = {"PLAY_MUSIC_ALPHA", "LOWER_VOLUME_ALPHA_DECAY"}
+        actions = [
+            flag for flag in packet.get("action_flags", []) if flag not in alpha_action_flags
+        ]
+        if result.get("play_transition"):
+            actions.append("PLAY_MUSIC_ALPHA")
+        elif result.get("volume_lowered") and result.get("alpha_present"):
+            actions.append("LOWER_VOLUME_ALPHA_DECAY")
+        alpha_state_flags = {
+            "CALIBRATION_COMPLETE",
+            "CLOSED_EYE_CALIBRATION_COMPLETE",
+            "ALPHA_PRESENT",
+        }
+        state_flags = [
+            flag for flag in packet.get("state_flags", []) if flag not in alpha_state_flags
+        ]
+        if result.get("open_complete"):
+            state_flags.append("CALIBRATION_COMPLETE")
+        if result.get("closed_complete"):
+            state_flags.append("CLOSED_EYE_CALIBRATION_COMPLETE")
+        if result.get("alpha_present"):
+            state_flags.append("ALPHA_PRESENT")
+        return {
+            **packet,
+            "state": state,
+            "telemetry": telemetry,
+            "action_flags": list(dict.fromkeys(actions)),
+            "state_flags": list(dict.fromkeys(state_flags)),
+        }
+
+    def set_staging_context(self, response: dict[str, Any]) -> None:
+        with self.lock:
+            if self.experimental is None:
+                return
+            self.experimental.set_staging_context(
+                response.get("selected_stage"),
+                bool(response.get("decision_valid", False)),
+                response.get("selected_sleep_probability"),
+            )
 
     def _ensure_session(self, session_id: str | None) -> None:
         if session_id is None:
@@ -393,9 +560,19 @@ class CombinedRuntime:
         self.demo = DemoRuntime()
 
     def status(self) -> dict[str, Any]:
+        host_api = PACKAGE_MANIFEST.get("host_api", {})
+        api_version = int(host_api.get("minimum", 2)) if isinstance(host_api, dict) else 2
         return {
             **self.staging.status(),
-            "api_version": 2,
+            "api_version": api_version,
+            "package_id": PACKAGE_MANIFEST.get("package_id"),
+            "package_version": PACKAGE_MANIFEST.get("version"),
+            "algorithm_profile": ALGORITHM_PROFILE,
+            "release_approved": bool(PACKAGE_MANIFEST.get("release_approved", False)),
+            "calibration_schema_version": PACKAGE_MANIFEST.get(
+                "calibration_schema_version"
+            ),
+            "capabilities": PACKAGE_MANIFEST.get("capabilities", {}),
             "demo": self.demo.status(),
         }
 
@@ -440,6 +617,7 @@ class _Handler(BaseHTTPRequestHandler):
                     payload.get("session_id"),
                     payload.get("timestamp"),
                 )
+                self.runtime.demo.set_staging_context(result)
             elif self.path == "/reset":
                 result = self.runtime.staging.reset(payload.get("session_id"))
             elif self.path == "/state/save":
@@ -467,6 +645,7 @@ class _Handler(BaseHTTPRequestHandler):
                 result = self.runtime.demo.begin_alpha_calibration(
                     str(payload.get("kind", "")).strip().lower(),
                     payload.get("session_id"),
+                    payload.get("started_at"),
                 )
             elif self.path == "/demo/config":
                 result = self.runtime.demo.configure(
@@ -543,8 +722,8 @@ def main() -> None:
     parser.add_argument("--parent-pid", type=int)
     args = parser.parse_args()
     runtime = CombinedRuntime(
-        pipeline_config=ROOT / "config/online_pipeline_config.json",
-        state_path=args.state_path or ROOT / "runtime_state/sleep_state.npz",
+        pipeline_config=PACKAGE_ROOT / "config/online_pipeline_config.json",
+        state_path=args.state_path or PACKAGE_ROOT / "runtime_state/sleep_state.npz",
         restore=not args.no_restore,
         intra_op_threads=args.intra_op_threads,
     )

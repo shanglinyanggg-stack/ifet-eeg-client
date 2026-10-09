@@ -5,6 +5,8 @@ mod models;
 mod power;
 mod protocol;
 mod sleep_staging;
+pub mod stimulation;
+mod stimulus_timeline;
 
 use ble::BleManagerState;
 use lsl::{LslConfig, LslManagerState, LslStatus};
@@ -33,20 +35,24 @@ async fn connect_device(
 }
 
 #[tauri::command]
-async fn disconnect_device(state: State<'_, BleManagerState>) -> Result<(), String> {
+async fn disconnect_device(state: State<'_, BleManagerState>, stimulation: State<'_, stimulation::StimulationState>) -> Result<(), String> {
+    if stimulation.is_active() { stimulation.stop(); }
     state.disconnect_device().await.map_err(to_user_error)
 }
 
 #[tauri::command]
-async fn send_command(state: State<'_, BleManagerState>, hex: String) -> Result<(), String> {
+async fn send_command(state: State<'_, BleManagerState>, stimulation: State<'_, stimulation::StimulationState>, hex: String) -> Result<(), String> {
+    if stimulation.is_active() { return Err("刺激进行中不能发送设备配置命令".into()); }
     state.send_command(hex).await.map_err(to_user_error)
 }
 
 #[tauri::command]
 async fn set_sample_rate(
     state: State<'_, BleManagerState>,
+    stimulation: State<'_, stimulation::StimulationState>,
     sample_rate_hz: u32,
 ) -> Result<(), String> {
+    if stimulation.is_active() { return Err("刺激进行中不能切换采样率，请先停止刺激".into()); }
     state
         .set_sample_rate(sample_rate_hz)
         .await
@@ -58,8 +64,10 @@ async fn start_recording(
     app: AppHandle,
     state: State<'_, BleManagerState>,
     power: State<'_, PowerManagerState>,
+    stimulation: State<'_, stimulation::StimulationState>,
     directory: Option<String>,
 ) -> Result<String, String> {
+    if stimulation.is_active() { return Err("刺激进行中不能更换记录文件".into()); }
     let directory = match directory.filter(|value| !value.trim().is_empty()) {
         Some(value) => Some(value),
         None => {
@@ -85,7 +93,9 @@ async fn start_recording(
 async fn stop_recording(
     state: State<'_, BleManagerState>,
     power: State<'_, PowerManagerState>,
+    stimulation: State<'_, stimulation::StimulationState>,
 ) -> Result<(), String> {
+    if stimulation.is_active() { return Err("请先停止刺激实验，等待结束标记保存后再停止 EEG 记录".into()); }
     state.stop_recording().await.map_err(to_user_error)?;
     power.set_recording(false)?;
     Ok(())
@@ -280,9 +290,10 @@ async fn sleep_demo_alpha_calibration(
     endpoint: String,
     session_id: String,
     kind: String,
+    started_at: Option<String>,
 ) -> Result<Value, String> {
     state
-        .demo_alpha_calibration(&endpoint, session_id, kind)
+        .demo_alpha_calibration(&endpoint, session_id, kind, started_at)
         .await
 }
 
@@ -341,8 +352,85 @@ fn sleep_staging_open_dir(
     state.open_algorithm_dir(&app)
 }
 
+#[tauri::command]
+fn sleep_algorithm_import(
+    app: AppHandle,
+    state: State<'_, SleepStagingClientState>,
+    source: String,
+) -> Result<sleep_staging::SleepStagingRuntimeInfo, String> {
+    state.import_algorithm_package(&app, source)
+}
+
+#[tauri::command]
+fn sleep_algorithm_activate(
+    app: AppHandle,
+    state: State<'_, SleepStagingClientState>,
+    package_id: String,
+    version: String,
+) -> Result<sleep_staging::SleepStagingRuntimeInfo, String> {
+    state.activate_algorithm_package(&app, package_id, version)
+}
+
+#[tauri::command]
+fn sleep_algorithm_rollback(
+    app: AppHandle,
+    state: State<'_, SleepStagingClientState>,
+) -> Result<sleep_staging::SleepStagingRuntimeInfo, String> {
+    state.rollback_algorithm_package(&app)
+}
+
 fn to_user_error(error: anyhow::Error) -> String {
     format!("操作失败: {error}")
+}
+
+#[tauri::command]
+fn stimulus_devices(app: AppHandle) -> Result<stimulation::DeviceList, String> {
+    let mut list=stimulation::devices().map_err(to_user_error)?;
+    list.monitors=stimulation::monitor_names(&app).map_err(to_user_error)?;Ok(list)
+}
+
+fn require_visual_window(window:&tauri::WebviewWindow)->Result<(),String> {
+    if window.label()!="stimulus-light" { return Err("此操作仅允许刺激显示窗口调用".into()); } Ok(())
+}
+#[tauri::command]
+fn stimulus_visual_clock(window:tauri::WebviewWindow,state:State<'_,stimulation::StimulationState>)->Result<serde_json::Value,String> {
+    require_visual_window(&window)?;state.visual_clock().map_err(to_user_error)
+}
+#[tauri::command]
+fn stimulus_visual_ready(window:tauri::WebviewWindow,state:State<'_,stimulation::StimulationState>,run_id:String)->Result<(),String> {
+    require_visual_window(&window)?;state.visual_ready(&run_id).map_err(to_user_error)
+}
+#[tauri::command]
+fn stimulus_visual_rendered(window:tauri::WebviewWindow,state:State<'_,stimulation::StimulationState>,value:stimulation::VisualRendered)->Result<(),String> {
+    require_visual_window(&window)?;state.visual_rendered(value).map_err(to_user_error)
+}
+#[tauri::command]
+fn stimulus_visual_benchmark(app:AppHandle,state:State<'_,stimulation::StimulationState>)->Result<stimulation::StimulusStatus,String> {
+    state.visual_timing_check(app).map_err(to_user_error)
+}
+
+#[tauri::command]
+fn stimulus_status(state: State<'_, stimulation::StimulationState>) -> stimulation::StimulusStatus { state.status() }
+
+#[tauri::command]
+async fn stimulus_start(app: AppHandle, state: State<'_, stimulation::StimulationState>, ble: State<'_, BleManagerState>,
+    config: stimulation::StimulusConfig) -> Result<stimulation::StimulusStatus, String> {
+    if !ble.stimulus_stream_recent() { return Err("必须先连接头带并接收到有效 EEG，演示数据不能用于刺激实验".into()); }
+    let target = ble.stimulus_recording_target().await.map_err(to_user_error)?;
+    state.start(app, config, target).map_err(to_user_error)
+}
+
+#[tauri::command]
+fn stimulus_stop(state: State<'_, stimulation::StimulationState>) { state.stop(); }
+
+#[tauri::command]
+fn stimulus_resume(state: State<'_, stimulation::StimulationState>) -> Result<(), String> { state.resume().map_err(to_user_error) }
+
+#[tauri::command]
+async fn stimulus_benchmark(app: AppHandle, state: State<'_, stimulation::StimulationState>) -> Result<serde_json::Value, String> {
+    let output = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("timing_checks").join(uuid::Uuid::new_v4().to_string());
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.timing_check(app, output)).await.map_err(|e| e.to_string())?.map_err(to_user_error)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -353,6 +441,7 @@ pub fn run() {
         .manage(LslManagerState::default())
         .manage(PowerManagerState::default())
         .manage(SleepStagingClientState::default())
+        .manage(stimulation::StimulationState::default())
         .setup(|app| {
             let _ = app.emit(
                 "ble://status",
@@ -364,6 +453,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            stimulus_devices, stimulus_status, stimulus_start, stimulus_stop, stimulus_resume, stimulus_benchmark,
+            stimulus_visual_clock, stimulus_visual_ready, stimulus_visual_rendered, stimulus_visual_benchmark,
             scan_devices,
             connect_device,
             disconnect_device,
@@ -391,8 +482,17 @@ pub fn run() {
             sleep_staging_runtime_info,
             sleep_staging_start,
             sleep_staging_stop,
-            sleep_staging_open_dir
+            sleep_staging_open_dir,
+            sleep_algorithm_import,
+            sleep_algorithm_activate,
+            sleep_algorithm_rollback
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<stimulation::StimulationState>();
+                if state.is_active() { state.stop(); api.prevent_close(); }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
