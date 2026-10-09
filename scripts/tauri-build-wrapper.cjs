@@ -7,7 +7,9 @@ run(args,'npm run tauri').then(()=>{
     const tests=spawnSync('cargo',['test','--release','--manifest-path',path.join(__dirname,'..','src-tauri','Cargo.toml'),'--lib'],{stdio:'inherit'});
     if(tests.error)throw tests.error;
     if(tests.status!==0)throw new Error(`Windows Rust tests failed (${tests.status})`);
-    const result=spawnSync('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',path.join(__dirname,'verify-windows-installer.ps1')],{stdio:'inherit'});
+    const verificationArgs=['-NoProfile','-ExecutionPolicy','Bypass','-File',path.join(__dirname,'verify-windows-installer.ps1')];
+    let result=spawnSync('pwsh.exe',verificationArgs,{stdio:'inherit'});
+    if(result.error?.code==='ENOENT')result=spawnSync('powershell.exe',verificationArgs,{stdio:'inherit'});
     if(result.error)throw result.error;
     if(result.status!==0)throw new Error(`Windows installer verification failed (${result.status})`);
   }

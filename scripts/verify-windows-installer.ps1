@@ -1,4 +1,15 @@
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1") -ErrorAction Stop
+function Get-Sha256Hex([string]$Path) {
+    $Stream = [System.IO.File]::OpenRead($Path)
+    $Hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return [System.BitConverter]::ToString($Hasher.ComputeHash($Stream)).Replace("-", "")
+    } finally {
+        $Hasher.Dispose()
+        $Stream.Dispose()
+    }
+}
 $Root = Split-Path -Parent $PSScriptRoot
 $Bundle = Join-Path $Root "src-tauri\target\release\bundle"
 $Installer = Get-ChildItem -LiteralPath (Join-Path $Bundle "nsis") -Filter "*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -13,7 +24,7 @@ $Libraries = @()
 foreach ($Name in $Required) {
     $File = Join-Path $InstallRoot $Name
     if (-not (Test-Path -LiteralPath $File)) { throw "Missing app-local CRT: $Name" }
-    $Libraries += [pscustomobject]@{ name=$Name; sha256=(Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash; signature=(Get-AuthenticodeSignature -LiteralPath $File).Status.ToString() }
+    $Libraries += [pscustomobject]@{ name=$Name; sha256=(Get-Sha256Hex $File); signature=(Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $File).Status.ToString() }
 }
 $Algorithm = Join-Path $InstallRoot "resources\SleepStagingAlgorithm_PC_v1.2.0\runtime\ifet-sleep-service.exe"
 if (-not (Test-Path -LiteralPath $Algorithm)) { throw "Installed algorithm sidecar is missing" }
