@@ -18,9 +18,9 @@ def percentiles(values):
 
 def run(binary, output, port):
     output.mkdir(parents=True, exist_ok=True)
-    host = subprocess.Popen([str(binary), str(output), str(port), "30"], stdout=subprocess.PIPE, text=True)
+    host = subprocess.Popen([str(binary), str(output), str(port), "30"], stdout=subprocess.PIPE, text=True, encoding="utf-8")
     initial = json.loads(host.stdout.readline())
-    cfg = json.loads((output/"connection.json").read_text())
+    cfg = json.loads((output/"connection.json").read_text(encoding="utf-8"))
     connection = socket.create_connection(("127.0.0.1", port), timeout=3)
     connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     reader = connection.makefile("rb")
