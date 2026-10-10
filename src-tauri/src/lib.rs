@@ -1,6 +1,7 @@
 mod battery;
 mod ble;
 mod lsl;
+mod matlab_bridge;
 mod models;
 mod power;
 mod protocol;
@@ -8,6 +9,7 @@ mod sleep_staging;
 
 use ble::BleManagerState;
 use lsl::{LslConfig, LslManagerState, LslStatus};
+use matlab_bridge::{BridgeStatus, MatlabBridgeState};
 use models::{DeviceInfo, StatusEvent};
 use power::{PowerManagerState, PowerPreventionStatus};
 use serde_json::Value;
@@ -83,11 +85,29 @@ async fn start_recording(
 
 #[tauri::command]
 async fn stop_recording(
+    app: AppHandle,
     state: State<'_, BleManagerState>,
     power: State<'_, PowerManagerState>,
+    bridge: State<'_, MatlabBridgeState>,
 ) -> Result<(), String> {
+    if bridge.status().running {
+        return Err("请先停止 MATLAB 事件接收，再停止 EEG 记录，以免漏记刺激停止事件".into());
+    }
+    let path=state.stimulus_recording_path().await.ok();
     state.stop_recording().await.map_err(to_user_error)?;
     power.set_recording(false)?;
+    if let Some(path)=path {
+        bridge.alignment_status(true,String::new(),String::new());
+        tauri::async_runtime::spawn(async move {
+            let result=tauri::async_runtime::spawn_blocking(move||matlab_bridge::finalize_alignments(&path)).await;
+            match result {
+                Ok(Ok(paths))=>app.state::<MatlabBridgeState>().alignment_status(false,
+                    paths.iter().map(|p|p.to_string_lossy()).collect::<Vec<_>>().join("\n"),String::new()),
+                Ok(Err(error))=>app.state::<MatlabBridgeState>().alignment_status(false,String::new(),error),
+                Err(error)=>app.state::<MatlabBridgeState>().alignment_status(false,String::new(),error.to_string()),
+            }
+        });
+    }
     Ok(())
 }
 
@@ -136,6 +156,42 @@ fn power_prevention_status(
     state: State<'_, PowerManagerState>,
 ) -> Result<PowerPreventionStatus, String> {
     state.status()
+}
+
+#[tauri::command]
+fn matlab_bridge_status(state: State<'_, MatlabBridgeState>) -> BridgeStatus { state.status() }
+
+#[tauri::command]
+async fn matlab_bridge_start(app: AppHandle, state: State<'_, MatlabBridgeState>,
+    ble: State<'_, BleManagerState>, power: State<'_, PowerManagerState>, port: u16) -> Result<BridgeStatus, String> {
+    if state.status().running { return Err("MATLAB 事件接收已开启".into()); }
+    if state.status().alignment_pending { return Err("正在完成上一记录的刺激位置对齐，请稍候".into()); }
+    let path = ble.stimulus_recording_path().await.map_err(to_user_error)?;
+    let config = app.path().home_dir().map_err(|e|e.to_string())?
+        .join("Documents").join("IFET_MATLAB_BRIDGE").join("connection.json");
+    power.set_stimulus_receiver(true)?;
+    let expected = path.clone();
+    let marker_app = app.clone();
+    let marker = std::sync::Arc::new(move |time:f64, label:&str, note:&str| {
+        let result = tauri::async_runtime::block_on(marker_app.state::<BleManagerState>()
+            .append_stimulus_marker(&expected, time, label, note));
+        result.map(|x| {
+            if let Ok(event) = serde_json::from_str::<matlab_bridge::StimulusEvent>(note) {
+                let _ = marker_app.emit("matlab://event", serde_json::json!({"eventId":event.event_id,
+                    "timestamp":time*1000.0,"label":label,"modality":event.modality,"edge":event.edge}));
+            }
+            serde_json::to_value(x).unwrap()
+        }).map_err(|e|e.to_string())
+    });
+    match state.start(port, path, config, marker) {
+        Ok(status)=>Ok(status),
+        Err(error)=>{let _=power.set_stimulus_receiver(false);Err(error)}
+    }
+}
+
+#[tauri::command]
+fn matlab_bridge_stop(state: State<'_, MatlabBridgeState>, power: State<'_, PowerManagerState>, force: bool) -> Result<BridgeStatus,String> {
+    let status=state.stop(force)?;power.set_stimulus_receiver(false)?;Ok(status)
 }
 
 #[tauri::command]
@@ -280,9 +336,10 @@ async fn sleep_demo_alpha_calibration(
     endpoint: String,
     session_id: String,
     kind: String,
+    started_at: Option<String>,
 ) -> Result<Value, String> {
     state
-        .demo_alpha_calibration(&endpoint, session_id, kind)
+        .demo_alpha_calibration(&endpoint, session_id, kind, started_at)
         .await
 }
 
@@ -341,6 +398,33 @@ fn sleep_staging_open_dir(
     state.open_algorithm_dir(&app)
 }
 
+#[tauri::command]
+fn sleep_algorithm_import(
+    app: AppHandle,
+    state: State<'_, SleepStagingClientState>,
+    source: String,
+) -> Result<sleep_staging::SleepStagingRuntimeInfo, String> {
+    state.import_algorithm_package(&app, source)
+}
+
+#[tauri::command]
+fn sleep_algorithm_activate(
+    app: AppHandle,
+    state: State<'_, SleepStagingClientState>,
+    package_id: String,
+    version: String,
+) -> Result<sleep_staging::SleepStagingRuntimeInfo, String> {
+    state.activate_algorithm_package(&app, package_id, version)
+}
+
+#[tauri::command]
+fn sleep_algorithm_rollback(
+    app: AppHandle,
+    state: State<'_, SleepStagingClientState>,
+) -> Result<sleep_staging::SleepStagingRuntimeInfo, String> {
+    state.rollback_algorithm_package(&app)
+}
+
 fn to_user_error(error: anyhow::Error) -> String {
     format!("操作失败: {error}")
 }
@@ -352,7 +436,22 @@ pub fn run() {
         .manage(BleManagerState::default())
         .manage(LslManagerState::default())
         .manage(PowerManagerState::default())
+        .manage(MatlabBridgeState::default())
         .manage(SleepStagingClientState::default())
+        .on_window_event(|window,event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let recording=window.state::<PowerManagerState>().status().map(|s|s.recording).unwrap_or(false);
+                if recording || window.state::<MatlabBridgeState>().status().running {
+                    // Keep native acquisition/telemetry alive if the main window
+                    // is accidentally closed during an experiment. Quit is distinct.
+                    api.prevent_close();
+                    #[cfg(target_os = "macos")]
+                    let _=window.hide();
+                    #[cfg(not(target_os = "macos"))]
+                    let _=window.minimize();
+                }
+            }
+        })
         .setup(|app| {
             let _ = app.emit(
                 "ble://status",
@@ -375,6 +474,9 @@ pub fn run() {
             stop_battery_recording,
             set_acquisition_sleep_prevention,
             power_prevention_status,
+            matlab_bridge_start,
+            matlab_bridge_stop,
+            matlab_bridge_status,
             append_debug_marker,
             lsl_configure,
             lsl_status,
@@ -391,8 +493,26 @@ pub fn run() {
             sleep_staging_runtime_info,
             sleep_staging_start,
             sleep_staging_stop,
-            sleep_staging_open_dir
+            sleep_staging_open_dir,
+            sleep_algorithm_import,
+            sleep_algorithm_activate,
+            sleep_algorithm_rollback
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app,event| {
+            if matches!(&event, tauri::RunEvent::Exit) {
+                // Flush local data on normal Quit, but never manufacture a
+                // physical stimulus offset if MATLAB is still active.
+                let _=app.state::<MatlabBridgeState>().stop(true);
+                let _=tauri::async_runtime::block_on(app.state::<BleManagerState>().stop_recording());
+                let _=tauri::async_runtime::block_on(app.state::<BleManagerState>().stop_battery_recording());
+            }
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows:false, .. } = event {
+                if let Some(window)=app.get_webview_window("main") { let _=window.show();let _=window.set_focus(); }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _=(app,event);
+        });
 }

@@ -345,7 +345,32 @@ export function DebugModeView({
               <DebugMetric label="关闭阈值" value={formatPercent(telemetry?.alpha_off_threshold)} />
               <DebugMetric label="音量阶梯" value={telemetry ? `${telemetry.alpha_step}/${telemetry.alpha_step_count}` : '--'} />
               <DebugMetric label="推荐音量" value={formatPercent(telemetry?.recommended_volume)} />
+              <DebugMetric label="个体 Alpha 峰" value={telemetry?.individual_alpha_hz == null ? '--' : `${formatNumber(telemetry.individual_alpha_hz, 2)} Hz`} />
+              <DebugMetric label="Alpha 证据" value={formatNumber(telemetry?.alpha_evidence, 3)} />
+              <DebugMetric label="Alpha 质量" value={formatPercent(telemetry?.alpha_quality)} />
+              <DebugMetric label="干净窗口" value={formatPercent(telemetry?.clean_fraction)} />
+              <DebugMetric label="Alpha 分析窗" value={telemetry?.alpha_window_seconds == null ? '--' : `${formatNumber(telemetry.alpha_window_seconds, 1)} s`} />
+              <DebugMetric label="闭眼持续门槛" value={telemetry?.alpha_on_hold_seconds == null ? '--' : `${formatNumber(telemetry.alpha_on_hold_seconds, 1)} s`} />
             </div>
+            {telemetry?.band_shares && (
+              <div className="debug-baseline-summary">
+                <span>{telemetry.band_share_mode === 'state_enhanced_visual_index' ? '状态增强视觉占比（非功率）' : '实验频带占比'}</span>
+                <span>δ <strong>{formatPercent(telemetry.band_shares.delta)}</strong></span>
+                <span>θ <strong>{formatPercent(telemetry.band_shares.theta)}</strong></span>
+                <span>α <strong>{formatPercent(telemetry.band_shares.alpha)}</strong></span>
+                <span>β <strong>{formatPercent(telemetry.band_shares.beta)}</strong></span>
+              </div>
+            )}
+            {telemetry?.physical_band_shares && (
+              <div className="debug-baseline-summary">
+                <span>校正后相对功率占比</span>
+                <span>δ <strong>{formatPercent(telemetry.physical_band_shares.delta)}</strong></span>
+                <span>θ <strong>{formatPercent(telemetry.physical_band_shares.theta)}</strong></span>
+                <span>α <strong>{formatPercent(telemetry.physical_band_shares.alpha)}</strong></span>
+                <span>β <strong>{formatPercent(telemetry.physical_band_shares.beta)}</strong></span>
+                <span>状态 <strong>{formatVisualBandState(telemetry.band_visual_state)}</strong></span>
+              </div>
+            )}
             <CalibrationLine
               label="睁眼基线"
               progress={state?.calibration_progress ?? 0}
@@ -651,6 +676,13 @@ function blinkCalibrationDetail(response: SleepDemoSignalResponse | null): strin
 
 function formatPercent(value: number | null | undefined): string {
   return Number.isFinite(value) ? `${Math.round(Number(value) * 100)}%` : '--';
+}
+
+function formatVisualBandState(value: string | null | undefined): string {
+  if (value === 'eyes_closed') return '闭眼增强';
+  if (value === 'deep_sleep_candidate') return '深睡候选增强';
+  if (value === 'awake') return '睁眼增强';
+  return '--';
 }
 
 function formatSignedPercent(value: number | null | undefined): string {

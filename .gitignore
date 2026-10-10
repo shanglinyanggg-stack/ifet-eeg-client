@@ -1,5 +1,7 @@
 # dependencies
 node_modules/
+node_modules
+deliverables/
 
 # build output
 dist/
@@ -44,3 +46,6 @@ Thumbs.db
 # Python bytecode
 __pycache__/
 *.pyc
+qa/
+tools/*/target/
+matlab/

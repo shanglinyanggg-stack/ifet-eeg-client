@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import { downsampleTimedValues, smoothAutoScale, type TimedValue } from '../domain/dsp';
+import { useStimulusMarkers } from '../domain/stimulus-markers';
 
 export interface WaveformSeries {
   label: string;
@@ -44,6 +45,9 @@ export function WaveformCanvas({
   labelAlign = 'legend',
   gridStyle = 'lines'
 }: WaveformCanvasProps) {
+  const stimulusMarkers = useStimulusMarkers();
+  const stimulusMarkersRef = useRef(stimulusMarkers);
+  stimulusMarkersRef.current = stimulusMarkers;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   // 用 ref 持有最新的 series，rAF 节流重绘，避免每个样本触发一次全量绘制
   const seriesRef = useRef(series);
@@ -178,6 +182,16 @@ export function WaveformCanvas({
         seriesMeta.push({ label: item.label, color: strokeColor, lastY });
       }
 
+      // Source onset/offset time, not front-end delivery time. No extra chart area.
+      for (const marker of stimulusMarkersRef.current) {
+        if (marker.timestamp < minTime || marker.timestamp > maxTime) continue;
+        const x = ((marker.timestamp - minTime) / timeSpan) * rect.width;
+        ctx.save(); ctx.strokeStyle = marker.modality === 'audio' ? '#f59e0b' : '#a78bfa';
+        ctx.setLineDash(marker.edge === 'start' ? [5, 3] : [2, 3]);
+        ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, 22); ctx.lineTo(x, rect.height); ctx.stroke();
+        ctx.fillStyle = ctx.strokeStyle; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
+        ctx.fillText(marker.label, Math.min(x + 3, Math.max(0, rect.width - 65)), 20); ctx.restore();
+      }
       if (labelAlignRef.current === 'right') {
         drawRightLabels(ctx, rect.width, rect.height, seriesMeta, textMain, chartBg);
       } else {

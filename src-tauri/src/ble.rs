@@ -13,6 +13,7 @@ use btleplug::platform::{Adapter, Manager, Peripheral};
 use chrono::{DateTime, Duration as ChronoDuration, Local, SecondsFormat, Utc};
 use futures::StreamExt;
 use std::fs::{self, File};
+use std::collections::VecDeque;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -26,6 +27,8 @@ use uuid::Uuid;
 const PPG_SERVICE_UUID: Uuid = Uuid::from_u128(0x0000_fff0_0000_1000_8000_0080_5f9b_34fb);
 const PPG_RX_UUID: Uuid = Uuid::from_u128(0x0000_fff5_0000_1000_8000_0080_5f9b_34fb);
 const PPG_TX_UUID: Uuid = Uuid::from_u128(0x0000_fff9_0000_1000_8000_0080_5f9b_34fb);
+const START_STREAM_COMMAND: [u8; 4] = [0xaa, 0x55, 0x01, 0x01];
+const NO_DATA_DIAGNOSTIC_BATTERY_FRAMES: usize = 3;
 
 pub struct BleManagerState {
     inner: Mutex<BleRuntime>,
@@ -54,10 +57,20 @@ struct BleRuntime {
 }
 
 struct Recorder {
+    path: PathBuf,
     writer: BufWriter<File>,
     marker_writer: BufWriter<File>,
     marker_path: PathBuf,
     last_flush: Instant,
+    sample_count: u64,
+    sample_index: VecDeque<(f64, u64)>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StimulusAlignment {
+    pub nearest_received_sample_index: Option<u64>,
+    pub nearest_received_sample_time_unix_s: Option<f64>,
+    pub alignment_error_ms: Option<f64>,
 }
 
 struct BatteryRecorder {
@@ -143,6 +156,21 @@ impl BleManagerState {
 
             peripheral.subscribe(&notify_char).await?;
             let notifications = peripheral.notifications().await?;
+            // Some TD10 firmware reports battery frames immediately after
+            // subscribe but does not start the 0x01 EEG stream until FFF5 is
+            // explicitly armed.  Do this before returning "connected", then
+            // apply the currently selected multi-sample rate.
+            peripheral
+                .write(&write_char, &START_STREAM_COMMAND, WriteType::WithoutResponse)
+                .await?;
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            if let Some(rate_command) =
+                sample_rate_command(self.sample_rate_hz.load(Ordering::Relaxed))
+            {
+                peripheral
+                    .write(&write_char, &rate_command, WriteType::WithoutResponse)
+                    .await?;
+            }
             Ok::<_, anyhow::Error>((write_char, notifications))
         }
         .await;
@@ -161,6 +189,8 @@ impl BleManagerState {
         let battery_recorder = Arc::clone(&self.battery_recorder);
         let selected_sample_rate = Arc::clone(&self.sample_rate_hz);
         let task_app = app.clone();
+        let recovery_peripheral = peripheral.clone();
+        let recovery_write_char = write_char.clone();
         let notify_task = tokio::spawn(async move {
             let mut active_sample_rate = selected_sample_rate.load(Ordering::Relaxed);
             let mut decoder = PacketStreamDecoder::new(active_sample_rate);
@@ -168,11 +198,18 @@ impl BleManagerState {
             let mut pending_frontend_samples = Vec::<SampleEvent>::with_capacity(128);
             let mut battery_estimator = BatteryEstimator::default();
             let mut last_frontend_emit = Instant::now();
+            let mut battery_notifications_before_data = 0usize;
+            let mut rejected_notifications_before_data = 0usize;
+            let mut data_notifications = 0usize;
+            let mut recovery_command_sent = false;
             while let Some(notification) = notifications.next().await {
                 if notification.uuid != PPG_TX_UUID {
                     continue;
                 }
                 if let Some(battery) = parse_battery_frame(&notification.value) {
+                    if data_notifications == 0 {
+                        battery_notifications_before_data += 1;
+                    }
                     let estimate = battery_estimator.update(battery.voltage, battery.charging);
                     let battery_event = BatteryEvent {
                         timestamp: local_now_rfc3339(),
@@ -198,6 +235,46 @@ impl BleManagerState {
                         let _ = task_app.emit("ble://battery-recording", false);
                     }
                     let _ = task_app.emit("ble://battery", battery_event);
+                    if data_notifications == 0
+                        && battery_notifications_before_data
+                            >= NO_DATA_DIAGNOSTIC_BATTERY_FRAMES
+                        && !recovery_command_sent
+                    {
+                        recovery_command_sent = true;
+                        let charging_hint = if battery.charging {
+                            "；设备正在充电，固件可能暂停EEG，请拔掉充电线后重连"
+                        } else {
+                            ""
+                        };
+                        let _ = task_app.emit(
+                            "ble://status",
+                            crate::models::StatusEvent {
+                                message: format!(
+                                    "FFF9仅收到电量包，未收到EEG数据{charging_hint}；正在自动重发启动与采样率命令"
+                                ),
+                                connected: true,
+                            },
+                        );
+                        let _ = recovery_peripheral
+                            .write(
+                                &recovery_write_char,
+                                &START_STREAM_COMMAND,
+                                WriteType::WithoutResponse,
+                            )
+                            .await;
+                        tokio::time::sleep(Duration::from_millis(60)).await;
+                        if let Some(command) = sample_rate_command(
+                            selected_sample_rate.load(Ordering::Relaxed),
+                        ) {
+                            let _ = recovery_peripheral
+                                .write(
+                                    &recovery_write_char,
+                                    &command,
+                                    WriteType::WithoutResponse,
+                                )
+                                .await;
+                        }
+                    }
                     continue;
                 }
                 let requested_sample_rate = selected_sample_rate.load(Ordering::Relaxed);
@@ -208,8 +285,45 @@ impl BleManagerState {
                 }
                 let rows = decoder.push(&notification.value);
                 if rows.is_empty() {
+                    if data_notifications == 0 {
+                        rejected_notifications_before_data += 1;
+                        if rejected_notifications_before_data == 3 {
+                            let prefix = notification
+                                .value
+                                .iter()
+                                .take(4)
+                                .map(|byte| format!("{byte:02X}"))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            let _ = task_app.emit(
+                                "ble://status",
+                                crate::models::StatusEvent {
+                                    message: format!(
+                                        "FFF9收到但协议解析失败：长度 {} 字节，帧头 {}",
+                                        notification.value.len(),
+                                        prefix
+                                    ),
+                                    connected: true,
+                                },
+                            );
+                        }
+                    }
                     continue;
                 }
+                if data_notifications == 0 {
+                    let _ = task_app.emit(
+                        "ble://status",
+                        crate::models::StatusEvent {
+                            message: format!(
+                                "EEG数据流已恢复：每通知 {} 个样本，当前 {} Hz",
+                                rows.len(),
+                                active_sample_rate
+                            ),
+                            connected: true,
+                        },
+                    );
+                }
+                data_notifications += 1;
                 let now = Utc::now();
                 // 一包多数据代表到达通知之前的一段采样；让最后一个样本落在
                 // 主机实际接收时刻，避免把整包样本写到未来。
@@ -322,6 +436,10 @@ impl BleManagerState {
         let command = sample_rate_command(sample_rate_hz)
             .ok_or_else(|| anyhow!("不支持的采样率 {sample_rate_hz} Hz"))?;
         debug_assert!(samples_per_notification(sample_rate_hz).is_some());
+        // Re-arm the stream around a rate change.  This also recovers TD10
+        // units that stay connected and keep reporting battery, but stop EEG.
+        self.write_bytes(&START_STREAM_COMMAND).await?;
+        tokio::time::sleep(Duration::from_millis(60)).await;
         self.write_bytes(&command).await?;
         self.sample_rate_hz.store(sample_rate_hz, Ordering::Relaxed);
         Ok(())
@@ -348,13 +466,15 @@ impl BleManagerState {
     }
 
     pub async fn start_recording(&self, directory: Option<String>) -> Result<String> {
+        let mut recorder = self.recorder.lock().await;
+        if recorder.is_some() { return Err(anyhow!("记录已开启，请先停止当前记录")); }
         let dir = directory
             .filter(|value| !value.trim().is_empty())
             .map(PathBuf::from)
             .unwrap_or(std::env::current_dir()?.join("recordings"));
         fs::create_dir_all(&dir)?;
 
-        let filename = format!("ppg_eeg_log_{}.csv", Local::now().format("%Y%m%d_%H%M%S"));
+        let filename = format!("ppg_eeg_log_{}.csv", Local::now().format("%Y%m%d_%H%M%S_%3f"));
         let path = dir.join(filename);
         let file = File::create(&path)?;
         let mut writer = BufWriter::new(file);
@@ -377,12 +497,14 @@ impl BleManagerState {
         )?;
         marker_writer.flush()?;
 
-        let mut recorder = self.recorder.lock().await;
         *recorder = Some(Recorder {
+            path: path.clone(),
             writer,
             marker_writer,
             marker_path,
             last_flush: Instant::now(),
+            sample_count: 0,
+            sample_index: VecDeque::new(),
         });
         Ok(path.to_string_lossy().to_string())
     }
@@ -392,9 +514,47 @@ impl BleManagerState {
         if let Some(recording) = recorder.as_mut() {
             recording.writer.flush()?;
             recording.marker_writer.flush()?;
+            recording.writer.get_ref().sync_data()?;
+            recording.marker_writer.get_ref().sync_data()?;
         }
         *recorder = None;
         Ok(())
+    }
+
+    pub async fn stimulus_recording_path(&self) -> Result<PathBuf> {
+        let recorder = self.recorder.lock().await;
+        let recording = recorder.as_ref().ok_or_else(|| anyhow!("请先开始 EEG 数据记录"))?;
+        Ok(recording.path.clone())
+    }
+
+    /// This is a host-logical EEG position, not an ADC hardware timestamp.
+    pub async fn append_stimulus_marker(
+        &self, expected_path: &std::path::Path, event_time_unix_s: f64,
+        label: &str, note: &str,
+    ) -> Result<StimulusAlignment> {
+        let mut recorder = self.recorder.lock().await;
+        let recording = recorder.as_mut().ok_or_else(|| anyhow!("EEG 记录已停止，事件未确认"))?;
+        if recording.path != expected_path {
+            return Err(anyhow!("EEG 记录文件已经改变，事件未确认"));
+        }
+        let nearest = recording.sample_index.iter().min_by(|a, b|
+            (a.0 - event_time_unix_s).abs().total_cmp(&(b.0 - event_time_unix_s).abs())
+        ).copied();
+        let alignment = StimulusAlignment {
+            nearest_received_sample_index: nearest.map(|x| x.1),
+            nearest_received_sample_time_unix_s: nearest.map(|x| x.0),
+            alignment_error_ms: nearest.map(|x| (x.0 - event_time_unix_s) * 1000.0),
+        };
+        let micros = (event_time_unix_s * 1e6).round() as i64;
+        let timestamp = DateTime::<Utc>::from_timestamp_micros(micros)
+            .ok_or_else(|| anyhow!("刺激时间戳无效"))?
+            .to_rfc3339_opts(SecondsFormat::Micros, true);
+        writeln!(recording.marker_writer, "{},MATLAB,{},{},{},,MATLAB自动标记,,,,",
+            timestamp, csv_field(label), csv_field(note),
+            alignment.nearest_received_sample_index.map(|x| x.to_string()).unwrap_or_default())?;
+        recording.marker_writer.flush()?;
+        recording.marker_writer.get_ref().sync_data()?;
+        Ok(alignment)
     }
 
     pub async fn start_battery_recording(&self, directory: Option<String>) -> Result<String> {
@@ -576,6 +736,16 @@ async fn write_records(
     };
 
     write_record_rows(&mut recording.writer, events)?;
+    for event in events {
+        recording.sample_count += 1;
+        if let Ok(time) = DateTime::parse_from_rfc3339(&event.timestamp) {
+            recording.sample_index.push_back((time.timestamp_micros() as f64 / 1e6, recording.sample_count));
+        }
+    }
+    // At most 120 seconds at the maximum supported 1 kHz; no whole-night growth.
+    while recording.sample_index.len() > 120_000 {
+        recording.sample_index.pop_front();
+    }
     // 定时 flush，避免每个样本都触发系统调用拖垮采集线程
     if recording.last_flush.elapsed() >= FLUSH_INTERVAL {
         recording.writer.flush()?;

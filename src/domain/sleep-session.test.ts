@@ -246,8 +246,78 @@ describe('sleep session automation', () => {
     }, config);
 
     expect(state.phase).toBe('relaxing');
-    expect(state.action).toBe('fade');
+    expect(state.action).toBe('play');
     expect(state.targetVolume).toBe(0.3);
+  });
+
+  test('keeps the Alpha play state level-triggered after the one-shot flag', () => {
+    const state = advanceSleepSession(createSleepSessionState(config, 0), {
+      timestampMs: 21_500,
+      signalValid: true,
+      coverage: 1,
+      alphaRelative: 0,
+      sleepScore: 0,
+      demoSignal: demoSignal([], { alpha_present: true }, 0.7)
+    }, config);
+
+    expect(state.action).toBe('play');
+    expect(state.reason).toBe('demo-alpha-ensure-playing');
+  });
+
+  test('vetoes stale service sleep only after continuous reopened-eye evidence', () => {
+    const service = {
+      decisionValid: true,
+      selectedStage: 'NREM' as const,
+      selectedSleepProbability: 0.86,
+      interventionActionCandidate: 'stop_music' as const,
+      interventionAction: 'stop_music' as const,
+      autonomousMusicAllowed: true,
+      coverage: 1,
+      maximumContiguousGapSeconds: 0
+    };
+    let state = {
+      ...createSleepSessionState(config, 0),
+      phase: 'relaxing' as const,
+      previousPhase: 'relaxing' as const,
+      action: 'play' as const
+    };
+
+    state = advanceSleepSession(state, {
+      timestampMs: 30_000,
+      signalValid: true,
+      coverage: 1,
+      alphaRelative: 0.1,
+      sleepScore: 20,
+      awakeEvidence: true,
+      service
+    }, config);
+    expect(state.phase).toBe('relaxing');
+    expect(state.action).toBe('hold');
+    expect(state.reason).toBe('confirming-eyes-reopened');
+
+    state = advanceSleepSession(state, {
+      timestampMs: 33_000,
+      signalValid: true,
+      coverage: 1,
+      alphaRelative: 0.1,
+      sleepScore: 20,
+      awakeEvidence: true,
+      service
+    }, config);
+    expect(state.phase).toBe('ready');
+    expect(state.action).toBe('hold');
+    expect(state.reason).toBe('eyes-reopened-awake-veto');
+
+    state = advanceSleepSession(state, {
+      timestampMs: 34_000,
+      signalValid: true,
+      coverage: 1,
+      alphaRelative: 0.1,
+      sleepScore: 20,
+      awakeEvidence: true,
+      service
+    }, config);
+    expect(state.reason).toBe('eyes-reopened-awake-veto');
   });
 
   test('treats Alpha decay as volume fade rather than formal sleep', () => {

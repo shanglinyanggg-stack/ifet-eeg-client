@@ -36,6 +36,8 @@ export interface SleepDemoSignalState {
   blink_control_ready?: boolean;
   blink_stabilization_remaining_seconds?: number;
   blink_group_decoder_enabled?: boolean;
+  alpha_calibration_failed?: boolean;
+  alpha_calibration_failure_reason?: string | null;
 }
 
 export interface SleepDemoSignalTelemetry {
@@ -80,6 +82,31 @@ export interface SleepDemoSignalTelemetry {
   blink_group_evaluations?: number;
   blink_group_commands?: number;
   blink_group_rejections?: number;
+  individual_alpha_hz?: number | null;
+  alpha_evidence?: number | null;
+  alpha_quality?: number | null;
+  alpha_window_seconds?: number | null;
+  alpha_on_hold_seconds?: number | null;
+  clean_fraction?: number | null;
+  band_shares?: {
+    delta: number;
+    theta: number;
+    alpha: number;
+    beta: number;
+  } | null;
+  physical_band_shares?: {
+    delta: number;
+    theta: number;
+    alpha: number;
+    beta: number;
+  } | null;
+  band_share_mode?: 'state_enhanced_visual_index' | string | null;
+  band_visual_state?: 'awake' | 'eyes_closed' | 'deep_sleep_candidate' | string | null;
+  band_visual_confidence?: number | null;
+  open_eye_calibration_valid_fraction?: number | null;
+  closed_eye_calibration_valid_fraction?: number | null;
+  algorithm_profile?: string;
+  release_approved?: boolean;
 }
 
 export interface SleepDemoSignalEvent {
@@ -112,6 +139,8 @@ export interface SleepDemoServiceInfo {
   blink_quiet_baseline_seconds?: number;
   blink_calibration_requires_explicit_start: boolean;
   input_prefiltered: boolean;
+  algorithm_profile?: string;
+  experimental?: boolean;
   last_packet: SleepDemoSignalResponse;
 }
 

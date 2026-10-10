@@ -14,6 +14,14 @@ fn main() {
 fn build_liblsl() {
     let target = env::var("TARGET").unwrap();
     let liblsl_source = unpack_liblsl();
+    // Backport Boost.MPL's C++11 enum-wrapper branch for Apple Clang 20+.
+    let wrapper = liblsl_source.join("lslboost/boost/mpl/aux_/integral_wrapper.hpp");
+    let header = fs::read_to_string(&wrapper).expect("read bundled Boost.MPL header");
+    let old = "#if BOOST_WORKAROUND(__EDG_VERSION__, <= 243)\n";
+    let new = "#if BOOST_WORKAROUND(__EDG_VERSION__, <= 243) || __cplusplus >= 201103L\n";
+    if header.contains(old) {
+        fs::write(&wrapper, header.replace(old, new)).expect("apply upstream Boost.MPL compatibility fix");
+    }
     
     // build with cmake
     let mut cfg = cmake::Config::new(liblsl_source);
@@ -37,6 +45,7 @@ fn build_liblsl() {
             .define("CMAKE_C_FLAGS_RELEASE", cxx_args)
             .define("CMAKE_CXX_FLAGS_RELEASE", cxx_args);
     } else if target.contains("apple") {
+        cfg.define("CMAKE_CXX_STANDARD", "11");
         // liblsl 1.13 bundles an older Boost.MPL implementation. Apple Clang 16+
         // promotes this formerly accepted enum constexpr conversion to an error.
         // The conversion is intentional Boost template metaprogramming, so keep

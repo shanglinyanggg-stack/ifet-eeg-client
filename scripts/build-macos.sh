@@ -10,6 +10,11 @@ DIST_DIR="$BUILD_DIR/dist"
 WORK_DIR="$BUILD_DIR/work"
 SPEC_DIR="$BUILD_DIR/spec"
 STAGED_DIR="$TAURI_DIR/target/macos-resources/SleepStagingAlgorithm_PC_v1.2.0"
+ALGORITHM_PACKAGE_DIR="$TAURI_DIR/target/algorithm-packages"
+EXPERIMENTAL_PACKAGE="$ALGORITHM_PACKAGE_DIR/ifet-band-alpha-experimental-20260824-r3.ifet-algorithm"
+VALIDATION_REPORT="${IFET_ALGORITHM_VALIDATION_REPORT:-${VALIDATION_REPORT:-}}"
+ALGORITHM_SIGNING_KEY="${IFET_ALGORITHM_SIGNING_KEY:-}"
+BUILD_EXPERIMENTAL_PACKAGE="${IFET_BUILD_EXPERIMENTAL_PACKAGE:-0}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "macOS bundles must be built on macOS." >&2
@@ -95,9 +100,24 @@ fi
 
 chmod +x "$STAGED_DIR/runtime/ifet-sleep-service"
 
+if [[ "$BUILD_EXPERIMENTAL_PACKAGE" == "1" ]]; then
+[[ -f "$VALIDATION_REPORT" ]] || { echo "Set IFET_ALGORITHM_VALIDATION_REPORT to an existing report." >&2; exit 1; }
+[[ -f "$ALGORITHM_SIGNING_KEY" ]] || { echo "Set IFET_ALGORITHM_SIGNING_KEY to a local signing key." >&2; exit 1; }
+mkdir -p "$ALGORITHM_PACKAGE_DIR"
+"$PYTHON" "$ROOT/scripts/build_algorithm_package.py" \
+  --staged-stable "$STAGED_DIR" \
+  --validation-report "$VALIDATION_REPORT" \
+  --signing-key "$ALGORITHM_SIGNING_KEY" \
+  --output "$EXPERIMENTAL_PACKAGE"
+fi
+
 cd "$ROOT"
 if [[ ! -x "node_modules/.bin/tauri" ]]; then
   npm ci
 fi
 rustup target add "$TARGET"
 npm run tauri -- build --target "$TARGET" --bundles app,dmg
+
+if [[ "$BUILD_EXPERIMENTAL_PACKAGE" == "1" ]]; then
+  echo "Independent experimental algorithm package: $EXPERIMENTAL_PACKAGE"
+fi

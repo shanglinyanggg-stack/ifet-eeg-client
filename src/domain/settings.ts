@@ -266,7 +266,7 @@ export const defaultSettings: AppSettings = {
     stopFadeSeconds: 8,
     audioOutputDeviceId: 'default',
     serviceEnabled: true,
-    serviceEndpoint: 'http://127.0.0.1:8785',
+    serviceEndpoint: 'http://127.0.0.1:8787',
     drowsinessMode: 'wearable-trial',
     alphaVolumeMode: '3',
     blinkControlEnabled: false,
@@ -350,6 +350,8 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
     || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8782'
     || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8783'
     || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8784'
+    || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8785'
+    || value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8786'
     ? base.sleepMusic.serviceEndpoint
     : value.sleepMusic?.serviceEndpoint;
   return {

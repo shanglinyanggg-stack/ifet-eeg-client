@@ -16,6 +16,12 @@ export interface SleepStagingHealth {
   sample_rate_hz: number;
   step_seconds: number;
   window_seconds: number;
+  api_version?: number;
+  package_id?: string | null;
+  package_version?: string | null;
+  algorithm_profile?: string | null;
+  release_approved?: boolean;
+  calibration_schema_version?: string | null;
   demo?: SleepDemoServiceInfo;
 }
 
@@ -43,10 +49,27 @@ export interface SleepStagingStepResponse {
   sleep_confirmation_source?: string;
 }
 
+export interface SleepAlgorithmPackageInfo {
+  package_id: string;
+  display_name: string;
+  version: string;
+  channel: string;
+  algorithm_profile: string;
+  release_approved: boolean;
+  active: boolean;
+  bundled: boolean;
+  compatible: boolean;
+  calibration_schema_version: string | null;
+  path: string;
+}
+
 export interface SleepStagingRuntimeInfo {
   algorithm_dir: string;
   venv_ready: boolean;
   service_running: boolean;
+  active_package: SleepAlgorithmPackageInfo;
+  available_packages: SleepAlgorithmPackageInfo[];
+  last_known_good: string | null;
 }
 
 export async function getSleepStagingHealth(endpoint: string): Promise<SleepStagingHealth> {
@@ -111,12 +134,14 @@ export async function startSleepDemoBlinkCalibration(
 export async function startSleepDemoAlphaCalibration(
   endpoint: string,
   sessionId: string,
-  kind: 'open-eye' | 'closed-eye'
+  kind: 'open-eye' | 'closed-eye',
+  startedAt: string
 ): Promise<SleepDemoSignalResponse> {
   return invoke<SleepDemoSignalResponse>('sleep_demo_alpha_calibration', {
     endpoint: normalizeSleepEndpoint(endpoint),
     sessionId,
-    kind
+    kind,
+    startedAt
   });
 }
 
@@ -158,6 +183,31 @@ export async function stopSleepStagingService(): Promise<SleepStagingRuntimeInfo
 
 export async function openSleepStagingDirectory(): Promise<SleepStagingRuntimeInfo> {
   return invoke<SleepStagingRuntimeInfo>('sleep_staging_open_dir');
+}
+
+export async function importSleepAlgorithmPackage(source: string): Promise<SleepStagingRuntimeInfo> {
+  return invoke<SleepStagingRuntimeInfo>('sleep_algorithm_import', { source });
+}
+
+export async function activateSleepAlgorithmPackage(
+  packageId: string,
+  version: string
+): Promise<SleepStagingRuntimeInfo> {
+  return invoke<SleepStagingRuntimeInfo>('sleep_algorithm_activate', { packageId, version });
+}
+
+export async function rollbackSleepAlgorithmPackage(): Promise<SleepStagingRuntimeInfo> {
+  return invoke<SleepStagingRuntimeInfo>('sleep_algorithm_rollback');
+}
+
+export async function pickSleepAlgorithmPackage(): Promise<string | null> {
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: 'iFET Algorithm', extensions: ['ifet-algorithm', 'zip'] }]
+  });
+  return typeof selected === 'string' ? selected : null;
 }
 
 export function toServiceObservation(response: SleepStagingStepResponse): SleepServiceObservation {

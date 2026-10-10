@@ -108,6 +108,46 @@ export function useMusicPlayer({
     }
   }, [selectedTrack]);
 
+  const authorizeAutoplay = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio || !selectedTrack) {
+      setSnapshot((value) => ({ ...value, error: '请先选择音乐文件' }));
+      return false;
+    }
+
+    const previousVolume = audio.volume;
+    const previousTime = audio.currentTime;
+    try {
+      // Called directly from the "start guidance" click. A silent play/pause
+      // on this same element consumes the WebView user gesture, allowing the
+      // later EEG-triggered play to start without another click.
+      audio.volume = 0;
+      await audio.play();
+      audio.pause();
+      if (Number.isFinite(previousTime)) audio.currentTime = previousTime;
+      audio.volume = previousVolume;
+      setSnapshot((value) => ({
+        ...value,
+        playing: false,
+        volume: previousVolume,
+        error: null,
+        autoplayBlocked: false
+      }));
+      return true;
+    } catch {
+      audio.pause();
+      audio.volume = previousVolume;
+      setSnapshot((value) => ({
+        ...value,
+        playing: false,
+        volume: previousVolume,
+        error: '音频自动播放授权失败，请点击播放键授权',
+        autoplayBlocked: true
+      }));
+      return false;
+    }
+  }, [selectedTrack]);
+
   const pause = useCallback(() => {
     clearRamp();
     audioRef.current?.pause();
@@ -390,10 +430,22 @@ export function useMusicPlayer({
     }
 
     if (automationAction === 'play') {
-      clearRamp();
-      audio.volume = clamp01(targetVolume);
-      setSnapshot((value) => ({ ...value, volume: audio.volume, fadeRemainingSeconds: 0 }));
-      void play();
+      if (audio.paused) {
+        clearRamp();
+        audio.volume = clamp01(targetVolume);
+        setSnapshot((value) => ({ ...value, volume: audio.volume, fadeRemainingSeconds: 0 }));
+        void play();
+      } else {
+        rampVolume(targetVolume, 650, false);
+      }
+
+      // Alpha-present is a state, not a one-shot event. Keep ensuring the
+      // player is running so a transient load/route failure cannot lose the
+      // only PLAY_MUSIC_ALPHA pulse.
+      const retryTimer = window.setInterval(() => {
+        if (audio.paused) void play();
+      }, 1_000);
+      return () => window.clearInterval(retryTimer);
     } else if (automationAction === 'fade') {
       if (!audio.paused) rampVolume(targetVolume, 650, false);
     } else if (automationAction === 'stop') {
@@ -414,6 +466,7 @@ export function useMusicPlayer({
   return {
     selectedTrack,
     snapshot,
+    authorizeAutoplay,
     play,
     pause,
     toggle,

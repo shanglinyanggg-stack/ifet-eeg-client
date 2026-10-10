@@ -92,19 +92,19 @@ describe('SleepStagingChunkAssembler', () => {
 });
 
 describe('SleepDemoChunkAssembler', () => {
-  test('emits consecutive 500 ms chunks for the DemoSignalFlagger', () => {
+  test('emits consecutive 250 ms chunks for the validated Alpha cadence', () => {
     const assembler = new SleepDemoChunkAssembler('demo-session');
     const chunks = assembler.pushMany(Array.from({ length: 125 }, (_, index) => sample(index)));
 
-    expect(chunks).toHaveLength(2);
+    expect(chunks).toHaveLength(4);
     expect(chunks[0].session_id).toBe('demo-session');
-    expect(chunks[0].eeg.every((channel) => channel.length === 50)).toBe(true);
-    expect(chunks[0].imu.every((channel) => channel.length === 50)).toBe(true);
-    expect(chunks[0].valid).toHaveLength(50);
-    expect(chunks[1].eeg[3][49]).toBe(-1);
+    expect(chunks[0].eeg.every((channel) => channel.length === 25)).toBe(true);
+    expect(chunks[0].imu.every((channel) => channel.length === 25)).toBe(true);
+    expect(chunks[0].valid).toHaveLength(25);
+    expect(chunks[3].eeg[3][24]).toBe(-1);
   });
 
-  test('keeps missing samples invalid in the 500 ms stream', () => {
+  test('keeps missing samples invalid in the 250 ms stream', () => {
     const assembler = new SleepDemoChunkAssembler('demo-gap');
     const events = [sample(0), ...Array.from({ length: 61 }, (_, index) => sample(index + 2))];
     const chunk = assembler.pushMany(events)[0];

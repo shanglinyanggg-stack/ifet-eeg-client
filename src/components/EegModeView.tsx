@@ -54,7 +54,11 @@ export function EegModeView({
   deltaArtifactContext
 }: EegModeViewProps) {
   const stagingResponse = musicPanel?.serviceStatus?.lastResponse ?? null;
-  const realtimeStage = resolveRealtimeStage(musicPanel?.serviceStatus?.phase, stagingResponse);
+  const realtimeStage = resolveRealtimeStage(
+    musicPanel?.serviceStatus?.phase,
+    stagingResponse,
+    musicPanel?.session
+  );
   const analysisValues = useMemo(
     () => applyRobustMedianReference(values, deltaArtifactContext?.eegChannels),
     [deltaArtifactContext?.eegChannels, values]
@@ -71,7 +75,7 @@ export function EegModeView({
   const spindleValues = useSpindleFilter(channel, analysisValues, settings, sampleRateHz);
   const rawValues = useRawWaveformFilter(channel, values, settings, sampleRateHz);
   const rawScale = resolveScale(settings.scale, rawValues.map((item) => item.value));
-  const shareValues = computeShare(compensateAwakeAperiodicSlope(
+  const localShareValues = computeShare(compensateAwakeAperiodicSlope(
     bandSeries.map((band, index) => {
       const definition = BAND_DEFINITIONS[index];
       const range = settings.bandRanges[definition.key] ?? definition;
@@ -84,6 +88,15 @@ export function EegModeView({
     }),
     realtimeStage
   ));
+  const experimentalShares = musicPanel?.demoSignalStatus?.lastResponse?.telemetry.band_shares;
+  const shareTelemetry = musicPanel?.demoSignalStatus?.lastResponse?.telemetry;
+  const shareValues = experimentalShares && Object.values(experimentalShares).every(Number.isFinite)
+    ? BAND_DEFINITIONS.map((definition) => ({
+        label: definition.label,
+        value: Math.max(0, experimentalShares[definition.key]),
+        percent: Math.max(0, experimentalShares[definition.key]) * 100
+      }))
+    : localShareValues;
   const bandColors = Object.fromEntries(bandSeries.map((band) => [band.label, band.color]));
   const sleepMetrics = useMemo(() => calculateSleepMetrics({
     rawValues: analysisValues,
@@ -103,7 +116,13 @@ export function EegModeView({
     <div className="eeg-layout">
       <WaveformCanvas title={`${channel.toUpperCase()} 原始波形`} series={[{ label: channel.toUpperCase(), color: 'var(--wave-raw)', values: rawValues, scale: rawScale }]} fill />
       <div className="eeg-overview-grid">
-        <BandShareChart shares={shareValues} colors={bandColors} />
+        <BandShareChart
+          shares={shareValues}
+          colors={bandColors}
+          mode={shareTelemetry?.band_share_mode}
+          visualState={shareTelemetry?.band_visual_state}
+          visualConfidence={shareTelemetry?.band_visual_confidence}
+        />
         <SleepTrendChart
           metrics={sleepMetrics}
           sleepProbability={stagingResponse?.decision_valid ? stagingResponse.selected_sleep_probability : null}

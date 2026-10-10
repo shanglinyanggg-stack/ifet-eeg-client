@@ -1,6 +1,24 @@
 {
   "package": "SleepStagingAlgorithm_PC_v1.2.0",
+  "package_id": "com.ifet.sleep.stable.v0227",
+  "display_name": "iFET 稳定算法 0.2.27",
   "version": "1.2.0+blink.1.0.21",
+  "channel": "stable",
+  "algorithm_profile": "stable-v0.2.27",
+  "release_approved": true,
+  "host_api": {
+    "minimum": 2,
+    "maximum": 2
+  },
+  "calibration_schema_version": "ifet-calibration/v9-stable",
+  "state_schema_version": "ifet-sleep-state/v1",
+  "capabilities": {
+    "sleep_staging": true,
+    "alpha_control": true,
+    "blink_control": true,
+    "band_share": false,
+    "individual_alpha": false
+  },
   "target": "macOS arm64 and Windows x64 desktop App",
   "delivery_mode": "localhost HTTP sidecar",
   "model_format": "ONNX FP32",

@@ -38,6 +38,8 @@ export interface SleepObservation {
   coverage: number;
   alphaRelative: number;
   sleepScore: number;
+  /** Fast, conservative evidence that the user reopened their eyes. */
+  awakeEvidence?: boolean;
   service?: SleepServiceObservation | null;
   demoSignal?: SleepDemoSignalResponse | null;
   demoPhase?: SleepDemoPhase;
@@ -107,6 +109,15 @@ export function advanceSleepSession(
 
   if (observation.service && serviceSignalPoor(observation.service, config)) {
     return applyServiceObservation(base, observation.service, observation.timestampMs, config);
+  }
+
+  if (observation.awakeEvidence && shouldApplyAwakeVeto(state, observation.service ?? null)) {
+    return applyAwakeVeto(
+      base,
+      observation.service ?? null,
+      observation.timestampMs,
+      config
+    );
   }
 
   if (
@@ -199,15 +210,15 @@ function applyDemoSignalObservation(
   const wasDemoActive = state.source === 'demo-signal'
     && (state.phase === 'relaxing' || state.phase === 'transition');
 
-  if (play) {
+  if (play || signal.state.alpha_present) {
     return {
       ...common,
       phase: 'relaxing',
       previousPhase: 'relaxing',
       action: 'play',
       targetVolume,
-      reason: 'demo-alpha-play',
-      enteredAtMs: timestampMs
+      reason: play ? 'demo-alpha-play' : 'demo-alpha-ensure-playing',
+      enteredAtMs: state.phase === 'relaxing' ? state.enteredAtMs : timestampMs
     };
   }
 
@@ -223,14 +234,14 @@ function applyDemoSignalObservation(
     };
   }
 
-  if (wasDemoActive || signal.state.alpha_present) {
+  if (wasDemoActive) {
     return {
       ...common,
       phase: 'relaxing',
       previousPhase: 'relaxing',
-      action: wasDemoActive ? 'fade' : 'hold',
+      action: 'fade',
       targetVolume,
-      reason: wasDemoActive ? 'demo-alpha-volume-follow' : 'demo-alpha-present',
+      reason: 'demo-alpha-volume-follow',
       enteredAtMs: state.phase === 'relaxing' ? state.enteredAtMs : timestampMs
     };
   }
@@ -243,6 +254,56 @@ function applyDemoSignalObservation(
     targetVolume: state.targetVolume,
     reason: 'demo-alpha-ready',
     enteredAtMs: state.phase === 'ready' ? state.enteredAtMs : timestampMs
+  };
+}
+
+function shouldApplyAwakeVeto(
+  state: SleepSessionState,
+  service: SleepServiceObservation | null
+): boolean {
+  const serviceClaimsSleep = Boolean(
+    service?.decisionValid
+    && (service.interventionAction === 'stop_music'
+      || service.selectedStage === 'NREM'
+      || service.selectedStage === 'REM')
+  );
+  const currentPhase = state.phase === 'signal-poor' ? state.previousPhase : state.phase;
+  const recoveringFromServiceSleep = state.source === 'service'
+    && (currentPhase === 'light-sleep' || currentPhase === 'transition');
+  return serviceClaimsSleep || recoveringFromServiceSleep;
+}
+
+function applyAwakeVeto(
+  state: SleepSessionState,
+  service: SleepServiceObservation | null,
+  timestampMs: number,
+  config: SleepSessionConfig
+): SleepSessionState {
+  const currentPhase = state.phase === 'signal-poor' ? state.previousPhase : state.phase;
+  const candidateSinceMs = state.candidatePhase === 'ready' && state.candidateSinceMs !== null
+    ? state.candidateSinceMs
+    : timestampMs;
+  const confirmed = state.reason === 'eyes-reopened-awake-veto'
+    || timestampMs - candidateSinceMs >= Math.max(0, config.awakeConfirmSeconds) * 1_000;
+  const phase: Exclude<SleepPhase, 'signal-poor'> = confirmed
+    ? 'ready'
+    : currentPhase === 'light-sleep' ? 'transition' : currentPhase;
+
+  return {
+    ...state,
+    phase,
+    previousPhase: phase,
+    action: 'hold',
+    source: 'demo-signal',
+    reason: confirmed ? 'eyes-reopened-awake-veto' : 'confirming-eyes-reopened',
+    stage: service?.selectedStage ?? state.stage,
+    sleepProbability: service?.selectedSleepProbability ?? state.sleepProbability,
+    coverage: service ? clamp01(service.coverage) : state.coverage,
+    candidatePhase: confirmed ? null : 'ready',
+    candidateSinceMs: confirmed ? null : candidateSinceMs,
+    enteredAtMs: phase === state.phase ? state.enteredAtMs : timestampMs,
+    updatedAtMs: timestampMs,
+    completed: false
   };
 }
 
