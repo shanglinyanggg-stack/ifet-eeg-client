@@ -1,3 +1,5 @@
+import {defaultSignalDisplay,normalizeSignalDisplay,type SignalDisplaySettings} from './signal-display';
+import {defaultPageFilters,normalizePageFilters} from './page-filters';
 export type DisplayMode = 'normal' | 'eeg' | 'debug';
 export type ThemeName = 'neuro-dark' | 'clinical-light' | 'graphite' | 'amber-lab' | 'aurora-violet' | 'porcelain';
 export type EegChannel = 'eeg1' | 'eeg2' | 'eeg3' | 'eeg4';
@@ -9,7 +11,7 @@ export type SleepMusicCategory = 'brainwave' | 'nature' | 'white-noise' | 'medit
 export type SleepMusicCover = 'stars' | 'ocean' | 'forest' | 'rain' | 'dawn';
 export type SleepMusicSource = 'builtin' | 'local';
 export type AlphaVolumeMode = '3' | '10' | '20' | 'smooth';
-export type DrowsinessMode = 'v025' | 'wearable-trial';
+export type DrowsinessMode = 'v025' | 'wearable-trial' | 'personal-baseline';
 export type BleSampleRate = 125 | 250 | 500 | 1000;
 
 export interface LslSettings {
@@ -80,13 +82,14 @@ export const eegScaleOptions = [
 ];
 
 export const eegTimeWindowOptions = [
-  { value: 'auto', label: 'auto' },
+  { value: 'auto', label: '自动（10 s）' },
   { value: '3', label: '3 s' },
   { value: '5', label: '5 s' },
   { value: '8', label: '8 s' },
   { value: '10', label: '10 s' },
   { value: '15', label: '15 s' },
-  { value: '30', label: '30 s' }
+  { value: '30', label: '30 s' },
+  { value: '60', label: '60 s' }
 ];
 
 export const displayDelayOptions = [
@@ -146,6 +149,7 @@ export interface BandRange {
 }
 
 export interface EegSettings {
+  displayFilterMode:'raw'|'0.5-30'|'8-13'|'0.7-15';
   selectedChannel: EegChannel;
   scale: AutoNumber;
   timeWindowSeconds: AutoNumber;
@@ -161,6 +165,10 @@ export interface EegSettings {
 }
 
 export interface AppSettings {
+  sidebarCollapsed:boolean;
+  pageFilters:import('./page-filters').PageFilters;
+  signalDisplay:SignalDisplaySettings;
+  analysisRevision: number;
   bleSampleRateHz: BleSampleRate;
   acquisitionMode: boolean;
   displayMode: DisplayMode;
@@ -186,6 +194,10 @@ export interface AppSettings {
 const STORAGE_KEY = 'ifet-eeg-client-settings';
 
 export const defaultSettings: AppSettings = {
+  sidebarCollapsed:false,
+  pageFilters:defaultPageFilters(),
+  signalDisplay:{...defaultSignalDisplay},
+  analysisRevision: 2,
   bleSampleRateHz: 125,
   acquisitionMode: false,
   displayMode: 'eeg',
@@ -218,6 +230,7 @@ export const defaultSettings: AppSettings = {
     eeg4: true
   },
   eeg: {
+    displayFilterMode:'0.5-30',
     selectedChannel: 'eeg1',
     scale: 'auto',
     timeWindowSeconds: 'auto',
@@ -226,14 +239,14 @@ export const defaultSettings: AppSettings = {
     bandpassHigh: 30,
     notch: 'off',
     bandRanges: {
-      delta: { low: 0.5, high: 2 },
-      theta: { low: 4, high: 7 },
+      delta: { low: 0.5, high: 4 },
+      theta: { low: 4, high: 8 },
       alpha: { low: 8, high: 13 },
       beta: { low: 13, high: 30 }
     },
     pure: {
       bandRanges: {
-        delta: { low: 0.5, high: 2 },
+        delta: { low: 0.5, high: 4 },
         alpha: { low: 8, high: 13 },
         beta: { low: 13, high: 30 },
         gamma: { low: 30, high: 45 }
@@ -267,7 +280,7 @@ export const defaultSettings: AppSettings = {
     audioOutputDeviceId: 'default',
     serviceEnabled: true,
     serviceEndpoint: 'http://127.0.0.1:8787',
-    drowsinessMode: 'wearable-trial',
+    drowsinessMode: 'personal-baseline',
     alphaVolumeMode: '3',
     blinkControlEnabled: false,
     blinkVolumeStep: 0.1,
@@ -325,12 +338,11 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
   const requestedTrackId = value.sleepMusic?.selectedTrackId ?? base.sleepMusic.selectedTrackId;
   const savedDeltaRange = value.eeg?.bandRanges?.delta;
   const savedPureDeltaRange = value.eeg?.pure?.bandRanges?.delta;
-  // v0.2.5 and earlier stored 0.5-4 Hz as the default. Migrate only that
-  // legacy default; explicitly customised ranges remain untouched.
-  const migratedDeltaRange = savedDeltaRange?.low === 0.5 && savedDeltaRange.high === 4
+  // Upgrade former narrow defaults, not explicitly customised bands.
+  const migratedDeltaRange = savedDeltaRange?.low === 0.5 && (savedDeltaRange.high === 2 || savedDeltaRange.high === 4)
     ? base.eeg.bandRanges.delta
     : savedDeltaRange;
-  const migratedPureDeltaRange = savedPureDeltaRange?.low === 0.5 && savedPureDeltaRange.high === 4
+  const migratedPureDeltaRange = savedPureDeltaRange?.low === 0.5 && (savedPureDeltaRange.high === 2 || savedPureDeltaRange.high === 4)
     ? base.eeg.pure.bandRanges.delta
     : savedPureDeltaRange;
   const migratedServiceEndpoint = value.sleepMusic?.serviceEndpoint === 'http://127.0.0.1:8768'
@@ -357,6 +369,10 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
   return {
     ...base,
     ...value,
+    sidebarCollapsed:value.sidebarCollapsed===true,
+    pageFilters:normalizePageFilters(value.pageFilters,value),
+    signalDisplay:normalizeSignalDisplay(value.signalDisplay),
+    analysisRevision:base.analysisRevision,
     bleSampleRateHz,
     acquisitionMode,
     showChartsOnly: acquisitionMode ? false : (value.showChartsOnly ?? base.showChartsOnly),
@@ -367,10 +383,13 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
     eeg: {
       ...base.eeg,
       ...value.eeg,
+      timeWindowSeconds:typeof value.eeg?.timeWindowSeconds==='number'
+        ? Math.max(3,Math.min(60,value.eeg.timeWindowSeconds)):base.eeg.timeWindowSeconds,
       bandRanges: {
         ...base.eeg.bandRanges,
         ...value.eeg?.bandRanges,
-        ...(migratedDeltaRange ? { delta: migratedDeltaRange } : {})
+        ...(migratedDeltaRange ? { delta: migratedDeltaRange } : {}),
+        ...(value.eeg?.bandRanges?.theta?.low===4&&value.eeg.bandRanges.theta.high===7?{theta:base.eeg.bandRanges.theta}:{})
       },
       pure: {
         bandRanges: {
@@ -391,6 +410,7 @@ function mergeSettings(base: AppSettings, value: Partial<AppSettings>): AppSetti
     sleepMusic: {
       ...base.sleepMusic,
       ...value.sleepMusic,
+      ...(value.analysisRevision!==base.analysisRevision?{drowsinessMode:base.sleepMusic.drowsinessMode}:{}),
       ...(migratedServiceEndpoint ? { serviceEndpoint: migratedServiceEndpoint } : {}),
       libraryTracks,
       tracks,

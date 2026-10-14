@@ -40,6 +40,57 @@ pub fn sample_rate_command(sample_rate_hz: u32) -> Option<[u8; 2]> {
     Some([0x72, parameter])
 }
 
+/// TD数据帧格式(3).md documents 0x72 only. Do not mix the obsolete
+/// 0x93 batching extension into this configuration transaction.
+pub fn documented_rate_commands(sample_rate_hz:u32)->Option<Vec<[u8;2]>> {
+    Some(vec![sample_rate_command(sample_rate_hz)?])
+}
+
+#[derive(Debug,Clone,Copy,Default,PartialEq,Eq)]
+pub struct TdPayloadIntegrity {
+    pub sample_slots:usize,
+    pub all_channel_zero_slots:usize,
+    pub identical_adjacent_slots:usize,
+    pub trailing_zero_slots:usize,
+    pub rtc_raw:Option<u32>,
+}
+
+/// Diagnostic only: repeated values are not automatically rejected (they can
+/// be real quantized ADC values). Preserve source bytes and label concerns.
+pub fn inspect_td_payload(raw:&[u8])->Option<TdPayloadIntegrity> {
+    if raw.first().copied()!=Some(1)||raw.len()<43||raw[1] as usize+2!=raw.len()||(raw.len()-31)%12!=0{return None;}
+    let eeg=&raw[TD_FIXED_BYTES..raw.len()-TD_RTC_BYTES];
+    let mut result=TdPayloadIntegrity {
+        sample_slots:eeg.len()/TD_EEG_SAMPLE_BYTES,
+        rtc_raw:Some(u32::from_be_bytes(raw[raw.len()-4..].try_into().ok()?)),
+        ..Default::default()
+    };
+    let mut previous:Option<&[u8]>=None;
+    for slot in eeg.chunks_exact(TD_EEG_SAMPLE_BYTES){
+        if slot.iter().all(|b|*b==0){result.all_channel_zero_slots+=1;result.trailing_zero_slots+=1;}else{result.trailing_zero_slots=0;}
+        if previous==Some(slot){result.identical_adjacent_slots+=1;}
+        previous=Some(slot);
+    }
+    Some(result)
+}
+
+pub fn transmit_interval_command(milliseconds:u8)->Option<[u8;2]> {
+    (8..=33).contains(&milliseconds).then_some([0x93,milliseconds])
+}
+
+pub fn packed_samples_per_notification(rate:u32,milliseconds:u8)->Option<usize> {
+    sample_rate_command(rate)?;
+    transmit_interval_command(milliseconds)?;
+    Some((rate as usize*milliseconds as usize+999)/1000)
+}
+
+pub fn optimized_transmit_interval_ms(rate:u32)->u8 {
+    // Throughput-only tests are insufficient: this TD firmware's larger
+    // batches included repeated/zero ADC slots and corrupted the waveform.
+    // Retain the original 8 ms configuration until firmware validation.
+    let _=rate;8
+}
+
 /// 解析 TD 电压上报帧：0x03 表示正常使用，0x04 表示正在充电。
 /// 文档规定电压计量值为大端 32 位整数，实际电压 = 计量值 / 135。
 pub fn parse_battery_frame(raw: &[u8]) -> Option<BatteryFrame> {
@@ -71,6 +122,7 @@ struct ParsedNotification {
 pub struct StreamPacket {
     pub packet: DecodedPacket,
     pub valid: bool,
+    pub observed: bool,
     pub device_sequence: Option<u8>,
 }
 
@@ -81,6 +133,9 @@ pub struct PacketStreamDecoder {
     nominal_sequence_delta: Option<usize>,
     output_sequence: u8,
     sample_rate_hz: u32,
+    last_received_samples: usize,
+    raw_only: bool,
+    maximum_notification_samples: Option<usize>,
 }
 
 impl Default for PacketStreamDecoder {
@@ -98,7 +153,20 @@ impl PacketStreamDecoder {
             nominal_sequence_delta: None,
             output_sequence: 0,
             sample_rate_hz,
+            last_received_samples: 0,
+            raw_only: false,
+            maximum_notification_samples:None,
         }
+    }
+
+    /// Production acquisition preserves only received ADC slots. Legacy
+    /// reconstruction remains available solely for old-record replay/tests.
+    pub fn new_raw(sample_rate_hz:u32)->Self {
+        let mut decoder=Self::new(sample_rate_hz);decoder.raw_only=true;decoder
+    }
+
+    pub fn limit_notification_samples(mut self,maximum:usize)->Self {
+        self.maximum_notification_samples=Some(maximum);self
     }
 
     pub fn set_sample_rate(&mut self, sample_rate_hz: u32) {
@@ -110,9 +178,12 @@ impl PacketStreamDecoder {
     }
 
     pub fn push(&mut self, raw: &[u8]) -> Vec<StreamPacket> {
+        self.last_received_samples=0;
         let Some(parsed) = parse_notification(raw) else {
             return Vec::new();
         };
+        if self.maximum_notification_samples.is_some_and(|limit|parsed.packets.len()>limit){return Vec::new();}
+        self.last_received_samples=parsed.packets.len();
         match parsed.kind {
             PacketKind::V8 => {
                 self.clear_stream();
@@ -123,8 +194,19 @@ impl PacketStreamDecoder {
         }
     }
 
+    /// Counts only samples physically present in the received notification;
+    /// excludes both loss placeholders and legacy clock-recovery interpolation.
+    pub fn last_received_samples(&self)->usize {self.last_received_samples}
+
     fn push_td(&mut self, packets: Vec<DecodedPacket>, device_sequence: u8) -> Vec<StreamPacket> {
         let notification_samples = packets.len();
+        if self.raw_only {
+            // A wrapping/repeated device sequence is not a unique sample ID.
+            // Never discard a distinct BLE notification or synthesize data.
+            if self.previous_device_sequence.is_none(){self.output_sequence=device_sequence;}
+            let increment=u8::from(self.previous_device_sequence.is_some());
+            return self.emit_packets(packets,device_sequence,increment);
+        }
         let Some(previous_sequence) = self.previous_device_sequence else {
             self.output_sequence = device_sequence;
             let rows = self.emit_packets(packets, device_sequence, 0);
@@ -180,6 +262,7 @@ impl PacketStreamDecoder {
                     // 旧单样本格式在正常通知间隔内的插值属于时钟恢复；只有
                     // 真正跳过了一个或多个通知时才计入传输丢包。
                     valid: missing_notifications == 0,
+                    observed: false,
                     device_sequence: Some(previous_sequence.wrapping_add(
                         ((delta * (missing_index + 1)) / (missing_samples + 1)) as u8,
                     )),
@@ -206,6 +289,7 @@ impl PacketStreamDecoder {
             rows.push(StreamPacket {
                 packet: packet.clone(),
                 valid: true,
+                observed: true,
                 device_sequence: Some(device_sequence),
             });
             self.previous_packet = Some(packet);
@@ -412,6 +496,7 @@ fn read_i16(raw: &[u8], index: usize) -> Option<i16> {
 
 #[cfg(test)]
 mod tests {
+    use super::{transmit_interval_command,packed_samples_per_notification};
     use super::{
         parse_battery_frame, parse_packet, sample_interval_nanoseconds, sample_rate_command,
         PacketStreamDecoder,
@@ -501,8 +586,10 @@ mod tests {
                 .map(|index| index as u32 * 100)
                 .collect::<Vec<_>>();
             let rows = decoder.push(&td_frame(10, &eeg_bases));
+            assert_eq!(decoder.last_received_samples(),samples_per_packet);
             assert_eq!(rows.len(), samples_per_packet);
             assert!(rows.iter().all(|row| row.valid));
+            assert!(rows.iter().all(|row| row.observed));
             for (index, row) in rows.iter().enumerate() {
                 assert_eq!(row.packet.eeg.as_ref().unwrap().eeg1, index as u32 * 100);
             }
@@ -513,6 +600,62 @@ mod tests {
             assert_eq!(next_rows.len(), samples_per_packet);
             assert!(next_rows.iter().all(|row| row.valid));
         }
+    }
+
+    #[test]
+    fn raw_mode_preserves_all_slots_without_clock_padding_or_sequence_deduplication() {
+        for (rate,count) in [(125,2),(250,4),(500,8),(1000,16)] {
+            let mut decoder=PacketStreamDecoder::new_raw(rate);
+            let bases=(0..count).map(|i|i as u32*100).collect::<Vec<_>>();
+            for sequence in [252,254,254,1,130,129] {
+                let rows=decoder.push(&td_frame(sequence,&bases));
+                assert_eq!(rows.len(),count);
+                assert!(rows.iter().all(|r|r.observed&&r.valid));
+            }
+        }
+    }
+
+    #[test]
+    fn validates_packing_commands_and_rejects_truncated_1000hz_32ms_frame() {
+        assert_eq!(transmit_interval_command(16),Some([0x93,0x10]));
+        assert_eq!(transmit_interval_command(32),Some([0x93,0x20]));
+        assert_eq!(transmit_interval_command(34),None);
+        for (rate,count) in [(125,2),(250,4),(500,8),(1000,16)] {
+            assert_eq!(packed_samples_per_notification(rate,16),Some(count));
+        }
+        assert!(PacketStreamDecoder::new_raw(1000).push(&vec![1;159]).is_empty());
+    }
+
+    #[test]
+    fn production_packing_is_original_8ms_and_large_unvalidated_batches_are_rejected(){
+        for rate in [125,250,500,1000]{assert_eq!(super::optimized_transmit_interval_ms(rate),8);}
+        let mut decoder=PacketStreamDecoder::new_raw(500).limit_notification_samples(8);
+        assert!(decoder.push(&td_frame(0,&[100;16])).is_empty());
+        assert_eq!(decoder.last_received_samples(),0);
+        assert_eq!(decoder.push(&td_frame(1,&[100;4])).len(),4);
+    }
+
+    #[test]
+    fn new_document_configuration_uses_only_supported_sample_rate_commands(){
+        for (rate,parameter) in [(125,1),(250,2),(500,3),(1000,4)]{
+            assert_eq!(super::documented_rate_commands(rate),Some(vec![[0x72,parameter]]));
+        }
+        assert_eq!(super::documented_rate_commands(100),None);
+    }
+
+    #[test]
+    fn integrity_check_exposes_zero_tail_instead_of_calling_it_valid_high_rate_data(){
+        let mut raw=td_frame(7,&[100;16]);
+        raw[27+8*12..27+16*12].fill(0);
+        let original=raw.clone();
+        let integrity=super::inspect_td_payload(&raw).unwrap();
+        assert_eq!(integrity.sample_slots,16);
+        assert_eq!(integrity.all_channel_zero_slots,8);
+        assert_eq!(integrity.trailing_zero_slots,8);
+        assert_eq!(integrity.identical_adjacent_slots,14);
+        assert_eq!(integrity.rtc_raw,Some(7));
+        assert_eq!(raw,original); // diagnostic did not mutate the packet
+        assert!(super::inspect_td_payload(&raw[..raw.len()-1]).is_none());
     }
 
     #[test]
@@ -534,6 +677,8 @@ mod tests {
             rows.extend(decoder.push(&td_frame(index.wrapping_mul(4), &[index as u32 * 100])));
         }
         assert_eq!(rows.len(), 125);
+        assert_eq!(decoder.last_received_samples(),1);
+        assert_eq!(rows.iter().filter(|row|row.observed).count(),32);
         assert!(rows.iter().all(|row| row.valid));
     }
 

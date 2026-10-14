@@ -89,6 +89,11 @@ def run(binary, output, port):
     with (output/"probe_stimulus_aligned.csv").open(encoding="utf-8-sig", newline="") as source:
         reference_positions = {row["event_id"]:row["eeg_data_row_1based"] for row in csv.DictReader(source)}
     assert len(native_positions) == 600 and native_positions == reference_positions, "Native and independent reference EEG positions differ"
+    with (output/"probe_eeg_markers.csv").open(encoding="utf-8-sig", newline="") as source:
+        marker_rows = list(csv.DictReader(source))
+    final_marker_positions = {row["matlabEventId"]: row["sampleCount"] for row in marker_rows}
+    assert final_marker_positions == native_positions, "Primary marker positions were not finalized"
+    assert (output/"probe_eeg_markers_before_matlab_alignment.csv").is_file()
     report = {"test_kind":"native_production_receiver_software_loopback_with_synthetic_1kHz_CSV_writer",
         "physical_stimulus_measured":False, "MATLAB_executed":False,"BLE_device_connected":False,
         "event_count":final["event_count"],"duplicate_retries_verified":dedup,"closed_pairs":300,
@@ -100,6 +105,7 @@ def run(binary, output, port):
         "injected_25ms_receive":percentiles([r["receive_ms"] for r in rows if r["injected_25ms_delay"]]),
         "fragmented_2ms_receive":percentiles([r["receive_ms"] for r in rows if r["fragmented_2ms"]]),
         "alignment":alignment, "native_alignment_matches_reference_events":len(native_positions),
+        "primary_marker_positions_match_final_alignment":len(final_marker_positions),
         "limitations":["Not MATLAB/Psychtoolbox timing", "No microphone or photodiode",
             "No physical BLE/ADC timing", "Synthetic CSV writer is not production BLE notification ingest"],"events":rows}
     (output/"latency_report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")

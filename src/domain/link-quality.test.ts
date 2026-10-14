@@ -27,6 +27,14 @@ function sample(timestampMs: number, valid = true, sampleRateHz = 125): SampleEv
 }
 
 describe('RollingLinkQualityMonitor', () => {
+  test('reports a real timebase gap without inventing recorded samples',()=>{
+    const monitor=new RollingLinkQualityMonitor();
+    const events=Array.from({length:625},(_,i)=>sample(i*16,true,125));
+    const snapshot=monitor.push(events,125);
+    expect(snapshot.totalSamples).toBe(625);
+    expect(snapshot.effectiveSampleRateHz).toBeCloseTo(62.55,1);
+    expect(snapshot.lossRatePercent).toBeGreaterThan(49);
+  });
   test('reports effective sampling and interpolation loss over ten seconds', () => {
     const monitor = new RollingLinkQualityMonitor();
     const events = Array.from({ length: 1_250 }, (_, index) =>

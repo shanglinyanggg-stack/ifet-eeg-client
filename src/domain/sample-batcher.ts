@@ -40,6 +40,10 @@ export class SampleBatcher<T> {
   }
 
   dispose(): void {
+    this.clear();
+  }
+
+  clear(): void {
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;

@@ -65,6 +65,7 @@ export interface SleepMusicPanelProps {
   onOpenEyeCalibration?: () => void;
   onClosedEyeCalibration?: () => void;
   onBlinkCalibration: () => void;
+  onDrowsinessCalibration?: () => void;
   guidanceActive?: boolean;
   guidanceMessage?: string;
   onStartGuidance?: () => void;
@@ -152,8 +153,9 @@ export function SleepMusicPanel({
   const algorithmAlphaRatio = demoSignalStatus?.lastResponse?.telemetry.alpha_ratio ?? null;
   const algorithmAlphaThreshold = demoSignalStatus?.lastResponse?.telemetry.alpha_on_threshold ?? null;
   const stagingResponse = serviceStatus?.lastResponse ?? null;
-  const drowsiness = settings.drowsinessMode === 'wearable-trial' && drowsinessEstimate
-    ? drowsinessEstimate.score
+  const personalDrowsiness=settings.drowsinessMode==='personal-baseline';
+  const drowsiness = (settings.drowsinessMode === 'wearable-trial'||personalDrowsiness) && drowsinessEstimate
+    ? personalDrowsiness&&!drowsinessEstimate.baselineReady?null:drowsinessEstimate.score
     : stagingResponse?.decision_valid && stagingResponse.selected_sleep_probability !== null
       ? Math.round(stagingResponse.selected_sleep_probability * 100)
       : null;
@@ -260,7 +262,8 @@ export function SleepMusicPanel({
             {algorithmAlphaThreshold !== null && <small>阈值 {Math.round(algorithmAlphaThreshold * 100)}%</small>}
           </span>
           <span title="PC 分期算法保守睡眠概率">
-            困意 <strong>{drowsiness === null ? `${Math.round(metrics?.sleepOnsetScore ?? session.sleepScoreEma)}` : `${drowsiness}%`}</strong>
+            困意 <strong>{personalDrowsiness ? drowsiness===null?'未校准':`${drowsiness}/100`
+              : drowsiness === null ? `${Math.round(metrics?.sleepOnsetScore ?? session.sleepScoreEma)}` : `${drowsiness}%`}</strong>
             <small>{realtimeStage}</small>
           </span>
           <span>质量 <strong>{Math.round(session.coverage * 100)}%</strong></span>
@@ -555,6 +558,9 @@ function DemoSignalTelemetry({
         <span>推荐音量</span>
         <strong>{recommendedVolume}%</strong>
       </div>
+      <details className="sleep-telemetry-details">
+        <summary>眨眼与基线诊断</summary>
+        <div className="sleep-telemetry-detail-grid">
       <div className="sleep-demo-kpi">
         <span>启用配对</span>
         <strong>{enabledPairs}</strong>
@@ -587,6 +593,8 @@ function DemoSignalTelemetry({
         <span>自动恢复 / 暂停配对</span>
         <strong>{stale ? `${Math.round(recoveryProgress * 100)}%` : baselineRecoveries}<small> / {disabledPairs}</small></strong>
       </div>
+        </div>
+      </details>
       {(blinkStatus !== 'complete' || stale || status?.phase === 'fallback') && (
         <div className="sleep-blink-calibration-notice" role="status">
           {blinkStatus === 'running' && !stale ? <Eye size={14} /> : <ShieldAlert size={14} />}

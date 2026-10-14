@@ -84,7 +84,7 @@ impl MatlabBridgeState {
         let journal = OpenOptions::new().write(true).create_new(true).open(&event_path).map_err(|e| e.to_string())?;
         let mut csv = OpenOptions::new().write(true).create_new(true).open(&csv_path).map_err(|e| e.to_string())?;
         csv.write_all(b"\xef\xbb\xbf").map_err(|e|e.to_string())?;
-        writeln!(csv, "event_time_utc,event_time_unix_s,received_time_unix_s,receive_delay_ms,session_id,event_id,sequence,stimulus_id,modality,edge,source_getsecs,clock_offset_s,sync_uncertainty_ms,timestamp_source,duration_s,frequency_hz,intensity,intensity_unit,block,trial,location_json,nearest_received_sample_index,alignment_error_ms,metadata_json").map_err(|e| e.to_string())?;
+        writeln!(csv, "event_time_utc,event_time_unix_s,received_time_unix_s,receive_delay_ms,session_id,event_id,sequence,stimulus_id,modality,edge,source_getsecs,clock_offset_s,sync_uncertainty_ms,timestamp_source,duration_s,frequency_hz,intensity,intensity_unit,block,trial,location_json,nearest_received_sample_index,alignment_error_ms,metadata_json,event_time,alignment_status").map_err(|e| e.to_string())?;
         if let Some(parent) = connection_path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
         let connection = json!({"protocol":"ifet-matlab-bridge/1", "host":"127.0.0.1", "port":port,
             "token":token, "clock_id":clock_id, "recording_path":recording});
@@ -216,7 +216,9 @@ impl Engine {
         let alignment = (self.marker)(time, &label, &fingerprint)?;
         let utc = chrono::DateTime::<chrono::Utc>::from_timestamp_micros((time * 1e6).round() as i64)
             .ok_or("刺激 UTC 时间无效")?.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        let local_time = event_time_with_offset(time, None)?;
         self.audit(json!({"record_type":"event", "event_time_utc":utc, "event_time_unix_s":time,
+            "event_time":local_time,
             "received_time_unix_s":received, "receive_delay_ms":(received-time)*1000.0,
             "write_started_unix_s":self.now(), "event":event, "duration_s":duration, "alignment":alignment}))?;
         let meta = &event.metadata;
@@ -226,7 +228,8 @@ impl Engine {
             json!(event.sync_uncertainty_s*1000.0),json!(event.timestamp_source),json!(duration),
             meta["frequency_hz"].clone(),meta["intensity"].clone(),meta["intensity_unit"].clone(),
             meta["block"].clone(),meta["trial"].clone(),meta["location"].clone(),
-            alignment["nearest_received_sample_index"].clone(),alignment["alignment_error_ms"].clone(),meta.clone()];
+            alignment["nearest_received_sample_index"].clone(),alignment["alignment_error_ms"].clone(),meta.clone(),
+            json!(local_time),json!("provisional_received_eeg_position")];
         writeln!(self.csv, "{}", fields.iter().map(csv_value).collect::<Vec<_>>().join(",")).map_err(|e| e.to_string())?;
         self.csv.sync_data().map_err(|e| e.to_string())?;
         let committed = self.now();
@@ -262,18 +265,41 @@ pub fn finalize_alignments(recording: &std::path::Path) -> Result<Vec<PathBuf>, 
     let parent=recording.parent().ok_or("记录目录无效")?;
     let prefix=format!("{}_stimulus_",recording.file_stem().unwrap().to_string_lossy());
     let mut outputs=Vec::new();
+    let mut final_markers=Vec::new();
     for entry in std::fs::read_dir(parent).map_err(|e|e.to_string())? {
         let path=entry.map_err(|e|e.to_string())?.path();
         let name=path.file_name().unwrap().to_string_lossy();
         let suffix=name.strip_prefix(&prefix).and_then(|x|x.strip_suffix(".jsonl"));
         if !suffix.is_some_and(|x|x.len()==8 && x.bytes().all(|b|b.is_ascii_hexdigit())) {continue;}
         let output=path.with_file_name(format!("{}_aligned.csv",path.file_stem().unwrap().to_string_lossy()));
-        align_journal(recording,&path,&output)?;outputs.push(output);
+        final_markers.extend(align_journal(recording,&path,&output)?);outputs.push(output);
     }
+    finalize_marker_file(recording, &final_markers)?;
     Ok(outputs)
 }
 
-fn align_journal(recording:&std::path::Path,journal:&std::path::Path,output:&std::path::Path)->Result<(),String>{
+#[derive(Debug)]
+struct FinalMarker {
+    event_id: String,
+    event_time: String,
+    sample_index: Option<u64>,
+    alignment_error_ms: Option<f64>,
+    status: String,
+    relative_seconds: Option<f64>,
+}
+
+fn event_time_with_offset(time: f64, eeg_time: Option<&str>) -> Result<String, String> {
+    let utc = chrono::DateTime::<chrono::Utc>::from_timestamp_micros((time * 1e6).round() as i64)
+        .ok_or("刺激时间戳无效")?;
+    if let Some(eeg_time) = eeg_time {
+        let reference = chrono::DateTime::parse_from_rfc3339(eeg_time).map_err(|e|e.to_string())?;
+        Ok(utc.with_timezone(reference.offset()).to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+    } else {
+        Ok(utc.with_timezone(&chrono::Local).to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+    }
+}
+
+fn align_journal(recording:&std::path::Path,journal:&std::path::Path,output:&std::path::Path)->Result<Vec<FinalMarker>,String>{
     let mut events=Vec::<Value>::new();let mut event_bytes=0usize;
     for line in BufReader::new(File::open(journal).map_err(|e|e.to_string())?).lines(){
         let line=line.map_err(|e|e.to_string())?;
@@ -284,14 +310,16 @@ fn align_journal(recording:&std::path::Path,journal:&std::path::Path,output:&std
     events.sort_by(|a,b|a["event_time_unix_s"].as_f64().unwrap().total_cmp(&b["event_time_unix_s"].as_f64().unwrap()));
     let mut target=File::create(output).map_err(|e|e.to_string())?;
     target.write_all(b"\xef\xbb\xbf").map_err(|e|e.to_string())?;
-    writeln!(target,"event_id,stimulus_id,modality,edge,event_time_utc,event_time_unix_s,eeg_data_row_1based,eeg_csv_line_1based,eeg_time,eeg_valid,alignment_error_ms,alignment_status,frequency_hz,intensity,intensity_unit,location_json,metadata_json").map_err(|e|e.to_string())?;
+    writeln!(target,"event_id,stimulus_id,modality,edge,event_time_utc,event_time_unix_s,eeg_data_row_1based,eeg_csv_line_1based,eeg_time,eeg_valid,alignment_error_ms,alignment_status,frequency_hz,intensity,intensity_unit,location_json,metadata_json,event_time,event_time_relative_s,eeg_time_relative_s").map_err(|e|e.to_string())?;
     let mut previous:Option<(f64,u64,String,Option<bool>)>=None;let mut position=0usize;let mut backward_jumps=0u64;
+    let mut first_sample_time=None;let mut final_markers=Vec::new();
     let mut valid_column=None;
     for (index,line) in BufReader::new(File::open(recording).map_err(|e|e.to_string())?).lines().enumerate(){
         let line=line.map_err(|e|e.to_string())?;
         if index==0{valid_column=line.split(',').position(|x|x=="valid");continue;}
         let timestamp=line.split(',').next().ok_or("EEG 时间列缺失")?;
         let time=chrono::DateTime::parse_from_rfc3339(timestamp).map_err(|e|e.to_string())?.timestamp_micros() as f64/1e6;
+        first_sample_time.get_or_insert(time);
         let valid=valid_column.and_then(|column|line.split(',').nth(column))
             .and_then(|x|match x{"true"=>Some(true),"false"=>Some(false),_=>None});
         let current=(time,index as u64,timestamp.to_owned(),valid);
@@ -304,27 +332,90 @@ fn align_journal(recording:&std::path::Path,journal:&std::path::Path,output:&std
                 else if error.abs()>20.0{"gap_or_host_clock_reanchor"}
                 else if nearest.3==Some(false){"invalid_eeg_sample"}
                 else if nearest.3.is_none(){"unknown_eeg_validity"}else{"within_sample_interval"};
-            write_aligned_row(&mut target,event,Some(nearest),Some(error),status)?;position+=1;
+            final_markers.push(write_aligned_row(&mut target,event,Some(nearest),Some(error),status,first_sample_time)?);position+=1;
         }
         previous=Some(current);
     }
     while position<events.len(){
         let event=&events[position];let wanted=event["event_time_unix_s"].as_f64().unwrap();
-        write_aligned_row(&mut target,event,previous.as_ref(),previous.as_ref().map(|p|(p.0-wanted)*1000.0),
-            if previous.is_some(){"after_recording"}else{"no_eeg_samples"})?;position+=1;
+        final_markers.push(write_aligned_row(&mut target,event,previous.as_ref(),previous.as_ref().map(|p|(p.0-wanted)*1000.0),
+            if previous.is_some(){"after_recording"}else{"no_eeg_samples"},first_sample_time)?);position+=1;
     }
     target.sync_data().map_err(|e|e.to_string())?;
     if backward_jumps>0{return Err(format!("已生成 {}，但 EEG 主机时间存在 {backward_jumps} 次倒退；请人工检查，不能视为硬件时间对齐",output.display()));}
-    Ok(())
+    Ok(final_markers)
 }
 
-fn write_aligned_row(target:&mut File,event:&Value,nearest:Option<&(f64,u64,String,Option<bool>)>,error:Option<f64>,status:&str)->Result<(),String>{
+fn write_aligned_row(target:&mut File,event:&Value,nearest:Option<&(f64,u64,String,Option<bool>)>,error:Option<f64>,status:&str,first_sample_time:Option<f64>)->Result<FinalMarker,String>{
     let source=&event["event"];let meta=&source["metadata"];
+    let time=event["event_time_unix_s"].as_f64().ok_or("刺激时间列无效")?;
+    let local_time=event_time_with_offset(time,nearest.map(|x|x.2.as_str()))?;
+    let relative_seconds=first_sample_time.map(|origin|time-origin);
     let values=vec![source["event_id"].clone(),source["stimulus_id"].clone(),source["modality"].clone(),source["edge"].clone(),
         event["event_time_utc"].clone(),event["event_time_unix_s"].clone(),json!(nearest.map(|x|x.1)),
         json!(nearest.map(|x|x.1+1)),json!(nearest.map(|x|&x.2)),json!(nearest.and_then(|x|x.3)),json!(error),json!(status),
-        meta["frequency_hz"].clone(),meta["intensity"].clone(),meta["intensity_unit"].clone(),meta["location"].clone(),meta.clone()];
-    writeln!(target,"{}",values.iter().map(csv_value).collect::<Vec<_>>().join(",")).map_err(|e|e.to_string())
+        meta["frequency_hz"].clone(),meta["intensity"].clone(),meta["intensity_unit"].clone(),meta["location"].clone(),meta.clone(),
+        json!(local_time),json!(relative_seconds),json!(nearest.and_then(|x|first_sample_time.map(|origin|x.0-origin)))];
+    writeln!(target,"{}",values.iter().map(csv_value).collect::<Vec<_>>().join(",")).map_err(|e|e.to_string())?;
+    Ok(FinalMarker { event_id:source["event_id"].as_str().ok_or("事件编号缺失")?.to_owned(),
+        event_time:local_time,sample_index:nearest.map(|x|x.1),alignment_error_ms:error,
+        status:status.to_owned(),relative_seconds })
+}
+
+/// Finalize only MATLAB rows after the EEG writer is closed. Preserve manual
+/// markers, keep a recoverable original, and replace the CSV atomically.
+fn finalize_marker_file(recording: &std::path::Path, alignments: &[FinalMarker]) -> Result<(), String> {
+    if alignments.is_empty() { return Ok(()); }
+    let stem=recording.file_stem().ok_or("记录文件名无效")?.to_string_lossy();
+    let path=recording.with_file_name(format!("{stem}_markers.csv"));
+    if !path.exists() { return Ok(()); }
+    let mut reader=csv::Reader::from_path(&path).map_err(|e|e.to_string())?;
+    let original_headers=reader.headers().map_err(|e|e.to_string())?.clone();
+    let column=|name:&str|original_headers.iter().position(|x|x==name).ok_or_else(||format!("marker 缺少 {name} 列"));
+    let time_col=column("time")?;let participant_col=column("participantId")?;
+    let note_col=column("note")?;let sample_col=column("sampleCount")?;
+    let mut headers=original_headers.clone();
+    let extra=["matlabEventId","matlabAlignmentStatus","matlabAlignmentErrorMs","eventTimeRelativeS"];
+    for name in extra { if !headers.iter().any(|x|x==name) { headers.push_field(name); } }
+    let extra_columns=extra.map(|name|headers.iter().position(|x|x==name).unwrap());
+    let index:HashMap<_,_>=alignments.iter().map(|x|(x.event_id.as_str(),x)).collect();
+    let temporary=path.with_file_name(format!("{stem}_markers_{}.tmp",uuid::Uuid::new_v4()));
+    let file=OpenOptions::new().write(true).create_new(true).open(&temporary).map_err(|e|e.to_string())?;
+    let mut writer=csv::Writer::from_writer(file);
+    writer.write_record(&headers).map_err(|e|e.to_string())?;
+    let mut updated=0usize;
+    for row in reader.records() {
+        let row=row.map_err(|e|e.to_string())?;
+        let mut values=row.iter().map(str::to_owned).collect::<Vec<_>>();values.resize(headers.len(),String::new());
+        if row.get(participant_col)==Some("MATLAB") {
+            if let Some(alignment)=row.get(note_col).and_then(|note|serde_json::from_str::<StimulusEvent>(note).ok())
+                .and_then(|event|index.get(event.event_id.as_str()).copied()) {
+                values[time_col]=alignment.event_time.clone();
+                // Out-of-recording events must not masquerade as valid positions.
+                values[sample_col]=if matches!(alignment.status.as_str(),"before_recording"|"after_recording"|"no_eeg_samples") {
+                    String::new()
+                } else { alignment.sample_index.map(|x|x.to_string()).unwrap_or_default() };
+                values[extra_columns[0]]=alignment.event_id.clone();
+                values[extra_columns[1]]=alignment.status.clone();
+                values[extra_columns[2]]=alignment.alignment_error_ms.map(|x|x.to_string()).unwrap_or_default();
+                values[extra_columns[3]]=alignment.relative_seconds.map(|x|x.to_string()).unwrap_or_default();
+                updated+=1;
+            }
+        }
+        writer.write_record(&values).map_err(|e|e.to_string())?;
+    }
+    drop(reader);writer.flush().map_err(|e|e.to_string())?;
+    writer.get_ref().sync_data().map_err(|e|e.to_string())?;drop(writer);
+    if updated==0 { std::fs::remove_file(&temporary).map_err(|e|e.to_string())?;return Ok(()); }
+    let backup=path.with_file_name(format!("{stem}_markers_before_matlab_alignment.csv"));
+    if !backup.exists() {
+        let mut original=File::open(&path).map_err(|e|e.to_string())?;
+        let mut saved=OpenOptions::new().write(true).create_new(true).open(&backup).map_err(|e|e.to_string())?;
+        std::io::copy(&mut original,&mut saved).map_err(|e|e.to_string())?;
+        saved.sync_data().map_err(|e|e.to_string())?;
+    }
+    std::fs::rename(&temporary,&path).map_err(|e|format!("marker 最终对齐文件已保存，但替换失败（原文件未改）：{e}"))?;
+    Ok(())
 }
 
 fn validate_event(event: &StimulusEvent, clock_id: &str, session: Option<&str>) -> Result<(), String> {
@@ -430,5 +521,78 @@ mod tests {
         let text=std::fs::read_to_string(output).unwrap();
         assert!(text.lines().nth(1).unwrap().contains(",\"2\",\"3\","));
         assert!(text.contains("within_sample_interval"));
+    }
+
+    #[test] fn final_marker_uses_eeg_timezone_and_final_row_and_preserves_manual_markers() {
+        let (mut e,dir)=engine();e.session=Some("session".into());
+        let origin=e.now()-1.0;let mut start=event(&e,1,"start");start.source_time=origin+0.0012;
+        let note=serde_json::to_string(&start).unwrap();let now=e.now();e.event(start,now).unwrap();
+        let raw=dir.join("eeg.csv");let mut file=File::create(&raw).unwrap();
+        writeln!(file,"time,sampleRateHz,valid").unwrap();
+        let offset=chrono::FixedOffset::east_opt(8*3600).unwrap();
+        for i in 0..3 {
+            let time=chrono::DateTime::<chrono::Utc>::from_timestamp_micros(((origin+i as f64*0.002)*1e6).round() as i64).unwrap();
+            writeln!(file,"{},500,true",time.with_timezone(&offset).to_rfc3339_opts(chrono::SecondsFormat::Micros,true)).unwrap();
+        }
+        drop(file);
+        let markers=dir.join("eeg_markers.csv");
+        let mut writer=csv::Writer::from_path(&markers).unwrap();
+        writer.write_record(["time","participantId","label","note","sampleCount","algorithmAction"]).unwrap();
+        let manual=["2026-10-13T10:00:00+08:00","subject","手工标记","保留,逗号\n和换行","17","手工"];
+        writer.write_record(manual).unwrap();
+        writer.write_record(["old UTC time","MATLAB","声刺激开始",&note,"42","MATLAB自动标记"]).unwrap();
+        writer.flush().unwrap();drop(writer);
+        let original=std::fs::read(&markers).unwrap();
+        let alignments=align_journal(&raw,&dir.join("events.jsonl"),&dir.join("aligned.csv")).unwrap();
+        finalize_marker_file(&raw,&alignments).unwrap();
+        let mut reader=csv::Reader::from_path(&markers).unwrap();let headers=reader.headers().unwrap().clone();
+        let column=|name:&str|headers.iter().position(|x|x==name).unwrap();
+        let rows=reader.records().collect::<Result<Vec<_>,_>>().unwrap();
+        assert_eq!(rows[0].iter().take(6).collect::<Vec<_>>(),manual);
+        assert_eq!(&rows[1][column("sampleCount")],"2");
+        assert!(rows[1][column("time")].ends_with("+08:00"));
+        assert_eq!(&rows[1][column("matlabAlignmentStatus")],"within_sample_interval");
+        let final_time=chrono::DateTime::parse_from_rfc3339(&rows[1][column("time")]).unwrap().timestamp_micros() as f64/1e6;
+        assert!((final_time-(origin+0.0012)).abs()<1e-6);
+        assert!((rows[1][column("eventTimeRelativeS")].parse::<f64>().unwrap()-0.0012).abs()<1e-6);
+        assert_eq!(std::fs::read(dir.join("eeg_markers_before_matlab_alignment.csv")).unwrap(),original);
+        drop(reader);
+        finalize_marker_file(&raw,&alignments).unwrap();
+        assert_eq!(std::fs::read(dir.join("eeg_markers_before_matlab_alignment.csv")).unwrap(),original);
+    }
+
+    #[test] fn out_of_recording_marker_has_no_false_sample_index() {
+        let (e,dir)=engine();let source=event(&e,1,"start");
+        let raw=dir.join("eeg.csv");let marker=dir.join("eeg_markers.csv");
+        let mut writer=csv::Writer::from_path(&marker).unwrap();
+        writer.write_record(["time","participantId","note","sampleCount"]).unwrap();
+        writer.write_record(["old","MATLAB",&serde_json::to_string(&source).unwrap(),"42"]).unwrap();
+        writer.flush().unwrap();drop(writer);
+        let alignment=FinalMarker {event_id:source.event_id,event_time:"2026-10-13T10:00:00+08:00".into(),
+            sample_index:Some(42),alignment_error_ms:Some(500.0),status:"before_recording".into(),relative_seconds:Some(-0.5)};
+        finalize_marker_file(&raw,&[alignment]).unwrap();
+        let mut reader=csv::Reader::from_path(&marker).unwrap();let row=reader.records().next().unwrap().unwrap();
+        assert_eq!(&row[3],"");assert!(row.iter().any(|x|x=="before_recording"));
+    }
+
+    #[test] fn aligns_all_supported_rates_without_timezone_shift_or_delivery_delay() {
+        for rate in [125,250,500,1000] {
+            let (mut e,dir)=engine();e.session=Some("session".into());
+            let origin=e.now()-2.0;let target=origin+10.4/rate as f64;
+            let mut source=event(&e,1,"start");source.source_time=target;
+            let now=e.now();e.event(source,now).unwrap();
+            let raw=dir.join("eeg.csv");let mut file=File::create(&raw).unwrap();
+            writeln!(file,"time,sampleRateHz,valid").unwrap();
+            for i in 0..30 {
+                let utc=chrono::DateTime::<chrono::Utc>::from_timestamp_micros(((origin+i as f64/rate as f64)*1e6).round() as i64).unwrap();
+                writeln!(file,"{},{rate},true",utc.with_timezone(&chrono::FixedOffset::east_opt(8*3600).unwrap()).to_rfc3339_opts(chrono::SecondsFormat::Micros,true)).unwrap();
+            }
+            drop(file);
+            let result=align_journal(&raw,&dir.join("events.jsonl"),&dir.join("aligned.csv")).unwrap();
+            assert_eq!(result[0].sample_index,Some(11));
+            assert_eq!(result[0].status,"within_sample_interval");
+            assert!(result[0].alignment_error_ms.unwrap().abs()<=500.0/rate as f64+0.002);
+            assert!(result[0].event_time.ends_with("+08:00"));
+        }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "ifet-eeg-client"
-version = "0.4.0"
+version = "0.5.9"
 description = "iFET EEG desktop BLE client"
 authors = ["iFET"]
 edition = "2021"
@@ -12,8 +12,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 anyhow = "1"
-btleplug = "0.11"
+btleplug = "=0.13.5"
 chrono = { version = "0.4", features = ["serde"] }
+csv = "1"
 ed25519-dalek = "2"
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -10,6 +10,14 @@ afterEach(() => {
 });
 
 describe('SettingsPanel sleep guidance settings', () => {
+  test('display interpolation is explicit, opt-in, and does not alter EEG/BLE settings',()=>{
+    const onChange=vi.fn();render(<SettingsPanel settings={defaultSettings} onChange={onChange}/>);
+    const toggle=screen.getByRole('checkbox',{name:'信号短断点自动插值（仅显示）'});
+    expect(toggle).not.toBeChecked();fireEvent.click(toggle);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({bleSampleRateHz:defaultSettings.bleSampleRateHz,
+      eeg:defaultSettings.eeg,signalDisplay:expect.objectContaining({interpolateGaps:true})}));
+    expect(screen.getByText(/不改变原始记录、LSL、频谱算法或丢包率/)).toBeInTheDocument();
+  });
   test('exposes the main demo controls and persists updates through onChange', () => {
     const onChange = vi.fn();
     const onOpenMusicLibrary = vi.fn();
@@ -74,7 +82,8 @@ describe('SettingsPanel sleep guidance settings', () => {
       .toEqual(['脑电模式', '调试模式', '全部波形']);
 
     fireEvent.click(screen.getByRole('button', { name: '信号' }));
-    expect(screen.getByText('原始滤波（全部波形）')).toBeInTheDocument();
+    expect(screen.getByText(/显示滤波开关与参数已移至每个页面/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('全部波形显示带通（低时延）')).not.toBeInTheDocument();
   });
 
   test('moves infrequent FFF5 command sending into the device settings tab', () => {

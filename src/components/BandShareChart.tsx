@@ -7,6 +7,7 @@ interface BandShareChartProps {
   mode?: string | null;
   visualState?: string | null;
   visualConfidence?: number | null;
+  qualityLabel?: string;
 }
 
 export function BandShareChart({
@@ -14,7 +15,8 @@ export function BandShareChart({
   colors,
   mode,
   visualState,
-  visualConfidence
+  visualConfidence,
+  qualityLabel
 }: BandShareChartProps) {
   const visual = mode === 'state_enhanced_visual_index';
   let start = 0;
@@ -30,11 +32,12 @@ export function BandShareChart({
   return (
     <section className="panel share-panel" aria-label={visual ? '状态增强视觉占比' : '脑电频带占比'}>
       <div className="panel-header">
-        <h2>{visual ? '状态增强视觉占比' : '频带占比'}</h2>
+        <h2>{visual ? '状态增强视觉占比' : mode==='untrusted_preview'?'频带占比（仅供观察）':'频带占比'}</h2>
         <span className="panel-meta">
           {visual
             ? `交互/分期映射 · 非真实功率 · ${visualStateLabel(visualState)}${visualConfidence == null ? '' : ` ${Math.round(visualConfidence * 100)}%`}`
-            : '中位参考 · 模板匹配 · 清醒1/f校正'}
+            : mode==='untrusted_preview'?`观察估计 · 非可信原始功率 · ${qualityLabel??''}`
+              : qualityLabel ?? (mode==='welch_relative_power'?'Welch真实功率 · 四频带内归一化':'历史频带显示')}
         </span>
       </div>
       <div className="share-body">

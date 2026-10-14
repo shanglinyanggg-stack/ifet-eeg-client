@@ -1,10 +1,10 @@
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties,type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import {settingsForSignalPage} from './domain/page-filters';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Activity, Database, Maximize2, Minimize2, Palette, Settings2 } from 'lucide-react';
 import {
-  appendSamples,
   createEegBands,
   EEG_SAMPLE_RATE,
   FilterChain,
@@ -14,7 +14,7 @@ import {
 } from './domain/dsp';
 import { BlinkGestureDetector, type BlinkGestureSnapshot } from './domain/blink-gesture';
 import { mergeAudioTracks, pickAudioTracks, revokeAudioTrack } from './domain/audio-tracks';
-import { createDemoSamples, DEMO_SAMPLE_RATE } from './domain/demo';
+import { createDemoSamples } from './domain/demo';
 import {
   DEFAULT_ALPHA_CALIBRATION_SECONDS,
   DEFAULT_CLOSED_EYE_CALIBRATION_SECONDS,
@@ -65,11 +65,14 @@ import {
   type SleepDemoStepRequest,
   type SleepStagingStepRequest
 } from './domain/sleep-staging-stream';
-import { calculateSleepMetrics, type SleepMetrics } from './domain/sleep-metrics';
-import { applyRobustMedianReference } from './domain/eeg-reference';
+import type { SleepMetrics } from './domain/sleep-metrics';
+import { spectralSleepMetrics } from './domain/robust-eeg';
+import {useRobustEegAnalysis} from './hooks/useRobustEegAnalysis';
+import {lowerTimestamp,timeWindow} from './domain/display-window';
+import type {BleDiagnostics} from './domain/ble-diagnostics';
+import {NativeDisplayHistory,displaySnapshotSeconds} from './domain/native-display-history';
+import { emptyPersonalDrowsinessSnapshot, PersonalDrowsinessEstimator } from './domain/personal-drowsiness';
 import {
-  createWearableDrowsinessSnapshot,
-  QualityGatedWearableDrowsinessEstimator,
   type WearableDrowsinessSnapshot
 } from './domain/wearable-drowsiness';
 import {
@@ -81,9 +84,7 @@ import {
   type ThemeName
 } from './domain/settings';
 import { SampleBatcher } from './domain/sample-batcher';
-import { filterPpgDisplayWindow } from './domain/debug-signal';
 import type { SleepDeltaArtifactContext } from './domain/delta-artifact-filter';
-import { matchedFilterSleepTheta } from './domain/theta-matched-filter';
 import {
   connectionCandidates,
   filterTdDevices,
@@ -114,6 +115,10 @@ import { EegModeView } from './components/EegModeView';
 import { MusicLibraryModal } from './components/MusicLibraryModal';
 import { PureWaveformView } from './components/PureWaveformView';
 import { SettingsPanel } from './components/SettingsPanel';
+import {WorkbenchShell,type WorkbenchView} from './components/WorkbenchShell';
+import {SignalDisplayProvider} from './components/SignalDisplayProvider';
+import {MatlabBridgeSection} from './components/MatlabBridgeSection';
+import {LslSettingsSection} from './components/LslSettingsSection';
 import { ThemedSelect } from './components/ThemedSelect';
 import { WaveformCanvas } from './components/WaveformCanvas';
 import { useMusicPlayer } from './hooks/useMusicPlayer';
@@ -121,12 +126,12 @@ import { formatRecordingDuration } from './domain/recording-time';
 import { formatBatterySummary } from './domain/battery';
 import { initialLslStatus, type LslStatus } from './domain/lsl';
 import {
-  decimateDisplayValues,
-  DISPLAY_PROCESSING_SAMPLE_RATE_HZ,
   resolveDisplaySampleRate
 } from './domain/display-decimation';
 
-const BUFFER_SECONDS = 12;
+// 60 s user-selectable display plus up to 5 s display delay. Recording is
+// still written by Rust before these strictly bounded UI buffers.
+const BUFFER_SECONDS = 65;
 // 10 FPS 足以连续观察 EEG；正常负载下算法接收全部样本，CSV 始终由后端完整记录。
 const SAMPLE_FLUSH_INTERVAL_MS = 100;
 // 前端最多积压 2 秒的 1 kHz 绘图样本。CSV 已由 Rust 后端先写入，
@@ -138,7 +143,6 @@ const MAX_PENDING_STAGING_CHUNKS = 7;
 const MAX_PENDING_DEMO_CHUNKS = 6;
 const MAX_DEBUG_EVENT_KEYS = 1_000;
 const allChannels = Object.keys(channelLabels) as ChannelKey[];
-const DROWSINESS_BANDS = createEegBands();
 
 type ChannelBuffers = Record<ChannelKey, TimedValue[]>;
 type AppStyle = CSSProperties & {
@@ -211,11 +215,11 @@ export function extractChannelValues(event: SampleEvent): Partial<Record<Channel
 }
 
 function mergeSampleEvents(
-  current: ChannelBuffers,
+  history:NativeDisplayHistory<ChannelKey>,
   events: SampleEvent[],
-  sampleRateHz: number
+  sampleRateHz: number,
+  snapshotSeconds:number
 ): ChannelBuffers {
-  const next: ChannelBuffers = { ...current };
   const pending = allChannels.reduce((acc, channel) => {
     acc[channel] = [];
     return acc;
@@ -225,23 +229,12 @@ function mergeSampleEvents(
     const values = extractChannelValues(event);
     for (const [channel, value] of Object.entries(values) as [ChannelKey, number | undefined][]) {
       if (typeof value === 'number') {
-        pending[channel].push({ timestamp, value });
+        pending[channel].push({ timestamp, value, valid: event.valid !== false,observed:event.observed });
       }
     }
   }
-  for (const channel of allChannels) {
-    const displayValues = decimateDisplayValues(
-      current[channel][current[channel].length - 1]?.timestamp,
-      pending[channel],
-      sampleRateHz
-    );
-    next[channel] = appendSamples(
-      current[channel],
-      displayValues,
-      DISPLAY_PROCESSING_SAMPLE_RATE_HZ * BUFFER_SECONDS
-    );
-  }
-  return next;
+  history.append(pending,sampleRateHz);
+  return history.snapshot(snapshotSeconds);
 }
 
 function mergeDeviceFlags(current: DeviceFlagRecord[], events: SampleEvent[]): DeviceFlagRecord[] {
@@ -296,16 +289,15 @@ function blinkSnapshotFromResponse(
 export default function App() {
   const blinkDetector = useRef(new BlinkGestureDetector());
   const linkQualityMonitor = useRef(new RollingLinkQualityMonitor());
-  const wearableDrowsinessEstimator = useRef(new QualityGatedWearableDrowsinessEstimator());
-  const wearableBandFilters = useRef(
-    Array.from({ length: 2 }, () => DROWSINESS_BANDS.map(() => new StreamingFilterCache()))
-  );
+  const wearableDrowsinessEstimator = useRef(new PersonalDrowsinessEstimator());
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [viewport, setViewport] = useState(() => getViewportSize());
   const [buffers, setBuffers] = useState<ChannelBuffers>(() => createEmptyBuffers());
+  const nativeDisplayHistory=useRef(new NativeDisplayHistory(allChannels,BUFFER_SECONDS));
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [connected, setConnected] = useState(false);
+  const [bleDiagnostics,setBleDiagnostics]=useState<BleDiagnostics|null>(null);
   const [scanning, setScanning] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
@@ -328,10 +320,17 @@ export default function App() {
     settings.bleSampleRateHz
   );
   const [sampleRatePending, setSampleRatePending] = useState(false);
+  const commandedSampleRate = useRef<BleSampleRate | null>(null);
   const [lslStatus, setLslStatus] = useState<LslStatus>(initialLslStatus);
   const [lslPending, setLslPending] = useState(false);
   const displaySampleRateHz = resolveDisplaySampleRate(activeSampleRateHz);
-  const [settingsOpen, setSettingsOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection,setSettingsSection]=useState<'general'|'signal'|'sleep'|'device'|'lsl'|'matlab'>('general');
+  const [workbenchView,setWorkbenchView]=useState<WorkbenchView>(()=>settings.acquisitionMode?'acquisition':
+    settings.displayMode==='normal'?'normal':settings.displayMode==='debug'?'debug':'eeg');
+  useEffect(()=>{setWorkbenchView(view=>settings.acquisitionMode?(view==='sync'?'sync':'acquisition'):
+    view==='acquisition'?'eeg':view);},[settings.acquisitionMode]);
+  useEffect(()=>{if(!settings.acquisitionMode)setWorkbenchView(view=>view==='sleep'||view==='sync'?view:settings.displayMode);},[settings.displayMode]);
   const [fullscreen, setFullscreen] = useState(false);
   const [musicLibraryOpen, setMusicLibraryOpen] = useState(false);
   const [sampleCount, setSampleCount] = useState(0);
@@ -347,7 +346,7 @@ export default function App() {
   const [warmupRemaining, setWarmupRemaining] = useState(0);
   const [sleepMetrics, setSleepMetrics] = useState<SleepMetrics | null>(null);
   const [wearableDrowsiness, setWearableDrowsiness] = useState<WearableDrowsinessSnapshot>(
-    createWearableDrowsinessSnapshot
+    emptyPersonalDrowsinessSnapshot
   );
   const sleepConfig = useMemo(
     () => toSleepSessionConfig(settings),
@@ -825,20 +824,25 @@ export default function App() {
   }, []);
 
   const processAlgorithmSamples = useCallback((events: SampleEvent[]) => {
-    if (events.length === 0 || settings.acquisitionMode) return;
+    if (events.length === 0 || settings.acquisitionMode || !settings.sleepMusic.serviceEnabled) return;
     enqueueSleepChunks(sleepAssembler.current.pushMany(events));
     enqueueSleepDemoChunks(sleepDemoAssembler.current.pushMany(events));
-  }, [enqueueSleepChunks, enqueueSleepDemoChunks, settings.acquisitionMode]);
+  }, [enqueueSleepChunks, enqueueSleepDemoChunks, settings.acquisitionMode,settings.sleepMusic.serviceEnabled]);
 
   const flushSamples = useCallback((events: SampleEvent[]) => {
     if (events.length === 0) return;
     const eventSampleRate = normalizeBleSampleRate(events[events.length - 1].sampleRateHz);
     setActiveSampleRateHz(eventSampleRate);
-    setBuffers((current) => mergeSampleEvents(current, events, eventSampleRate));
+    const currentSettings=settingsRef.current;
+    setBuffers(mergeSampleEvents(nativeDisplayHistory.current,events,eventSampleRate,
+      displaySnapshotSeconds(currentSettings.eeg.timeWindowSeconds,currentSettings.displayDelayMs)));
     setDeviceFlags((current) => mergeDeviceFlags(current, events));
     setSampleCount((count) => count + events.length);
     setInvalidSampleCount((count) => count + events.filter((event) => event.valid === false).length);
   }, []);
+
+  useEffect(()=>{setBuffers(nativeDisplayHistory.current.snapshot(
+    displaySnapshotSeconds(settings.eeg.timeWindowSeconds,settings.displayDelayMs)));},[settings.eeg.timeWindowSeconds,settings.displayDelayMs]);
 
   useEffect(() => {
     sampleBatcher.current = new SampleBatcher({
@@ -857,6 +861,11 @@ export default function App() {
   }, [flushSamples]);
 
   const pushSamples = useCallback((events: SampleEvent[]) => {
+    // A late UI event emitted before a successful rate command must not
+    // reinstate the old display timebase. Native recording is unaffected.
+    if (!settings.demoMode && commandedSampleRate.current !== null) {
+      events = events.filter(event => normalizeBleSampleRate(event.sampleRateHz) === commandedSampleRate.current);
+    }
     if (events.length === 0) return;
     const eventSampleRate = normalizeBleSampleRate(events[events.length - 1].sampleRateHz);
     setLinkQuality(linkQualityMonitor.current.push(events, eventSampleRate));
@@ -869,20 +878,30 @@ export default function App() {
       return;
     }
     flushSamples(events);
-  }, [flushSamples, processAlgorithmSamples]);
+  }, [flushSamples, processAlgorithmSamples, settings.demoMode]);
 
-  // 演示模式：以与真机一致的 125 Hz 注入模拟样本。
+  // Demo follows the selected native rate as well, rather than always 125 Hz.
   useEffect(() => {
     if (!settings.demoMode) return;
     setStatus('演示模式：模拟数据流入');
     const intervalMs = 40;
-    const perTick = Math.max(1, Math.round((intervalMs / 1000) * DEMO_SAMPLE_RATE));
+    const rate=settings.bleSampleRateHz;
+    nativeDisplayHistory.current.reset();setBuffers(createEmptyBuffers());
+    setActiveSampleRateHz(rate);
+    setSampleCount(0);
+    setInvalidSampleCount(0);
+    setLinkQuality(linkQualityMonitor.current.reset());
+    let lastTick=performance.now();
     const timer = window.setInterval(() => {
-      const events = createDemoSamples(perTick);
+      const now=performance.now();
+      const elapsed=Math.min(1000,Math.max(1,now-lastTick));lastTick=now;
+      // Web previews can throttle background timers. Generate the elapsed
+      // samples, not a fixed 40 ms block that silently changes the timebase.
+      const events = createDemoSamples(Math.max(1,Math.round(elapsed*rate/1000)),rate);
       pushSamples(events);
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [pushSamples, settings.demoMode]);
+  }, [pushSamples, settings.demoMode,settings.bleSampleRateHz]);
 
   // 预热倒计时：连接后等待电极稳定，期间提示用户
   const startWarmup = useCallback(() => {
@@ -897,12 +916,10 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [warmupRemaining]);
 
-  const applySampleRateCommand = useCallback(async (sampleRateHz: BleSampleRate): Promise<boolean> => {
-    setSampleRatePending(true);
-    setStatus(`正在向 FFF5 写入 ${sampleRateCommandText(sampleRateHz)}`);
-    try {
-      await invokeCommand('set_sample_rate', { sampleRateHz });
-      sampleBatcher.current?.flush();
+  const resetAfterSampleRate=useCallback((sampleRateHz:BleSampleRate)=>{
+      setBleDiagnostics(null);
+      commandedSampleRate.current = sampleRateHz;
+      sampleBatcher.current?.clear();
       sleepAssembler.current.setInputSampleRate(sampleRateHz);
       sleepAssembler.current.reset(sleepAssembler.current.currentSessionId);
       sleepDemoAssembler.current.setInputSampleRate(sampleRateHz);
@@ -911,15 +928,22 @@ export default function App() {
       lastBlinkSampleTimestamp.current = 0;
       normalFilterCaches.clear();
       wearableDrowsinessEstimator.current.reset();
-      setBuffers(createEmptyBuffers());
+      nativeDisplayHistory.current.reset();setBuffers(createEmptyBuffers());
       setDeviceFlags([]);
       setSampleCount(0);
       setInvalidSampleCount(0);
       setLinkQuality(linkQualityMonitor.current.reset());
       setActiveSampleRateHz(sampleRateHz);
       setBlinkSnapshot(blinkDetector.current.snapshot());
-      setWearableDrowsiness(createWearableDrowsinessSnapshot());
-      setStatus(`采样率已设置为 ${formatSampleRate(sampleRateHz)}（${sampleRateCommandText(sampleRateHz)}）`);
+      setWearableDrowsiness(emptyPersonalDrowsinessSnapshot());
+  },[]);
+  const applySampleRateCommand = useCallback(async (sampleRateHz: BleSampleRate): Promise<boolean> => {
+    setSampleRatePending(true);
+    setStatus(`正在向 FFF5 写入 ${sampleRateCommandText(sampleRateHz)}`);
+    try {
+      await invokeCommand('set_sample_rate', { sampleRateHz });
+      resetAfterSampleRate(sampleRateHz);
+      setStatus(`已按TD新协议发送 ${formatSampleRate(sampleRateHz)}（仅72命令）；实收率需真机确认，不软件补点`);
       return true;
     } catch (error) {
       setStatus(`采样率设置失败：${String(error)}`);
@@ -927,7 +951,7 @@ export default function App() {
     } finally {
       setSampleRatePending(false);
     }
-  }, []);
+  }, [resetAfterSampleRate]);
 
   // 自动重连：仅在开启 autoReconnect 且有上次连接的设备时触发
   const reconnectTimer = useRef<number | undefined>(undefined);
@@ -944,17 +968,17 @@ export default function App() {
       try {
         setStatus('正在自动重连设备');
         setBatteryStatus(null);
-        await invokeCommand('connect_device', { deviceId });
+        await invokeCommand('connect_device', { deviceId,sampleRateHz:settingsRef.current.bleSampleRateHz });
         setConnected(true);
         reconnectAttempt.current = 0;
-        await applySampleRateCommand(settingsRef.current.bleSampleRateHz);
+        resetAfterSampleRate(settingsRef.current.bleSampleRateHz);
         startWarmup();
       } catch (error) {
         setStatus(`自动重连失败: ${error}`);
         handleUnexpectedDisconnect();
       }
     }, delay);
-  }, [applySampleRateCommand, settings.autoReconnect, startWarmup]);
+  }, [resetAfterSampleRate, settings.autoReconnect, startWarmup]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -991,11 +1015,14 @@ export default function App() {
       }
     });
 
+    listen<BleDiagnostics>('ble://diagnostics',event=>{if(!cancelled)setBleDiagnostics(event.payload);})
+      .then(unlisten=>{if(cancelled)unlisten();else unlisteners.push(unlisten);});
     listen<StatusEvent>('ble://status', (event) => {
       if (cancelled) return;
       setConnected(event.payload.connected);
       setStatus(event.payload.message);
       if (!event.payload.connected) {
+        setBleDiagnostics(null);
         setBatteryStatus(null);
         setLinkQuality(linkQualityMonitor.current.reset());
         handleUnexpectedDisconnect();
@@ -1017,7 +1044,6 @@ export default function App() {
   const visibleBuffers = useMemo(() => {
     const result: ChannelBuffers = { ...buffers };
     const delayMs = clamp(settings.displayDelayMs, 0, 5_000);
-    if (typeof settings.eeg.timeWindowSeconds !== 'number' && delayMs === 0) return result;
     // 时间窗基准：取所有通道中最新的时间戳，避免绑定单一 EEG 通道
     let last = 0;
     for (const channel of allChannels) {
@@ -1028,11 +1054,9 @@ export default function App() {
     const displayAnchor = last - delayMs;
     const minTime = typeof settings.eeg.timeWindowSeconds === 'number'
       ? displayAnchor - settings.eeg.timeWindowSeconds * 1000
-      : Number.NEGATIVE_INFINITY;
+      : displayAnchor - 10_000;
     for (const channel of allChannels) {
-      result[channel] = buffers[channel].filter(
-        (item) => item.timestamp >= minTime && item.timestamp <= displayAnchor
-      );
+      result[channel] = timeWindow(buffers[channel],minTime,displayAnchor);
     }
     return result;
   }, [buffers, settings.displayDelayMs, settings.eeg.timeWindowSeconds]);
@@ -1080,57 +1104,29 @@ export default function App() {
     };
   }, [buffers, sleepDemoService.lastResponse]);
 
-  const wearableMetrics = useMemo<SleepMetrics | null>(() => {
-    if (settings.acquisitionMode) return null;
-    const referenceChannels = [buffers.eeg1, buffers.eeg2, buffers.eeg3, buffers.eeg4];
-    const priorityChannels = [buffers.eeg1, buffers.eeg2];
-    const channelMetrics = priorityChannels.flatMap((selected, channelIndex) => {
-      const analysisSamples = displaySampleRateHz * 10;
-      if (selected.length < analysisSamples) return [];
-      const referenced = applyRobustMedianReference(selected, referenceChannels).slice(-analysisSamples);
-      const bands = DROWSINESS_BANDS.map((definition, bandIndex) => {
-        const filtered = wearableBandFilters.current[channelIndex][bandIndex].update(
-          `wearable|eeg${channelIndex + 1}|${definition.low}|${definition.high}|${settings.eeg.notch}|${displaySampleRateHz}`,
-          referenced,
-          () => FilterChain.firBandpass({
-            low: definition.low,
-            high: definition.high,
-            sampleRate: displaySampleRateHz,
-            notch: settings.eeg.notch
-          })
-        );
-        return {
-          label: definition.label,
-          values: definition.key === 'theta'
-            ? matchedFilterSleepTheta(
-              filtered,
-              referenced,
-              displaySampleRateHz,
-              spectralArtifactContext,
-              { lowHz: definition.low, highHz: definition.high }
-            ).values
-            : filtered
-        };
-      });
-      return [calculateSleepMetrics({
-        rawValues: referenced,
-        bands,
-        spindleValues: [],
-        sampleRate: displaySampleRateHz
-      })];
-    });
-    return channelMetrics.length > 0 ? averageDrowsinessMetrics(channelMetrics) : null;
-  }, [buffers, displaySampleRateHz, settings.acquisitionMode, settings.eeg.notch, spectralArtifactContext]);
+  // Never spend two additional PSD workers on a stream known to contain mostly
+  // compatibility reconstruction; these controls cannot become valid anyway.
+  const measuredCadenceSufficient=settings.demoMode||!connected||!bleDiagnostics
+    ||(bleDiagnostics.usableEegSampleRateHz??bleDiagnostics.observedSampleRateHz)>=activeSampleRateHz*.8;
+  const drowsinessActive=!settings.acquisitionMode&&measuredCadenceSufficient&&(workbenchView!=='normal'||sleepGuidanceActive);
+  const wearableAnalysis1=useRobustEegAnalysis(`drowsiness|${selectedDeviceId}|eeg1`,buffers.eeg1,
+    displaySampleRateHz,settings.eeg,spectralArtifactContext,drowsinessActive);
+  const wearableAnalysis2=useRobustEegAnalysis(`drowsiness|${selectedDeviceId}|eeg2`,buffers.eeg2,
+    displaySampleRateHz,settings.eeg,spectralArtifactContext,drowsinessActive);
+  const wearableAnalysis=useMemo(()=>drowsinessActive?[wearableAnalysis1,wearableAnalysis2]:null,
+    [drowsinessActive,wearableAnalysis1,wearableAnalysis2]);
+  const wearableMetrics = useMemo(()=>wearableAnalysis
+    ? averageDrowsinessMetrics(wearableAnalysis.map(spectralSleepMetrics)):null,[wearableAnalysis]);
 
   useEffect(() => {
     wearableDrowsinessEstimator.current.reset();
-    setWearableDrowsiness(createWearableDrowsinessSnapshot());
-  }, [selectedDeviceId]);
+    setWearableDrowsiness(emptyPersonalDrowsinessSnapshot());
+  }, [selectedDeviceId,activeSampleRateHz,settings.eeg.bandRanges]);
 
   useEffect(() => {
     if (settings.acquisitionMode) {
       wearableDrowsinessEstimator.current.reset();
-      setWearableDrowsiness(createWearableDrowsinessSnapshot());
+      setWearableDrowsiness(emptyPersonalDrowsinessSnapshot());
       return;
     }
     if (!wearableMetrics) return;
@@ -1139,34 +1135,23 @@ export default function App() {
       buffers.eeg2[buffers.eeg2.length - 1]?.timestamp ?? 0
     );
     if (!Number.isFinite(timestampMs)) return;
-    const staging = sleepService.lastResponse;
-    const modelProbability = staging?.decision_valid
-      ? staging.selected_sleep_probability
-      : null;
-    const quality = staging?.coverage
-      ?? sleepDemoService.lastResponse?.telemetry.signal_quality
-      ?? (connected ? 1 : 0);
-    const allowAlertBaselineUpdate = !sleepGuidanceActive
-      && (!staging?.decision_valid || staging.selected_stage === 'W'
-        || (modelProbability !== null && modelProbability < 0.45));
-    setWearableDrowsiness(wearableDrowsinessEstimator.current.update({
-      metrics: wearableMetrics,
-      timestampMs: Number(timestampMs),
-      modelProbability,
-      quality,
-      allowAlertBaselineUpdate,
-      awakeConfirmed: staging?.decision_valid && staging.selected_stage === 'W'
-    }));
+    const qualityAccepted=(connected||settings.demoMode)&&wearableAnalysis?.every(snapshot=>snapshot.qualityAccepted)===true;
+    setWearableDrowsiness(wearableDrowsinessEstimator.current.update(wearableMetrics,Number(timestampMs),qualityAccepted));
   }, [
     connected,
     settings.acquisitionMode,
     buffers.eeg1,
     buffers.eeg2,
-    sleepDemoService.lastResponse?.telemetry.signal_quality,
-    sleepGuidanceActive,
-    sleepService.lastResponse,
+    settings.demoMode,
+    wearableAnalysis,
     wearableMetrics
   ]);
+  const handleDrowsinessCalibration=useCallback(()=>{
+    if(settingsRef.current.acquisitionMode){setStatus('数据采集模式不运行困意基线测量');return;}
+    const timestamp=Math.max(buffers.eeg1[buffers.eeg1.length-1]?.timestamp??0,buffers.eeg2[buffers.eeg2.length-1]?.timestamp??0);
+    if(!timestamp){setStatus('请先连接头戴设备并确认EEG1、EEG2信号');return;}
+    setWearableDrowsiness(wearableDrowsinessEstimator.current.startCalibration(timestamp));
+  },[buffers.eeg1,buffers.eeg2]);
 
   const stopContinuousScan = (message?: string) => {
     if (!scanActive.current) return;
@@ -1187,7 +1172,8 @@ export default function App() {
     setConnected(true);
     setScanning(false);
     setStatus(`设备已连接：${device.name}，正在设置采样率`);
-    await applySampleRateCommand(settingsRef.current.bleSampleRateHz);
+    resetAfterSampleRate(settingsRef.current.bleSampleRateHz);
+    setStatus(`设备已连接：${device.name} · ${formatSampleRate(settingsRef.current.bleSampleRateHz)}`);
     startWarmup();
   };
 
@@ -1235,7 +1221,7 @@ export default function App() {
           setStatus(`发现 ${device.name}，正在自动连接`);
           try {
             setBatteryStatus(null);
-            await invokeCommand('connect_device', { deviceId: device.id });
+            await invokeCommand('connect_device', { deviceId: device.id,sampleRateHz:settingsRef.current.bleSampleRateHz });
             // 后端已经完成连接时，即便用户恰好点击“停止扫描”，也必须同步真实连接状态。
             await finishConnection(device);
             return;
@@ -1263,7 +1249,7 @@ export default function App() {
     try {
       setStatus('正在连接设备');
       setBatteryStatus(null);
-      await invokeCommand('connect_device', { deviceId: selectedDeviceId });
+      await invokeCommand('connect_device', { deviceId: selectedDeviceId,sampleRateHz:settingsRef.current.bleSampleRateHz });
       const device = devices.find((item) => item.id === selectedDeviceId) ?? {
         id: selectedDeviceId,
         name: selectedDeviceId,
@@ -1286,11 +1272,18 @@ export default function App() {
       }
       await invokeCommand('disconnect_device');
       setConnected(false);
+      setBleDiagnostics(null);
       setBatteryStatus(null);
       setLinkQuality(linkQualityMonitor.current.reset());
       setStatus('已断开连接');
     } catch (error) {
-      setStatus(String(error));
+      // The backend has stopped local readers even when macOS has not
+      // confirmed link release. Do not keep presenting stale data as online.
+      setConnected(false);
+      setBleDiagnostics(null);
+      setBatteryStatus(null);
+      setLinkQuality(linkQualityMonitor.current.reset());
+      setStatus(`本地接收已停止，蓝牙连接释放未确认：${String(error)}`);
     }
   };
 
@@ -1440,6 +1433,8 @@ export default function App() {
   }, [debugBlinkTrial?.status, debugParticipantId, handleDebugMarker, recording]);
 
   const normalWaveforms = useMemo(() => {
+    if(workbenchView!=='normal')return [];
+    const displaySettings=settingsForSignalPage(settings,'normal');
     return allChannels
       .filter((channel) => settings.visibleChannels[channel])
       .map((channel) => ({
@@ -1451,13 +1446,13 @@ export default function App() {
             values: applyNormalFilters(
               visibleBuffers[channel],
               channel,
-              settings,
+              displaySettings,
               displaySampleRateHz
             )
           }
         ]
       }));
-  }, [displaySampleRateHz, visibleBuffers, settings]);
+  }, [displaySampleRateHz, visibleBuffers, settings,workbenchView]);
 
   const handleSelectSleepTrack = useCallback((trackId: string) => {
     setSettings((current) => ({
@@ -1932,7 +1927,12 @@ export default function App() {
   }, [musicPlayer.pause]);
 
   useEffect(() => {
-    if (!settings.acquisitionMode) return;
+    if (!settings.acquisitionMode) {
+      setSleepGuidanceMessage((message) => message === '数据采集模式：音乐引导与全部实时算法已关闭'
+        ? '请完成基线测量并选择音乐，然后点击开始助眠'
+        : message);
+      return;
+    }
     setSleepGuidanceActive(false);
     setSleepGuidanceMessage('数据采集模式：音乐引导与全部实时算法已关闭');
     setSleepSession(createSleepSessionState(toSleepSessionConfig(settingsRef.current)));
@@ -2094,7 +2094,7 @@ export default function App() {
 
     setSleepSession((current) => advanceSleepSession(current, {
       timestampMs: Date.now(),
-      signalValid: quality.valid,
+      signalValid: quality.valid&&(onlineDemoSignal!==null||wearableAnalysis?.every(snapshot=>snapshot.qualityAccepted)===true),
       coverage: quality.coverage,
       alphaRelative: sleepMetrics?.alphaRelative
         ?? onlineDemoSignal?.telemetry.alpha_ratio
@@ -2121,7 +2121,8 @@ export default function App() {
     sleepMetrics,
     onlineDemoSignal,
     sleepService,
-    wearableMetrics
+    wearableMetrics,
+    wearableAnalysis
   ]);
 
   const usingOnlineDemoDetector = onlineDemoSignal !== null;
@@ -2291,13 +2292,14 @@ export default function App() {
     if (settings.acquisitionMode || usingOnlineDemoDetector) return;
     const localState = blinkDetector.current.snapshot();
     if (!settings.sleepMusic.blinkControlEnabled && localState.calibrationStatus !== 'running') return;
-    const eeg1 = buffers.eeg1;
-    const eeg2ByTime = new Map(buffers.eeg2.map((point) => [point.timestamp, point.value]));
-    const eeg3ByTime = new Map(buffers.eeg3.map((point) => [point.timestamp, point.value]));
-    const eeg4ByTime = new Map(buffers.eeg4.map((point) => [point.timestamp, point.value]));
-    const accXByTime = new Map(buffers.accX.map((point) => [point.timestamp, point.value]));
-    const accYByTime = new Map(buffers.accY.map((point) => [point.timestamp, point.value]));
-    const accZByTime = new Map(buffers.accZ.map((point) => [point.timestamp, point.value]));
+    const eeg1 = buffers.eeg1.slice(lowerTimestamp(buffers.eeg1,lastBlinkSampleTimestamp.current,true));
+    const recent=(values:TimedValue[])=>values.slice(lowerTimestamp(values,lastBlinkSampleTimestamp.current,true));
+    const eeg2ByTime = new Map(recent(buffers.eeg2).map((point) => [point.timestamp, point]));
+    const eeg3ByTime = new Map(recent(buffers.eeg3).map((point) => [point.timestamp, point]));
+    const eeg4ByTime = new Map(recent(buffers.eeg4).map((point) => [point.timestamp, point]));
+    const accXByTime = new Map(recent(buffers.accX).map((point) => [point.timestamp, point.value]));
+    const accYByTime = new Map(recent(buffers.accY).map((point) => [point.timestamp, point.value]));
+    const accZByTime = new Map(recent(buffers.accZ).map((point) => [point.timestamp, point.value]));
     let newestTimestamp = lastBlinkSampleTimestamp.current;
     for (const point of eeg1) {
       if (point.timestamp <= lastBlinkSampleTimestamp.current) continue;
@@ -2315,9 +2317,10 @@ export default function App() {
       const accZ = accZByTime.get(point.timestamp) ?? 0;
       const motion = Math.sqrt(accX * accX + accY * accY + accZ * accZ);
       blinkDetector.current.push(
-        [signedU24(point.value), signedU24(eeg2), signedU24(eeg3), signedU24(eeg4)],
+        [point.value, eeg2.value, eeg3.value, eeg4.value],
         point.timestamp,
-        true,
+        point.valid!==false&&point.observed!==false&&eeg2.valid!==false&&eeg2.observed!==false
+          &&eeg3.valid!==false&&eeg3.observed!==false&&eeg4.valid!==false&&eeg4.observed!==false,
         motion
       );
       newestTimestamp = Math.max(newestTimestamp, point.timestamp);
@@ -2412,6 +2415,7 @@ export default function App() {
     onOpenEyeCalibration: () => handleAlphaCalibration('open-eye'),
     onClosedEyeCalibration: () => handleAlphaCalibration('closed-eye'),
     onBlinkCalibration: handleBlinkCalibration,
+    onDrowsinessCalibration:handleDrowsinessCalibration,
     guidanceActive: sleepGuidanceActive,
     guidanceMessage: sleepGuidanceMessage,
     onStartGuidance: handleStartSleepGuidance,
@@ -2444,334 +2448,113 @@ export default function App() {
     />
   );
 
-  if (settings.showChartsOnly) {
-    return (
-      <main className="app-shell pure-shell" data-theme={settings.theme} data-density={density} style={appStyle}>
-        <PureWaveformView
-          values={visibleBuffers[settings.eeg.selectedChannel]}
-          settings={settings}
-          onChange={setSettings}
-          onExit={() => setSettings((value) => ({ ...value, showChartsOnly: false }))}
-          onToggleFullscreen={handleToggleFullscreen}
-          connected={connected}
-          status={status}
-          sampleCount={sampleCount}
-          sampleRateHz={displaySampleRateHz}
-          acquisitionSampleRateHz={activeSampleRateHz}
-          linkQuality={linkQuality}
-          batteryStatus={batteryStatus}
-          recording={recording}
-          recordingElapsedSeconds={recordingElapsedSeconds}
-          sleepPreventionActive={powerPrevention.active}
-          warmupRemaining={warmupRemaining}
-          onSleepMetrics={handleSleepMetrics}
-          musicPanel={musicPanel}
-          deviceFlags={deviceFlags}
-          algorithmAction={lastAlgorithmAction}
-          deltaArtifactContext={deltaArtifactContext}
-        />
-        {musicLibrary}
-      </main>
-    );
-  }
-
-  return (
-    <main className="app-shell" data-theme={settings.theme} data-density={density} style={appStyle}>
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-icon">
-            <Activity size={22} />
-          </span>
-          <div className="brand-text">
-            <h1>iFET EEG · MATLAB Bridge</h1>
-            <span className="status-chip">
-              {sampleCount} samples
-              {connected
-                ? linkQuality.ready
-                  ? <>
-                      <em>· 10s 实收 {linkQuality.effectiveSampleRateHz.toFixed(1)}/{formatSampleRate(activeSampleRateHz)}</em>
-                      <em>· 丢包 {linkQuality.lossRatePercent.toFixed(1)}%</em>
-                    </>
-                  : <em>· 10s 采样统计中 / 目标 {formatSampleRate(activeSampleRateHz)}</em>
-                : <em>· 目标 {formatSampleRate(activeSampleRateHz)}</em>}
-              {connected && <em>· 电量 {batteryStatus
-                ? formatBatterySummary(batteryStatus)
-                : '等待上报'}</em>}
-              {recording && <em>· 记录 {formatRecordingDuration(recordingElapsedSeconds)}</em>}
-              {batteryRecording && <em>· 电压记录中</em>}
-              {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
-              {settings.acquisitionMode && <em>· 数据采集模式</em>}
-              {powerPrevention.active && <em>· Windows 防睡眠已开启</em>}
-            </span>
-          </div>
-        </div>
-        <div className="topbar-actions">
-          <button
-            className={`icon-button acquisition-mode-toggle ${settings.acquisitionMode ? 'is-active' : ''}`}
-            type="button"
-            aria-pressed={settings.acquisitionMode}
-            onClick={() => setSettings((value) => ({
-              ...value,
-              acquisitionMode: !value.acquisitionMode,
-              showChartsOnly: value.acquisitionMode ? value.showChartsOnly : false
-            }))}
-            title="仅保留采集、记录、人工标记和基础频带显示"
-          >
-            <Database size={18} />
-            <span>{settings.acquisitionMode ? '退出采集模式' : '数据采集模式'}</span>
-          </button>
-          <div className="theme-switcher">
-            <Palette size={17} />
-            <span>主题</span>
-            <ThemedSelect
-              ariaLabel="界面主题"
-              value={settings.theme}
-              options={themeOptions}
-              onChange={(theme) => setSettings((value) => ({ ...value, theme: theme as ThemeName }))}
-            />
-          </div>
-          <button
-            className="icon-button"
-            type="button"
-            onClick={() => void handleToggleFullscreen()}
-            title={fullscreen ? '退出全屏 (F11)' : '进入全屏 (F11)'}
-          >
-            {fullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-            <span>{fullscreen ? '退出全屏' : '全屏'}</span>
-          </button>
-          <button
-            className="icon-button"
-            type="button"
-            aria-expanded={settingsOpen}
-            onClick={() => setSettingsOpen((value) => !value)}
-          >
-            <Settings2 size={18} />
-            <span>设置</span>
-          </button>
-        </div>
-      </header>
-
-      {!settings.showChartsOnly && (
-        <DevicePanel
-          devices={devices}
-          connected={connected}
-          scanning={scanning}
-          recording={recording}
-          recordingPending={recordingPending}
-          recordingElapsedSeconds={recordingElapsedSeconds}
-          batteryRecording={batteryRecording}
-          batteryRecordingPending={batteryRecordingPending}
-          batteryRecordPath={batteryRecordPath}
-          selectedDeviceId={selectedDeviceId}
-          selectedSampleRateHz={settings.bleSampleRateHz}
-          activeSampleRateHz={activeSampleRateHz}
-          sampleRatePending={sampleRatePending}
-          batteryStatus={batteryStatus}
-          status={status}
-          recordPath={recordPath}
-          onSelectedDeviceChange={(deviceId) => {
-            selectedDeviceIdRef.current = deviceId;
-            setSelectedDeviceId(deviceId);
-            if (scanActive.current && deviceId) {
-              setStatus('已选择目标设备，将在本轮扫描后自动连接');
-            }
-          }}
-          onScan={scanDevices}
-          onConnect={connectDevice}
-          onDisconnect={disconnectDevice}
-          onSelectedSampleRateChange={(bleSampleRateHz) => setSettings((value) => ({
-            ...value,
-            bleSampleRateHz
-          }))}
-          onApplySampleRate={() => {
-            void applySampleRateCommand(settings.bleSampleRateHz);
-          }}
-          onToggleRecording={toggleRecording}
-          onToggleBatteryRecording={() => void toggleBatteryRecording()}
-        />
-      )}
-
-      <div className={settingsOpen ? 'workspace with-settings' : 'workspace'}>
-        <section className="waveform-area">
-          {settings.acquisitionMode ? (
-            <AcquisitionModeView
-              eegBuffers={{
-                eeg1: visibleBuffers.eeg1,
-                eeg2: visibleBuffers.eeg2,
-                eeg3: visibleBuffers.eeg3,
-                eeg4: visibleBuffers.eeg4
-              }}
-              eegSettings={settings.eeg}
-              connected={connected}
-              deviceName={devices.find((device) => device.id === selectedDeviceId)?.name ?? selectedDeviceId ?? '--'}
-              linkStatus={status}
-              sampleCount={sampleCount}
-              sampleRateHz={displaySampleRateHz}
-              acquisitionSampleRateHz={activeSampleRateHz}
-              invalidSampleCount={invalidSampleCount}
-              linkQuality={linkQuality}
-              recording={recording}
-              recordingPending={recordingPending}
-              recordingElapsedSeconds={recordingElapsedSeconds}
-              sleepPreventionActive={powerPrevention.active}
-              sleepPreventionSupported={powerPrevention.supported}
-              recordPath={recordPath}
-              markerPath={debugMarkerPath}
-              markerStatus={debugMarkerStatus}
-              markers={debugMarkers}
-              blinkTrial={debugBlinkTrial}
-              participantId={debugParticipantId}
-              onParticipantIdChange={setDebugParticipantId}
-              onSelectedChannelChange={(selectedChannel) => setSettings((current) => ({
-                ...current,
-                eeg: { ...current.eeg, selectedChannel }
-              }))}
-              onToggleRecording={() => void toggleRecording()}
-              onAddMarker={(label, note) => void handleDebugMarker(label, note)}
-              onStartAlignment={() => handleStartDebugBlinkTrial('continuous')}
-            />
-          ) : settings.displayMode === 'debug' ? (
-            <DebugModeView
-              eegBuffers={{
-                eeg1: visibleBuffers.eeg1,
-                eeg2: visibleBuffers.eeg2,
-                eeg3: visibleBuffers.eeg3,
-                eeg4: visibleBuffers.eeg4
-              }}
-              ppgBuffers={{
-                ir1: visibleBuffers.ir1,
-                red1: visibleBuffers.red1,
-                green1: visibleBuffers.green1,
-                ir2: visibleBuffers.ir2,
-                red2: visibleBuffers.red2,
-                green2: visibleBuffers.green2
-              }}
-              connected={connected}
-              deviceName={devices.find((device) => device.id === selectedDeviceId)?.name ?? selectedDeviceId ?? '--'}
-              linkStatus={status}
-              sampleCount={sampleCount}
-              sampleRateHz={displaySampleRateHz}
-              acquisitionSampleRateHz={activeSampleRateHz}
-              invalidSampleCount={invalidSampleCount}
-              linkQuality={linkQuality}
-              latestDeviceFlag={deviceFlags[deviceFlags.length - 1]?.value ?? null}
-              recording={recording}
-              recordingPending={recordingPending}
-              recordPath={recordPath}
-              markerPath={debugMarkerPath}
-              markerStatus={debugMarkerStatus}
-              markers={debugMarkers}
-              algorithmEvents={debugAlgorithmEvents}
-              algorithmAction={lastAlgorithmAction}
-              demoResponse={sleepDemoService.lastResponse}
-              demoPhase={sleepDemoService.phase}
-              demoMessage={sleepDemoService.message}
-              stagingResponse={sleepService.lastResponse}
-              stagingPhase={sleepService.phase}
-              stagingMessage={sleepService.message}
-              drowsinessEstimate={wearableDrowsiness}
-              session={sleepSession}
-              sleepSettings={settings.sleepMusic}
-              player={musicPlayer}
-              guidanceActive={sleepGuidanceActive}
-              guidanceMessage={sleepGuidanceMessage}
-              blinkTrial={debugBlinkTrial}
-              participantId={debugParticipantId}
-              onParticipantIdChange={setDebugParticipantId}
-              onSleepSettingsChange={(patch) => setSettings((current) => ({
-                ...current,
-                sleepMusic: { ...current.sleepMusic, ...patch }
-              }))}
-              onOpenEyeCalibration={() => handleAlphaCalibration('open-eye')}
-              onClosedEyeCalibration={() => handleAlphaCalibration('closed-eye')}
-              onBlinkCalibration={handleBlinkCalibration}
-              onStartGuidance={handleStartSleepGuidance}
-              onStopGuidance={handleStopSleepGuidance}
-              onStartSleepAndRecord={handleDebugStartSleepAndRecord}
-              onStartBlinkValidation={handleDebugStartBlinkValidation}
-              onStopSession={handleDebugStopSession}
-              onStartBlinkTrial={handleStartDebugBlinkTrial}
-              onToggleRecording={() => void toggleRecording()}
-              onAddMarker={(label, note) => void handleDebugMarker(label, note)}
-            />
-          ) : settings.displayMode === 'eeg' ? (
-            <EegModeView
-              channel={settings.eeg.selectedChannel}
-              values={visibleBuffers[settings.eeg.selectedChannel]}
-              settings={settings.eeg}
-              sampleRateHz={displaySampleRateHz}
-              onSleepMetrics={handleSleepMetrics}
-              musicPanel={musicPanel}
-              deltaArtifactContext={deltaArtifactContext}
-            />
-          ) : (
-            <div className="normal-grid">
-              {normalWaveforms.map((item) => (
-                <WaveformCanvas key={item.channel} title={`${channelLabels[item.channel]} 波形`} series={item.series} fill />
-              ))}
-            </div>
-          )}
-        </section>
-        {settingsOpen && (
-          <SettingsPanel
-            settings={settings}
-            onChange={setSettings}
-            sleepServiceStatus={{
-              phase: sleepService.phase,
-              message: sleepService.message,
-              chunksSeen: sleepService.chunksSeen
-            }}
-            sleepDemoStatus={{
-              phase: sleepDemoService.phase,
-              message: sleepDemoService.message,
-              alphaCalibrationSeconds: sleepDemoService.alphaCalibrationSeconds,
-              closedEyeCalibrationSeconds: sleepDemoService.closedEyeCalibrationSeconds,
-              blinkCalibrationSeconds: sleepDemoService.blinkCalibrationSeconds,
-              lastResponse: sleepDemoService.lastResponse
-            }}
-            sleepRuntime={sleepRuntime}
-            blinkStatus={blinkSnapshot}
-            onOpenSleepAlgorithm={() => void handleOpenSleepAlgorithm()}
-            onImportSleepAlgorithm={() => void handleImportSleepAlgorithm()}
-            onActivateSleepAlgorithm={(packageId, version) => void handleActivateSleepAlgorithm(packageId, version)}
-            onRollbackSleepAlgorithm={() => void handleRollbackSleepAlgorithm()}
-            onStartSleepService={() => void handleStartSleepService()}
-            onStopSleepService={() => void handleStopSleepService()}
-            onOpenEyeCalibration={() => handleAlphaCalibration('open-eye')}
-            onClosedEyeCalibration={() => handleAlphaCalibration('closed-eye')}
-            onBlinkCalibration={handleBlinkCalibration}
-            audioOutput={{
-              devices: musicPlayer.snapshot.outputDevices,
-              selectedDeviceId: musicPlayer.snapshot.selectedOutputDeviceId,
-              supported: musicPlayer.snapshot.outputDeviceSupported,
-              error: musicPlayer.snapshot.outputDeviceError
-            }}
-            onAudioOutputDeviceChange={(deviceId) => {
-              void musicPlayer.setOutputDevice(deviceId).then((changed) => {
-                if (!changed) return;
-                setSettings((current) => ({
-                  ...current,
-                  sleepMusic: { ...current.sleepMusic, audioOutputDeviceId: deviceId }
-                }));
-              });
-            }}
-            onRefreshAudioOutputs={() => void musicPlayer.refreshOutputDevices(true)}
-            onTestAudioOutput={() => void musicPlayer.testOutput()}
-            onOpenMusicLibrary={handleOpenMusicLibrary}
-            connected={connected}
-            commandText={commandText}
-            onCommandTextChange={setCommandText}
-            onSendCommand={() => void sendCommand()}
-            lslStatus={lslStatus}
-            lslPending={lslPending}
-            onLslRefresh={() => void refreshLslStatus()}
-            onLslTestMarker={() => void handleLslTestMarker()}
-          />
-        )}
-      </div>
+  const chooseWorkbench=(view:WorkbenchView)=>{
+    setWorkbenchView(view);setSettingsOpen(false);
+    setSettings(current=>({...current,showChartsOnly:false,
+      acquisitionMode:view==='acquisition'||view==='sync',
+      displayMode:view==='normal'?'normal':view==='debug'?'debug':'eeg'}));
+  };
+  const devicePanel=<DevicePanel diagnostics={bleDiagnostics} showRecordingAction={false} devices={devices} connected={connected} scanning={scanning}
+    recording={recording} recordingPending={recordingPending} recordingElapsedSeconds={recordingElapsedSeconds}
+    batteryRecording={batteryRecording} batteryRecordingPending={batteryRecordingPending} batteryRecordPath={batteryRecordPath}
+    selectedDeviceId={selectedDeviceId} selectedSampleRateHz={settings.bleSampleRateHz} activeSampleRateHz={activeSampleRateHz}
+    sampleRatePending={sampleRatePending} batteryStatus={batteryStatus} status={status} recordPath={recordPath}
+    onSelectedDeviceChange={deviceId=>{selectedDeviceIdRef.current=deviceId;setSelectedDeviceId(deviceId);
+      if(scanActive.current&&deviceId)setStatus('已选择目标设备，将在本轮扫描后自动连接');}}
+    onScan={scanDevices} onConnect={connectDevice} onDisconnect={disconnectDevice}
+    onSelectedSampleRateChange={bleSampleRateHz=>setSettings(value=>({...value,bleSampleRateHz}))}
+    onApplySampleRate={()=>void applySampleRateCommand(settings.bleSampleRateHz)}
+    onToggleRecording={toggleRecording} onToggleBatteryRecording={()=>void toggleBatteryRecording()}/>;
+  const settingsPanel=<SettingsPanel settings={settings} onChange={setSettings} requestedSection={settingsSection} onSectionChange={setSettingsSection}
+    sleepServiceStatus={{phase:sleepService.phase,message:sleepService.message,chunksSeen:sleepService.chunksSeen}}
+    sleepDemoStatus={{phase:sleepDemoService.phase,message:sleepDemoService.message,
+      alphaCalibrationSeconds:sleepDemoService.alphaCalibrationSeconds,closedEyeCalibrationSeconds:sleepDemoService.closedEyeCalibrationSeconds,
+      blinkCalibrationSeconds:sleepDemoService.blinkCalibrationSeconds,lastResponse:sleepDemoService.lastResponse}}
+    sleepRuntime={sleepRuntime} blinkStatus={blinkSnapshot}
+    onOpenSleepAlgorithm={()=>void handleOpenSleepAlgorithm()} onImportSleepAlgorithm={()=>void handleImportSleepAlgorithm()}
+    onActivateSleepAlgorithm={(packageId,version)=>void handleActivateSleepAlgorithm(packageId,version)}
+    onRollbackSleepAlgorithm={()=>void handleRollbackSleepAlgorithm()} onStartSleepService={()=>void handleStartSleepService()}
+    onStopSleepService={()=>void handleStopSleepService()} onOpenEyeCalibration={()=>handleAlphaCalibration('open-eye')}
+    onClosedEyeCalibration={()=>handleAlphaCalibration('closed-eye')} onBlinkCalibration={handleBlinkCalibration}
+    audioOutput={{devices:musicPlayer.snapshot.outputDevices,selectedDeviceId:musicPlayer.snapshot.selectedOutputDeviceId,
+      supported:musicPlayer.snapshot.outputDeviceSupported,error:musicPlayer.snapshot.outputDeviceError}}
+    onAudioOutputDeviceChange={deviceId=>{void musicPlayer.setOutputDevice(deviceId).then(changed=>{
+      if(changed)setSettings(current=>({...current,sleepMusic:{...current.sleepMusic,audioOutputDeviceId:deviceId}}));});}}
+    onRefreshAudioOutputs={()=>void musicPlayer.refreshOutputDevices(true)} onTestAudioOutput={()=>void musicPlayer.testOutput()}
+    onOpenMusicLibrary={handleOpenMusicLibrary} connected={connected} commandText={commandText}
+    onCommandTextChange={setCommandText} onSendCommand={()=>void sendCommand()}
+    lslStatus={lslStatus} lslPending={lslPending} onLslRefresh={()=>void refreshLslStatus()} onLslTestMarker={()=>void handleLslTestMarker()}/>;
+  const pageSettings=settingsForSignalPage(settings,workbenchView);
+  const acquisitionView=(externalTools?:ReactNode)=><AcquisitionModeView embedded externalTools={externalTools} displayFilter={settings.pageFilters[workbenchView]}
+    eegBuffers={{eeg1:visibleBuffers.eeg1,eeg2:visibleBuffers.eeg2,eeg3:visibleBuffers.eeg3,eeg4:visibleBuffers.eeg4}}
+    analysisBuffers={{eeg1:buffers.eeg1,eeg2:buffers.eeg2,eeg3:buffers.eeg3,eeg4:buffers.eeg4}}
+    artifactContext={spectralArtifactContext} eegSettings={pageSettings.eeg} connected={connected}
+    deviceName={devices.find(device=>device.id===selectedDeviceId)?.name||selectedDeviceId||'—'} linkStatus={status}
+    sampleCount={sampleCount} sampleRateHz={displaySampleRateHz} acquisitionSampleRateHz={activeSampleRateHz}
+    invalidSampleCount={invalidSampleCount} linkQuality={linkQuality} recording={recording}
+    recordingPending={recordingPending} recordingElapsedSeconds={recordingElapsedSeconds}
+    sleepPreventionActive={powerPrevention.active} sleepPreventionSupported={powerPrevention.supported}
+    recordPath={recordPath} markerPath={debugMarkerPath} markerStatus={debugMarkerStatus} markers={debugMarkers}
+    blinkTrial={debugBlinkTrial} participantId={debugParticipantId} onParticipantIdChange={setDebugParticipantId}
+    onSelectedChannelChange={selectedChannel=>setSettings(current=>({...current,eeg:{...current.eeg,selectedChannel}}))}
+    onTimeWindowChange={timeWindowSeconds=>setSettings(current=>({...current,eeg:{...current.eeg,timeWindowSeconds}}))}
+    onToggleRecording={()=>void toggleRecording()} onAddMarker={(label,note)=>void handleDebugMarker(label,note)}
+    onStartAlignment={()=>handleStartDebugBlinkTrial('continuous')}/>;
+  const externalTools=<>
+    <MatlabBridgeSection onPrepare={()=>setSettings(current=>({...current,acquisitionMode:true,showChartsOnly:false,demoMode:false}))}/>
+    <LslSettingsSection settings={settings} status={lslStatus} pending={lslPending} onChange={setSettings}
+      onRefresh={()=>void refreshLslStatus()} onTestMarker={()=>void handleLslTestMarker()}/>
+  </>;
+  return <SignalDisplayProvider settings={settings.signalDisplay}>
+    <WorkbenchShell view={workbenchView} onViewChange={chooseWorkbench} settings={settings} onSettingsChange={setSettings}
+      settingsOpen={settingsOpen} onSettingsOpen={setSettingsOpen} settingsPanel={settingsPanel} devicePanel={devicePanel}
+      onCalibrationSettings={()=>{setSettingsSection('signal');setSettingsOpen(true);}}
+      connected={connected} scanning={scanning} deviceName={devices.find(device=>device.id===selectedDeviceId)?.name||selectedDeviceId||'头戴设备'}
+      status={status} sampleRate={activeSampleRateHz} receivedRate={linkQuality.ready?linkQuality.effectiveSampleRateHz:null}
+      observedRate={bleDiagnostics?.observedSampleRateHz}
+      lossRate={linkQuality.ready?linkQuality.lossRatePercent:null} sampleCount={sampleCount}
+      batteryText={batteryStatus?formatBatterySummary(batteryStatus):'—'} recording={recording} recordingPending={recordingPending}
+      recordingSeconds={recordingElapsedSeconds} recordPath={recordPath} onToggleRecording={()=>void toggleRecording()}
+      fullscreen={fullscreen} onFullscreen={()=>void handleToggleFullscreen()} sleepPreventionActive={powerPrevention.active} lslActive={lslStatus.running}>
+      {settings.showChartsOnly?<PureWaveformView values={visibleBuffers[settings.eeg.selectedChannel]}
+        fullAnalysisValues={buffers[settings.eeg.selectedChannel]} settings={pageSettings} onChange={setSettings}
+        onExit={()=>setSettings(value=>({...value,showChartsOnly:false}))} onToggleFullscreen={handleToggleFullscreen}
+        connected={connected} status={status} sampleCount={sampleCount} sampleRateHz={displaySampleRateHz}
+        acquisitionSampleRateHz={activeSampleRateHz} linkQuality={linkQuality} batteryStatus={batteryStatus}
+        recording={recording} recordingElapsedSeconds={recordingElapsedSeconds} sleepPreventionActive={powerPrevention.active}
+        warmupRemaining={warmupRemaining} onSleepMetrics={handleSleepMetrics} musicPanel={musicPanel}
+        deviceFlags={deviceFlags} algorithmAction={lastAlgorithmAction} deltaArtifactContext={spectralArtifactContext}/>:
+      workbenchView==='sync'?acquisitionView(externalTools):
+      workbenchView==='acquisition'?acquisitionView():
+      workbenchView==='debug'?<DebugModeView embedded displayScale={settings.eeg.scale} displayFilter={settings.pageFilters.debug}
+        eegBuffers={{eeg1:visibleBuffers.eeg1,eeg2:visibleBuffers.eeg2,eeg3:visibleBuffers.eeg3,eeg4:visibleBuffers.eeg4}}
+        ppgBuffers={{ir1:visibleBuffers.ir1,red1:visibleBuffers.red1,green1:visibleBuffers.green1,
+          ir2:visibleBuffers.ir2,red2:visibleBuffers.red2,green2:visibleBuffers.green2}}
+        connected={connected} deviceName={devices.find(device=>device.id===selectedDeviceId)?.name||selectedDeviceId||'—'}
+        linkStatus={status} sampleCount={sampleCount} sampleRateHz={displaySampleRateHz} acquisitionSampleRateHz={activeSampleRateHz}
+        invalidSampleCount={invalidSampleCount} linkQuality={linkQuality} latestDeviceFlag={deviceFlags[deviceFlags.length-1]?.value??null}
+        recording={recording} recordingPending={recordingPending} recordPath={recordPath} markerPath={debugMarkerPath}
+        markerStatus={debugMarkerStatus} markers={debugMarkers} algorithmEvents={debugAlgorithmEvents} algorithmAction={lastAlgorithmAction}
+        demoResponse={sleepDemoService.lastResponse} demoPhase={sleepDemoService.phase} demoMessage={sleepDemoService.message}
+        stagingResponse={sleepService.lastResponse} stagingPhase={sleepService.phase} stagingMessage={sleepService.message}
+        drowsinessEstimate={wearableDrowsiness} session={sleepSession} sleepSettings={settings.sleepMusic} player={musicPlayer}
+        guidanceActive={sleepGuidanceActive} guidanceMessage={sleepGuidanceMessage} blinkTrial={debugBlinkTrial}
+        participantId={debugParticipantId} onParticipantIdChange={setDebugParticipantId}
+        onSleepSettingsChange={patch=>setSettings(current=>({...current,sleepMusic:{...current.sleepMusic,...patch}}))}
+        onOpenEyeCalibration={()=>handleAlphaCalibration('open-eye')} onClosedEyeCalibration={()=>handleAlphaCalibration('closed-eye')}
+        onBlinkCalibration={handleBlinkCalibration} onStartGuidance={handleStartSleepGuidance} onStopGuidance={handleStopSleepGuidance}
+        onStartSleepAndRecord={handleDebugStartSleepAndRecord} onStartBlinkValidation={handleDebugStartBlinkValidation}
+        onStopSession={handleDebugStopSession} onStartBlinkTrial={handleStartDebugBlinkTrial}
+        onToggleRecording={()=>void toggleRecording()} onAddMarker={(label,note)=>void handleDebugMarker(label,note)}/>:
+      workbenchView==='normal'?<div className="normal-grid">
+        {normalWaveforms.map(item=><WaveformCanvas key={item.channel} title={channelLabels[item.channel]+' 波形'} series={item.series} fill/>)}
+      </div>:<EegModeView guidance={workbenchView==='sleep'} channel={settings.eeg.selectedChannel}
+        values={visibleBuffers[settings.eeg.selectedChannel]} fullAnalysisValues={buffers[settings.eeg.selectedChannel]}
+        settings={pageSettings.eeg} sampleRateHz={displaySampleRateHz} onSleepMetrics={handleSleepMetrics}
+        musicPanel={musicPanel} deltaArtifactContext={spectralArtifactContext}/>}
       {musicLibrary}
-    </main>
-  );
+    </WorkbenchShell>
+  </SignalDisplayProvider>;
 }
 
 function getViewportSize() {
@@ -2784,6 +2567,12 @@ function getViewportSize() {
 // 普通模式滤波（带通/卡尔曼）是状态ful的，必须与 EEG 频带一样走增量缓存：
 // 每次 flush 只处理新样本，避免整窗重复喂给滤波器造成波形失真。
 const normalFilterCaches = new Map<ChannelKey, StreamingFilterCache>();
+const normalPpgCaches = new Map<ChannelKey, StreamingFilterCache>();
+function normalPpgDisplay(channel:ChannelKey,values:TimedValue[],rate:number,key:string):TimedValue[]{
+  if(!isPpgChannel(channel))return values;
+  let cache=normalPpgCaches.get(channel);if(!cache){cache=new StreamingFilterCache();normalPpgCaches.set(channel,cache);}
+  return cache.update(`${key}|${rate}`,values,()=>FilterChain.butterworthBandpass({low:.35,high:8,sampleRate:rate,order:2}));
+}
 
 function getNormalFilterCache(channel: ChannelKey): StreamingFilterCache {
   let cache = normalFilterCaches.get(channel);
@@ -2806,13 +2595,13 @@ function applyNormalFilters(
   if (!bandpassOn && !kalmanOn) {
     // 滤波全关时清空缓存：否则下次再开时，关闭期间的样本永远不会被处理，输出出现断档
     cache.reset();
-    return isPpgChannel(channel) ? filterPpgDisplayWindow(values, sampleRateHz) : values;
+    return normalPpgDisplay(channel,values,sampleRateHz,'raw');
   }
   const key = [
     channel,
     sampleRateHz,
     bandpassOn ? `${settings.filterLow}-${settings.filterHigh}` : 'off',
-    kalmanOn ? `${settings.kalmanQ}|${settings.kalmanR}` : 'off'
+    kalmanOn ? `${settings.kalmanQ}|${settings.kalmanR}` : 'off',settings.eeg.notch
   ].join('|');
   const filtered = cache.update(key, values, () => {
     const chain = bandpassOn
@@ -2820,7 +2609,8 @@ function applyNormalFilters(
         low: settings.filterLow,
         high: settings.filterHigh,
         sampleRate: sampleRateHz,
-        order: 2
+        order: 2,
+        notch:settings.eeg.notch
       })
       : null;
     const kalman = kalmanOn ? new KalmanFilter(settings.kalmanQ, settings.kalmanR) : null;
@@ -2837,7 +2627,7 @@ function applyNormalFilters(
       }
     };
   });
-  return isPpgChannel(channel) ? filterPpgDisplayWindow(filtered, sampleRateHz) : filtered;
+  return normalPpgDisplay(channel,filtered,sampleRateHz,key);
 }
 
 function isPpgChannel(channel: ChannelKey): boolean {
@@ -2906,10 +2696,11 @@ function estimateSignalQuality(
 ): { coverage: number; valid: boolean } {
   if (values.length < 2) return { coverage: 0, valid: false };
   const lastTimestamp = values[values.length - 1].timestamp;
-  const recent = values.filter((point) => point.timestamp >= lastTimestamp - 5_000);
+  const window=timeWindow(values,lastTimestamp-5000);
+  const recent=window.filter(point=>point.valid!==false&&point.observed!==false&&Number.isFinite(point.value));
   if (recent.length < 2) return { coverage: 0, valid: false };
 
-  const spanMs = Math.max(10, recent[recent.length - 1].timestamp - recent[0].timestamp);
+  const spanMs = Math.max(10, lastTimestamp-window[0].timestamp);
   const expectedSamples = Math.max(1, Math.round((spanMs / 1000) * sampleRateHz) + 1);
   const coverage = clamp01(recent.length / expectedSamples);
   let maximumGapMs = 0;

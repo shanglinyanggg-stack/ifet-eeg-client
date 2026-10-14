@@ -34,9 +34,8 @@ export function createEmptyLinkQuality(): LinkQualitySnapshot {
 }
 
 /**
- * Tracks the post-decoder logical stream. A valid=false row is an interpolated
- * sample created for a missing device notification, so effectiveSampleRateHz
- * counts only valid rows while logicalSampleRateHz includes the interpolation.
+ * Tracks real received rows, with old replay placeholders explicitly excluded.
+ * Missing target-rate slots are a coverage deficit, not proof of RF packet loss.
  */
 export class RollingLinkQualityMonitor {
   private samples: WindowSample[] = [];
@@ -66,7 +65,7 @@ export class RollingLinkQualityMonitor {
       this.latestTimestampMs = monotonicTimestampMs;
       this.samples.push({
         timestampMs: monotonicTimestampMs,
-        valid: event.valid !== false
+        valid: event.valid !== false && event.observed !== false
       });
     }
 
@@ -104,7 +103,7 @@ export class RollingLinkQualityMonitor {
       invalidSamples,
       effectiveSampleRateHz: validSamples / windowSeconds,
       logicalSampleRateHz: totalSamples / windowSeconds,
-      lossRatePercent: totalSamples > 0 ? (invalidSamples / totalSamples) * 100 : 0,
+      lossRatePercent: Math.max(0,Math.min(100,(1-validSamples/Math.max(totalSamples,windowSeconds*expectedSampleRateHz))*100)),
       ready: windowSeconds >= MIN_READY_SECONDS
     };
   }

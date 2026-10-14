@@ -188,7 +188,7 @@ function mapImu(samples: StagingSample[]): [number[], number[], number[]] {
 }
 
 function sampleFromEvent(event: SampleEvent): StagingSample {
-  if (event.valid === false) return invalidSample(event.timestamp);
+  if (event.valid === false||event.observed===false) return invalidSample(event.timestamp);
   const eeg = event.packet.eeg;
   const ppg = event.packet.ppg;
   const values = eeg

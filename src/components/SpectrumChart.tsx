@@ -1,23 +1,27 @@
-import { useId, useMemo } from 'react';
+import { useId, useMemo,useState } from 'react';
+import {Maximize2,X} from 'lucide-react';
 import type { TimedValue } from '../domain/dsp';
 import { computeRelativePowerSpectrum } from '../domain/power-spectrum';
+import type { RobustEegSnapshot } from '../domain/robust-eeg';
+import {formatClockAxis} from '../domain/signal-display';
 
 interface SpectrumChartProps {
   values: TimedValue[];
   sampleRateHz: number;
   channelLabel: string;
+  analysis?: RobustEegSnapshot;
 }
 
-const WIDTH = 720;
-const HEIGHT = 320;
+const WIDTH = 520;
+const HEIGHT = 380;
 const MARGIN = { left: 52, right: 18, top: 18, bottom: 42 };
 const PLOT_WIDTH = WIDTH - MARGIN.left - MARGIN.right;
 const PLOT_HEIGHT = HEIGHT - MARGIN.top - MARGIN.bottom;
 const FREQUENCY_TICKS = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45];
 const POWER_TICKS = [0, -20, -40, -60];
 const SPECTRUM_BANDS = [
-  { label: 'δ', low: 0.5, high: 2, color: '#1d4ed8' },
-  { label: 'θ', low: 4, high: 7, color: '#7dd3fc' },
+  { label: 'δ', low: 0.5, high: 4, color: '#1d4ed8' },
+  { label: 'θ', low: 4, high: 8, color: '#7dd3fc' },
   { label: 'α', low: 8, high: 13, color: '#f59e0b' },
   { label: 'β', low: 13, high: 30, color: '#ef4444' },
   { label: 'γ', low: 30, high: 45, color: '#f472b6' }
@@ -26,12 +30,15 @@ const SPECTRUM_BANDS = [
 export function SpectrumChart({
   values,
   sampleRateHz,
-  channelLabel
+  channelLabel,
+  analysis
 }: SpectrumChartProps) {
+  const [expanded,setExpanded]=useState(false);
   const gradientId = useId().replace(/:/g, '');
   const spectrum = useMemo(
-    () => computeRelativePowerSpectrum(values, sampleRateHz),
-    [sampleRateHz, values]
+    () => analysis ? analysis.displaySpectrum ?? analysis.spectrum ?? {points:[],peakFrequencyHz:null,resolutionHz:100/512,windowSeconds:8,fftSize:512,minimumDb:-60,maximumFrequencyHz:45}
+      : computeRelativePowerSpectrum(values, sampleRateHz),
+    [analysis, sampleRateHz, values]
   );
   const x = (frequencyHz: number) =>
     MARGIN.left + (frequencyHz / spectrum.maximumFrequencyHz) * PLOT_WIDTH;
@@ -53,15 +60,21 @@ export function SpectrumChart({
     );
 
   return (
-    <section className="spectrum-chart" aria-label={`${channelLabel} 实时频谱`}>
+    <section className={`spectrum-chart ${expanded?'is-expanded':''}`} aria-label={`${channelLabel} 实时频谱`}>
+      <div className="spectrum-tools"><span>{expanded?`${channelLabel} · 实时功率谱`:''}</span><button className="text-tool" aria-label={expanded?'关闭放大频谱':'放大频谱'} onClick={()=>setExpanded(value=>!value)}>
+        {expanded?<X size={14}/>:<Maximize2 size={13}/>}<span>{expanded?'关闭':'放大频谱'}</span></button></div>
       <div className="spectrum-summary">
-        <span>FFT窗长 <strong>{spectrum.points.length > 0 ? `${spectrum.windowSeconds.toFixed(2)} s` : '--'}</strong></span>
-        <span>频率分辨率 <strong>{spectrum.points.length > 0 ? `${spectrum.resolutionHz.toFixed(2)} Hz` : '--'}</strong></span>
+        <span>{analysis ? 'Welch分析窗' : 'FFT窗长'} <strong>{spectrum.points.length > 0 ? `${spectrum.windowSeconds.toFixed(2)} s` : '--'}</strong></span>
+        <span>{analysis?`频率网格（${analysis.displaySegmentSeconds??4}s分段）`:'频率分辨率'} <strong>{spectrum.points.length > 0 ? `${spectrum.resolutionHz.toFixed(2)} Hz` : '--'}</strong></span>
         <span>峰值频率 <strong>{spectrum.peakFrequencyHz === null ? '--' : `${spectrum.peakFrequencyHz.toFixed(2)} Hz`}</strong></span>
         <span>范围 <strong>0.5–{spectrum.maximumFrequencyHz.toFixed(0)} Hz</strong></span>
+        {analysis?.execution&&<span>计算位置 <strong>{analysis.execution==='worker'?'独立后台线程':'兼容主线程'}</strong></span>}
       </div>
+      {analysis && <small>{analysis.reason} · 控制有效 {Math.round(analysis.cleanFraction*100)}%{analysis.held&&!analysis.displaySpectrum?' · 显示上次有效频谱':''}</small>}
+      {spectrum.windowStartMs!==undefined&&spectrum.windowEndMs!==undefined&&<div className="analysis-time-axis" aria-label="频谱分析时间轴">
+        <time>{formatClockAxis(spectrum.windowStartMs)}</time><span>分析窗 {spectrum.windowSeconds.toFixed(2)} s</span><time>{formatClockAxis(spectrum.windowEndMs)}</time></div>}
       {spectrum.points.length === 0 ? (
-        <div className="spectrum-empty">等待至少 128 个 {channelLabel} 样本</div>
+        <div className="spectrum-empty">{analysis ? analysis.reason : `等待至少 128 个 ${channelLabel} 样本`}</div>
       ) : (
         <svg
           className="spectrum-svg"

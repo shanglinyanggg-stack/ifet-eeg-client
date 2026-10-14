@@ -10,6 +10,7 @@ interface SleepTrendChartProps {
   realtimeStage?: string;
   drowsinessMode?: DrowsinessMode;
   drowsinessEstimate?: WearableDrowsinessSnapshot | null;
+  onCalibrate?:()=>void;
 }
 
 export function SleepTrendChart({
@@ -17,9 +18,11 @@ export function SleepTrendChart({
   sleepProbability,
   realtimeStage = '等待分期',
   drowsinessMode = 'v025',
-  drowsinessEstimate = null
+  drowsinessEstimate = null,
+  onCalibrate
 }: SleepTrendChartProps) {
-  const useWearableTrial = drowsinessMode === 'wearable-trial' && drowsinessEstimate !== null;
+  const personal=drowsinessMode==='personal-baseline';
+  const useWearableTrial = (drowsinessMode === 'wearable-trial'||personal) && drowsinessEstimate !== null;
   const drowsiness = useWearableTrial
     ? drowsinessEstimate.score
     : computeDrowsinessScore(metrics, sleepProbability);
@@ -31,17 +34,17 @@ export function SleepTrendChart({
     <section className="panel sleep-trend-panel" aria-label="困意值">
       <div className="panel-header">
         <h2>困意值</h2>
-        <span className="panel-meta">{useWearableTrial ? '可穿戴试验' : '实时检测'}</span>
+        <span className="panel-meta">{personal?'个人基线 · 非睡眠概率':useWearableTrial ? '可穿戴试验' : '历史对照'}</span>
       </div>
       <div className="sleep-trend-body">
         <div
           className="sleep-score-ring"
           style={ringStyle}
-          aria-label={`困意值 ${drowsiness}%，数值越高越困`}
+          aria-label={personal?drowsinessEstimate?.baselineReady?`困意指数 ${drowsiness}/100`:'困意指数未校准':`困意值 ${drowsiness}%，数值越高越困`}
         >
           <div className="sleep-score-core">
-            <strong>{drowsiness}</strong>
-            <span>%</span>
+            <strong>{personal&&!drowsinessEstimate?.baselineReady?'--':drowsiness}</strong>
+            <span>{personal?'/100':'%'}</span>
           </div>
         </div>
         <div className="sleep-trend-stats">
@@ -51,7 +54,9 @@ export function SleepTrendChart({
           <span>
             分期 <strong>{realtimeStage}</strong>
           </span>
-          <small>{useWearableTrial
+          {personal&&onCalibrate&&<button type="button" disabled={drowsinessEstimate?.calibrationActive}
+            onClick={onCalibrate}>{drowsinessEstimate?.calibrationActive?'清醒基线测量中':'测量20秒清醒基线'}</button>}
+          <small>{personal ? `${drowsinessEstimate?.reason??'请测量睁眼清醒基线'}${drowsinessEstimate?.calibrationActive?` · ${Math.round(drowsinessEstimate.baselineProgress*100)}%`:''}` : useWearableTrial
             ? drowsinessEstimate.baselineReady
               ? `${wearableSourceLabel(drowsinessEstimate.source)} · ${trendLabel(metrics.solTrend)}`
               : `清醒基线 ${Math.round(drowsinessEstimate.baselineProgress * 100)}% · 暂用 0.2.5`
@@ -63,6 +68,7 @@ export function SleepTrendChart({
 }
 
 function wearableSourceLabel(source: WearableDrowsinessSnapshot['source']): string {
+  if (source === 'personal-baseline') return '个人清醒基线';
   if (source === 'quality-hold') return '低质量保持';
   if (source === 'spectral-only') return '可穿戴频谱';
   if (source === 'wearable-fusion') return '频谱 + PC 融合';

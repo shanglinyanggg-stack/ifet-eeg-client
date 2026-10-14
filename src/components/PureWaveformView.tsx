@@ -18,12 +18,10 @@ import {
   type PureBandDefinition,
   type TimedValue
 } from '../domain/dsp';
-import { calculateSleepMetrics, type SleepMetrics } from '../domain/sleep-metrics';
-import { applySlowWaveGate, AdaptiveSlowWaveGate } from '../domain/adaptive-slow-wave';
-import { cleanSleepDeltaWave, type SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
-import { applyRobustMedianReference } from '../domain/eeg-reference';
-import { matchedFilterSleepTheta } from '../domain/theta-matched-filter';
-import { enhanceShortBetaBursts } from '../domain/beta-burst-enhancement';
+import type { SleepMetrics } from '../domain/sleep-metrics';
+import type { SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
+import { spectralSleepMetrics } from '../domain/robust-eeg';
+import { useRobustEegAnalysis } from '../hooks/useRobustEegAnalysis';
 import { translateAlgorithmState } from '../domain/sleep-demo-signal';
 import {
   eegScaleOptions,
@@ -51,6 +49,7 @@ import type { LinkQualitySnapshot } from '../domain/link-quality';
 
 interface PureWaveformViewProps {
   values: TimedValue[];
+  fullAnalysisValues?:TimedValue[];
   settings: AppSettings;
   onChange: (settings: AppSettings) => void;
   onExit: () => void;
@@ -88,6 +87,7 @@ const NOTCH_OPTIONS = [
 
 export function PureWaveformView({
   values,
+  fullAnalysisValues,
   settings,
   onChange,
   onExit,
@@ -113,30 +113,20 @@ export function PureWaveformView({
   const [railOpen, setRailOpen] = useState(true);
   const eeg = settings.eeg;
   const bands = useMemo(() => createPureBands(), []);
-  const sleepBands = useMemo(() => createEegBands(), []);
   const channel = eeg.selectedChannel;
   const channelLabel = channelLabels[channel] ?? channel.toUpperCase();
   const bandFilterCaches = useRef<StreamingFilterCache[]>([]);
-  const sleepBandFilterCaches = useRef<StreamingFilterCache[]>([]);
-  const spindleFilterCache = useRef(new StreamingFilterCache());
   const rawFilterCache = useRef(new StreamingFilterCache());
-  const pureSlowWaveGate = useRef(new AdaptiveSlowWaveGate());
-  const sleepSlowWaveGate = useRef(new AdaptiveSlowWaveGate());
   const stagingResponse = musicPanel?.serviceStatus?.lastResponse ?? null;
   const realtimeStage = resolveRealtimeStage(
     musicPanel?.serviceStatus?.phase,
     stagingResponse,
     musicPanel?.session
   );
-  const analysisValues = useMemo(
-    () => applyRobustMedianReference(values, deltaArtifactContext?.eegChannels),
-    [deltaArtifactContext?.eegChannels, values]
-  );
+  const analysis=useRobustEegAnalysis(`pure|${channel}`,fullAnalysisValues??values,sampleRateHz,eeg,deltaArtifactContext);
+  const analysisValues=values;
   if (bandFilterCaches.current.length !== bands.length) {
     bandFilterCaches.current = bands.map(() => new StreamingFilterCache());
-  }
-  if (sleepBandFilterCaches.current.length !== sleepBands.length) {
-    sleepBandFilterCaches.current = sleepBands.map(() => new StreamingFilterCache());
   }
 
   // Esc：先关频带浮层，再退出纯波形
@@ -166,23 +156,11 @@ export function PureWaveformView({
         analysisValues,
         () => createBandFilter(range, eeg.notch, sampleRateHz)
       );
-      const cleaned = band.key === 'delta'
-        ? cleanSleepDeltaWave(filtered, analysisValues, sampleRateHz, deltaArtifactContext)
-        : filtered;
-      const displayValues = band.key === 'delta'
-        ? applySlowWaveGate(cleaned, pureSlowWaveGate.current.update(cleaned, {
-          stage: realtimeStage,
-          quiet: !deltaArtifactContext?.blinkArtifactActive,
-          streamKey: `${channel}|pure|${range.low}|${range.high}|${sampleRateHz}`,
-          sampleRateHz
-        }).weight)
-        : band.key === 'beta'
-          ? enhanceShortBetaBursts(cleaned, sampleRateHz)
-          : cleaned;
+      const displayValues = filtered;
       const scale = resolveScale(eeg.pure.bandScales[band.key], displayValues.map((p) => p.value));
-      return { ...band, values: displayValues, analysisValues: cleaned, scale };
+      return { ...band, values: displayValues, scale };
     });
-  }, [analysisValues, bands, channel, deltaArtifactContext, eeg.pure.bandRanges, eeg.pure.bandScales, eeg.notch, realtimeStage, sampleRateHz]);
+  }, [analysisValues, analysis.artifactIntervals, bands, channel, eeg.pure.bandRanges, eeg.pure.bandScales, eeg.notch, sampleRateHz]);
 
   // 原始波形的「EEG 带通」显示滤波：仅在设置开启时生效
   const rawValues = useMemo(() => {
@@ -191,89 +169,34 @@ export function PureWaveformView({
       rawFilterCache.current.reset();
       return values;
     }
-    const key = `${channel}|raw|${eeg.bandpassLow}-${eeg.bandpassHigh}|${sampleRateHz}`;
+    const key = `${channel}|raw|${eeg.bandpassLow}-${eeg.bandpassHigh}|${eeg.notch}|${sampleRateHz}`;
     return rawFilterCache.current.update(key, values, () =>
       FilterChain.butterworthBandpass({
         low: eeg.bandpassLow,
         high: eeg.bandpassHigh,
         sampleRate: sampleRateHz,
-        order: 2
+        order: 2,
+        notch:eeg.notch
       })
     );
-  }, [channel, values, eeg.bandpassEnabled, eeg.bandpassLow, eeg.bandpassHigh, sampleRateHz]);
+  }, [channel, values, eeg.bandpassEnabled, eeg.bandpassLow, eeg.bandpassHigh,eeg.notch, sampleRateHz]);
 
   const rawScale = useMemo(
     () => resolveScale(eeg.scale, rawValues.map((p) => p.value)),
     [rawValues, eeg.scale]
   );
 
-  const sleepBandSeries = useMemo(() => {
-    return sleepBands.map((band, index) => {
-      const range = eeg.bandRanges[band.key] ?? { low: band.low, high: band.high };
-      const key = `${channel}|sleep|${band.key}|${range.low}|${range.high}|${eeg.notch}|${sampleRateHz}`;
-      const filtered = sleepBandFilterCaches.current[index].update(
-        key,
-        analysisValues,
-        () => createBandFilter(range, eeg.notch, sampleRateHz)
-      );
-      const cleaned = band.key === 'delta'
-        ? cleanSleepDeltaWave(filtered, analysisValues, sampleRateHz, deltaArtifactContext)
-        : band.key === 'theta'
-          ? matchedFilterSleepTheta(
-            filtered,
-            analysisValues,
-            sampleRateHz,
-            deltaArtifactContext,
-            { lowHz: range.low, highHz: range.high }
-          ).values
-          : filtered;
-      return {
-        label: band.label,
-        values: band.key === 'delta'
-          ? applySlowWaveGate(cleaned, sleepSlowWaveGate.current.update(cleaned, {
-            stage: realtimeStage,
-            quiet: !deltaArtifactContext?.blinkArtifactActive,
-            streamKey: `${channel}|sleep|${range.low}|${range.high}|${sampleRateHz}`,
-            sampleRateHz
-          }).weight)
-          : cleaned
-      };
-    });
-  }, [analysisValues, channel, deltaArtifactContext, eeg.bandRanges, eeg.notch, realtimeStage, sampleRateHz, sleepBands]);
-
-  const spindleValues = useMemo(() => {
-    const key = `${channel}|sleep|sigma|11|16|${eeg.notch}|${sampleRateHz}`;
-    return spindleFilterCache.current.update(
-      key,
-      analysisValues,
-      () => createBandFilter({ low: 11, high: 16 }, eeg.notch, sampleRateHz)
-    );
-  }, [analysisValues, channel, eeg.notch, sampleRateHz]);
-
-  const sleepMetrics = useMemo(() => calculateSleepMetrics({
-    rawValues: analysisValues,
-    bands: sleepBandSeries,
-    spindleValues,
-    sampleRate: sampleRateHz
-  }), [analysisValues, sampleRateHz, sleepBandSeries, spindleValues]);
+  const sleepMetrics = useMemo(() => spectralSleepMetrics(analysis),[analysis]);
 
   useEffect(() => {
     onSleepMetrics?.(sleepMetrics);
   }, [onSleepMetrics, sleepMetrics]);
 
   const shares = useMemo<DonutShare[]>(() => {
-    const energies = bandSeries.map((b) => ({
-      symbol: b.symbol,
-      label: b.label,
-      color: b.color,
-      value: Math.max(0, averageAbs(b.analysisValues))
-    }));
-    const total = energies.reduce((sum, item) => sum + item.value, 0);
-    return energies.map((item) => ({
-      ...item,
-      percent: total > 1e-9 ? Math.round((item.value / total) * 10_000) / 100 : 0
-    }));
-  }, [bandSeries]);
+    const definitions=createEegBands();
+    return (analysis.displayShares??analysis.shares).map((share,index)=>({...share,color:definitions[index].color,
+      symbol:['δ','θ','α','β'][index]}));
+  }, [analysis]);
   return (
     <div className="pure-waveform-view" data-rail-open={railOpen}>
       <header className="pure-toolbar">
@@ -297,7 +220,7 @@ export function PureWaveformView({
                 ? formatBatterySummary(batteryStatus)
                 : '等待上报'}</em>}
               {recording && <em>· 记录 {formatRecordingDuration(recordingElapsedSeconds)}</em>}
-              {sleepPreventionActive && <em>· Windows 防睡眠已开启</em>}
+              {sleepPreventionActive && <em>· 采集防睡眠已开启</em>}
               {warmupRemaining > 0 && <em>· 预热 {warmupRemaining}s</em>}
               {status && <em>· {status}</em>}
             </span>
@@ -383,7 +306,7 @@ export function PureWaveformView({
         <section className="pure-stage">
           <div className="pure-raw">
             <WaveformCanvas
-              title={`${channelLabel} 原始波形`}
+              title={`${channelLabel} ${eeg.bandpassEnabled?`显示滤波 ${eeg.bandpassLow}–${eeg.bandpassHigh} Hz`:'原始波形（未滤波）'}`}
               series={[{ label: channelLabel, color: 'var(--wave-raw)', values: rawValues, scale: rawScale }]}
               fill
             />
@@ -413,12 +336,14 @@ export function PureWaveformView({
         <aside className="pure-rail" aria-label="数据面板">
           <div className="pure-rail-content">
             <BandDonut shares={shares} />
+            <small>{analysis.reason} · 四频带功率（含Theta，不含Gamma）{analysis.held?' · 保持上次有效占比':''}</small>
             <SleepTrendChart
               metrics={sleepMetrics}
               sleepProbability={stagingResponse?.decision_valid ? stagingResponse.selected_sleep_probability : null}
               realtimeStage={realtimeStage}
               drowsinessMode={musicPanel?.settings.drowsinessMode}
               drowsinessEstimate={musicPanel?.drowsinessEstimate}
+              onCalibrate={musicPanel?.onDrowsinessCalibration}
             />
             {musicPanel && (
               <div className="pure-sleep-music">
@@ -583,13 +508,16 @@ function createBandFilter(
   range: { low: number; high: number },
   notch: 'off' | 50 | 60,
   sampleRateHz: number
-): FilterChain {
-  return FilterChain.firBandpass({
+): {process(value:number):number;reset():void} {
+  const chain = FilterChain.butterworthBandpass({
     low: range.low,
     high: range.high,
     sampleRate: sampleRateHz,
-    notch
+    notch,
+    order:4
   });
+  let offset:number|null=null;
+  return {process(value:number){offset??=value;return chain.process(value-offset);},reset(){chain.reset();offset=null;}};
 }
 
 function averageAbs(values: TimedValue[]): number {

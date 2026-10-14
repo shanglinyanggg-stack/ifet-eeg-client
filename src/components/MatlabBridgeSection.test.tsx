@@ -25,3 +25,7 @@ test('shows a recording prerequisite rejection instead of claiming reception', a
   render(<MatlabBridgeSection />);fireEvent.click(screen.getByRole('button', { name: '开始接收' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('请先开始 EEG 数据记录');
 });
+test('explains local timestamps and final sample-position correction', () => {
+  render(<MatlabBridgeSection />);
+  expect(screen.getByText(/marker 时间与 EEG 使用相同的本地时区/)).toHaveTextContent('停止记录后会按完整 EEG 自动校正');
+});

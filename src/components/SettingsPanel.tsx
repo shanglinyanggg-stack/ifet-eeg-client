@@ -10,7 +10,7 @@ import {
   type EegChannel,
   type ThemeName
 } from '../domain/settings';
-import { createEegBands } from '../domain/dsp';
+import { createEegBands,createPureBands } from '../domain/dsp';
 import {
   blinkCalibrationFailureMessage,
   calibrationProgress,
@@ -26,9 +26,12 @@ import type { SleepStagingRuntimeInfo } from '../domain/sleep-staging-client';
 import { ThemedSelect } from './ThemedSelect';
 import { LslSettingsSection } from './LslSettingsSection';
 import { MatlabBridgeSection } from './MatlabBridgeSection';
+import {SignalCalibrationSettings} from './SignalCalibrationSettings';
 import { ChevronRight, Database, Eye, FolderOpen, ListMusic, Music2, PackagePlus, Play, RotateCcw, Send, ServerCog, SlidersHorizontal, Speaker, Square } from 'lucide-react';
 
 interface SettingsPanelProps {
+  requestedSection?:'general'|'signal'|'sleep'|'device'|'lsl'|'matlab';
+  onSectionChange?:(section:'general'|'signal'|'sleep'|'device'|'lsl'|'matlab')=>void;
   settings: AppSettings;
   onChange: (settings: AppSettings) => void;
   sleepServiceStatus?: {
@@ -108,6 +111,8 @@ const alphaVolumeModeOptions = [
 ];
 
 export function SettingsPanel({
+  requestedSection,
+  onSectionChange,
   settings,
   onChange,
   sleepServiceStatus,
@@ -137,7 +142,9 @@ export function SettingsPanel({
   onLslRefresh,
   onLslTestMarker
 }: SettingsPanelProps) {
-  const [section, setSection] = useState<'general' | 'signal' | 'sleep' | 'device' | 'lsl' | 'matlab'>('general');
+  const [section, setSectionState] = useState<'general' | 'signal' | 'sleep' | 'device' | 'lsl' | 'matlab'>('general');
+  const setSection=(value:typeof section)=>{setSectionState(value);onSectionChange?.(value);};
+  useEffect(()=>{if(requestedSection)setSectionState(requestedSection);},[requestedSection]);
   const update = (patch: Partial<AppSettings>) => onChange({ ...settings, ...patch });
   const updateEeg = (patch: Partial<AppSettings['eeg']>) =>
     onChange({ ...settings, eeg: { ...settings.eeg, ...patch } });
@@ -220,6 +227,7 @@ export function SettingsPanel({
           disabled={settings.acquisitionMode}
         />
       </div>
+      <small className="setting-help">资源策略：只绘制选中页面；隐藏分析标签页暂停频谱/频带计算。非数采模式下，已启用的分期、Alpha/眨眼服务作为共享任务继续运行，切换页面不会停止记录、LSL或MATLAB收标。数据采集模式会停用这些助眠算法。</small>
       <div className="field-control">
         <span className="field-label">界面主题</span>
         <ThemedSelect
@@ -239,6 +247,12 @@ export function SettingsPanel({
         />
         <small className="setting-help">实时切换可视时间锚点，不改变采集、保存或算法输入。</small>
       </div>
+      <label className="check-row">
+        <input type="checkbox" checked={settings.signalDisplay.interpolateGaps}
+          onChange={event=>update({signalDisplay:{...settings.signalDisplay,interpolateGaps:event.target.checked}})} />
+        信号短断点自动插值（仅显示）
+      </label>
+      <small className="setting-help">仅连接两端均有效且不超过100毫秒的断点，以虚线显示。默认关闭；不改变原始记录、LSL、频谱算法或丢包率，长断开保持空白。</small>
       <label className="check-row">
         <input type="checkbox" checked={settings.autoReconnect} onChange={(event) => update({ autoReconnect: event.target.checked })} />
         自动重连
@@ -440,7 +454,7 @@ export function SettingsPanel({
               <Eye size={13} />眨眼音量控制
             </label>
             <p className="algorithm-consistency-note">
-              在线模式沿用旧自制版 Alpha 算法：音乐开启阈值由当前 Alpha 相对睁眼基线自适应计算。困意值可在 0.2.5 对照与可穿戴特征试验间切换；试验模式使用四通道中位参考、Theta 模板匹配伪迹抑制、60 秒清醒基线、质量门控和跨窗口频带比值，并与 PC 睡眠概率融合。清醒证据稳定时显示压缩在 0–19，连续困倦证据出现后恢复 20–100 的动态范围。
+              Alpha音乐交互保持原有个体睁闭眼校准算法。新版困意指数需单独测量20秒睁眼清醒基线，参考EEG1和EEG2的Theta/Beta与Theta/Alpha持续变化；基线冻结，伪迹期间暂停，Alpha单独增强不判困倦。指数为个人相对变化，不是睡眠概率或医学诊断；可切换0.2.5作为历史对照。数据采集模式不运行困意、基线或音乐控制。
             </p>
             <div className="field-control">
               <span className="field-label">Alpha 音量模式</span>
@@ -546,7 +560,7 @@ export function SettingsPanel({
                 ariaLabel="困意值算法"
                 value={settings.sleepMusic.drowsinessMode}
                 options={[
-                  { value: 'wearable-trial', label: '可穿戴特征试验（推荐）' },
+                  { value: 'personal-baseline', label: '个人清醒基线指数（新版）' },
                   { value: 'v025', label: '0.2.5 对照算法' }
                 ]}
                 onChange={(drowsinessMode) => updateSleepMusic({
@@ -724,38 +738,8 @@ export function SettingsPanel({
       </>}
 
       {section === 'signal' && <>
-      <div className="setting-group">
-        <h3><span className="group-dot" />原始滤波（全部波形）</h3>
-        <label className="check-row">
-          <input type="checkbox" checked={settings.filterEnabled} onChange={(event) => update({ filterEnabled: event.target.checked })} />
-          全部波形显示带通（低时延）
-        </label>
-        <div className="two-col">
-          <label>
-            低频 Hz
-            <input type="number" step="0.1" value={settings.filterLow} onChange={(event) => update({ filterLow: Number(event.target.value) })} />
-          </label>
-          <label>
-            高频 Hz
-            <input type="number" step="0.1" value={settings.filterHigh} onChange={(event) => update({ filterHigh: Number(event.target.value) })} />
-          </label>
-        </div>
-        <label className="check-row">
-          <input type="checkbox" checked={settings.kalmanEnabled} onChange={(event) => update({ kalmanEnabled: event.target.checked })} />
-          卡尔曼滤波
-        </label>
-        <div className="two-col">
-          <label>
-            Q
-            <input type="number" step="0.01" value={settings.kalmanQ} onChange={(event) => update({ kalmanQ: Number(event.target.value) })} />
-          </label>
-          <label>
-            R
-            <input type="number" step="0.1" value={settings.kalmanR} onChange={(event) => update({ kalmanR: Number(event.target.value) })} />
-          </label>
-        </div>
-        <p className="setting-help">仅作用于“全部波形”显示。卡尔曼用于抑制逐点随机抖动：Q 越大跟随越快，R 越大越平滑但响应更慢。</p>
-      </div>
+      <SignalCalibrationSettings settings={settings.signalDisplay} onChange={signalDisplay=>update({signalDisplay})}/>
+      <p className="setting-help">显示滤波开关与参数已移至每个页面的顶部工具栏；各页独立保存，不影响原始记录与算法输入。</p>
 
       <div className="setting-group">
         <h3><span className="group-dot" />脑电参数</h3>
@@ -770,7 +754,7 @@ export function SettingsPanel({
         </div>
         <div className="two-col">
           <div className="field-control">
-            <span className="field-label">Scale</span>
+          <span className="field-label">底层量程（ADC）</span>
             <ThemedSelect
               ariaLabel="Scale"
               value={String(settings.eeg.scale)}
@@ -788,30 +772,7 @@ export function SettingsPanel({
             />
           </div>
         </div>
-        <label className="check-row">
-          <input type="checkbox" checked={settings.eeg.bandpassEnabled} onChange={(event) => updateEeg({ bandpassEnabled: event.target.checked })} />
-          EEG 原始波形带通（低时延）
-        </label>
-        <div className="two-col">
-          <label>
-            EEG 低频
-            <input type="number" step="0.1" value={settings.eeg.bandpassLow} onChange={(event) => updateEeg({ bandpassLow: Number(event.target.value) })} />
-          </label>
-          <label>
-            EEG 高频
-            <input type="number" step="0.1" value={settings.eeg.bandpassHigh} onChange={(event) => updateEeg({ bandpassHigh: Number(event.target.value) })} />
-          </label>
-        </div>
-        <p className="setting-help">仅作用于脑电/纯波形模式顶部的原始 EEG；下方各频带始终按各自范围滤波。关闭后显示已正确转为有符号的原始 EEG。</p>
-        <div className="field-control">
-          <span className="field-label">陷波</span>
-          <ThemedSelect
-            ariaLabel="陷波"
-            value={String(settings.eeg.notch)}
-            options={notchOptions}
-            onChange={(notch) => updateEeg({ notch: parseNotch(notch) })}
-          />
-        </div>
+        <p className="setting-help">以下频带范围用于频带分离与功率计算；本页主波形的显示滤波在页面顶部调整。</p>
         <div className="band-editor">
           {createEegBands().map((band) => (
             <div className="band-row" key={band.key} style={{ '--band-color': band.color } as React.CSSProperties}>
@@ -833,6 +794,19 @@ export function SettingsPanel({
         </div>
       </div>
 
+      <details className="setting-group pure-advanced-settings"><summary>专注视图频带参数（ADC量程）</summary>
+        {createPureBands().map(band=><div className="two-col" key={band.key}>
+          <label>{band.label}低频Hz<input type="number" step=".1" value={settings.eeg.pure.bandRanges[band.key].low}
+            onChange={event=>updateEeg({pure:{...settings.eeg.pure,bandRanges:{...settings.eeg.pure.bandRanges,[band.key]:
+              {...settings.eeg.pure.bandRanges[band.key],low:Number(event.target.value)}}}})}/></label>
+          <label>{band.label}高频Hz<input type="number" step=".1" value={settings.eeg.pure.bandRanges[band.key].high}
+            onChange={event=>updateEeg({pure:{...settings.eeg.pure,bandRanges:{...settings.eeg.pure.bandRanges,[band.key]:
+              {...settings.eeg.pure.bandRanges[band.key],high:Number(event.target.value)}}}})}/></label>
+          <label>{band.label}量程<ThemedSelect ariaLabel={band.label+'专注量程'} value={String(settings.eeg.pure.bandScales[band.key])}
+            options={eegScaleOptions} onChange={value=>updateEeg({pure:{...settings.eeg.pure,bandScales:
+              {...settings.eeg.pure.bandScales,[band.key]:parseAutoNumber(value)}}})}/></label>
+        </div>)}
+      </details>
       <div className="setting-group">
         <h3><span className="group-dot" />通道显示</h3>
         <div className="channel-grid">

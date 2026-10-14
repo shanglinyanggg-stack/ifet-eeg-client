@@ -5,7 +5,8 @@ import type { SampleEvent } from './protocol';
 export const DEMO_SAMPLE_RATE = EEG_SAMPLE_RATE;
 
 // 累计样本序号，用作相位基准，避免依赖 Date.now 抖动
-let phase = 0;
+let phaseSeconds = 0;
+let nextTimestamp:number|null=null;
 
 const TAU = Math.PI * 2;
 
@@ -55,17 +56,18 @@ function buildPacket(t: number) {
   };
 }
 
-// 生成 count 个连续样本（125 Hz / 8 ms 间隔），最后一个对齐当前时刻
-export function createDemoSamples(count: number): SampleEvent[] {
+// Same native-rate logical clock as the acquisition display; timer jitter must
+// not create synthetic packet gaps or duplicate times inside a demo session.
+export function createDemoSamples(count: number, sampleRate=DEMO_SAMPLE_RATE): SampleEvent[] {
   const now = Date.now();
-  const startIdx = phase;
-  phase += count;
+  const interval=1000/sampleRate;
+  const arrivalStart=now-(count-1)*interval;
+  if(nextTimestamp===null||arrivalStart-nextTimestamp>250)nextTimestamp=arrivalStart;
   const events: SampleEvent[] = [];
   for (let i = 0; i < count; i++) {
-    const idx = startIdx + i;
-    const t = idx / DEMO_SAMPLE_RATE;
-    const timestamp = new Date(now - (count - 1 - i) * (1000 / DEMO_SAMPLE_RATE)).toISOString();
-    events.push({ timestamp, sampleRateHz: DEMO_SAMPLE_RATE, packet: buildPacket(t) });
+    const timestamp = new Date(nextTimestamp).toISOString();
+    events.push({ timestamp, sampleRateHz: sampleRate, packet: buildPacket(phaseSeconds) });
+    phaseSeconds+=1/sampleRate;nextTimestamp+=interval;
   }
   return events;
 }

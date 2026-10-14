@@ -63,7 +63,7 @@ export function BandDonut({ shares }: BandDonutProps) {
     <section className="panel fill-panel donut-panel" aria-label="频带占比">
       <div className="panel-header">
         <h2>频带占比</h2>
-        <span className="panel-meta">中位参考 · 伪迹门控</span>
+        <span className="panel-meta">Welch真实功率 · 伪迹门控</span>
       </div>
       <div className="donut-body">
         <svg viewBox={`0 0 ${size} ${size}`} className="band-donut" role="img" aria-label="频带能量占比饼图">

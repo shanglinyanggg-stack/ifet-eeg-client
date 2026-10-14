@@ -2,6 +2,11 @@ import { describe, expect, test } from 'vitest';
 import { filterDebugEegWindow, filterPpgDisplayWindow, resolveDebugScale } from './debug-signal';
 
 describe('EEGSleepUpper debug signal display', () => {
+  test('a missing PPG point cannot poison all later filtered samples',()=>{
+    const source=Array.from({length:500},(_,index)=>({timestamp:index*8,value:8000000+Math.sin(index/10)*1000,valid:index!==150}));
+    const output=filterPpgDisplayWindow(source,125);
+    expect(Number.isNaN(output[150].value)).toBe(true);expect(output.slice(151).every(point=>Number.isFinite(point.value))).toBe(true);
+  });
   test('keeps only the latest ten seconds and median-centers raw EEG', () => {
     const values = Array.from({ length: 1200 }, (_, index) => ({
       timestamp: index * 10,

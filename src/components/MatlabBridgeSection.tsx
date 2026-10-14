@@ -12,7 +12,7 @@ const empty: BridgeStatus = { running: false, connected: false, port: 45321, eve
   active_stimuli: 0, last_event: '', last_receive_delay_ms: null, last_durable_delay_ms: null,
   clock_uncertainty_ms: null, event_path: '', csv_path: '', connection_path: '', last_error: '',
   alignment_pending: false, alignment_path: '' };
-const ms = (value: number | null) => value === null ? '—' : `${value.toFixed(2)} ms`;
+const ms = (value: number | null) => value == null || !Number.isFinite(value) ? '—' : `${value.toFixed(2)} ms`;
 
 export function MatlabBridgeSection({ onPrepare }: { onPrepare?: () => void }) {
   const [status, setStatus] = useState(empty);
@@ -22,7 +22,7 @@ export function MatlabBridgeSection({ onPrepare }: { onPrepare?: () => void }) {
   useEffect(() => {
     let cancelled = false;
     const refresh = () => invoke<BridgeStatus>('matlab_bridge_status').then(next => {
-      if (!cancelled) setStatus(next);
+      if (!cancelled && next && typeof next.running==='boolean') setStatus({...empty,...next});
     }).catch(() => undefined);
     void refresh(); const timer = window.setInterval(() => void refresh(), 500);
     return () => { cancelled = true; window.clearInterval(timer); };
@@ -58,6 +58,7 @@ export function MatlabBridgeSection({ onPrepare }: { onPrepare?: () => void }) {
       <dt>时钟同步不确定度</dt><dd>±{ms(status.clock_uncertainty_ms)}</dd>
     </dl>
     <small>这里是软件时间估计，不是麦克风/光电传感器测得的物理延迟。每个开始、停止均单独保存时间和参数。</small>
+    <small>marker 时间与 EEG 使用相同的本地时区。记录中的样本位置为临时值；停止记录后会按完整 EEG 自动校正，并保留校正前 marker 备份。参数表的 event_time_utc 是 UTC，event_time 是本地时间。</small>
     {status.connection_path && <p className="matlab-bridge-path">连接配置：{status.connection_path}</p>}
     {status.csv_path && <p className="matlab-bridge-path">参数表：{status.csv_path}</p>}
     {status.alignment_pending && <p>正在对齐已保存 EEG 的刺激位置…</p>}

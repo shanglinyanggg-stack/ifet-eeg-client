@@ -16,6 +16,7 @@ describe('AcquisitionModeView', () => {
   test('defaults to live spectrum and can switch to selected-channel bands', () => {
     const onSelectedChannelChange = vi.fn();
     const onAddMarker = vi.fn();
+    const onTimeWindowChange=vi.fn();
     render(
       <AcquisitionModeView
         eegBuffers={{ eeg1: [], eeg2: [], eeg3: [], eeg4: [] }}
@@ -40,6 +41,7 @@ describe('AcquisitionModeView', () => {
         participantId="P001"
         onParticipantIdChange={vi.fn()}
         onSelectedChannelChange={onSelectedChannelChange}
+        onTimeWindowChange={onTimeWindowChange}
         onToggleRecording={vi.fn()}
         onAddMarker={onAddMarker}
         onStartAlignment={vi.fn()}
@@ -66,6 +68,10 @@ describe('AcquisitionModeView', () => {
     fireEvent.click(screen.getByLabelText('采集分析通道'));
     fireEvent.click(screen.getByRole('option', { name: 'EEG3' }));
     expect(onSelectedChannelChange).toHaveBeenCalledWith('eeg3');
+
+    fireEvent.click(screen.getByLabelText('采集显示时间窗'));
+    fireEvent.click(screen.getByRole('option',{name:'60 s'}));
+    expect(onTimeWindowChange).toHaveBeenCalledWith(60);
 
     fireEvent.click(screen.getByRole('button', { name: '运动伪迹' }));
     expect(onAddMarker).toHaveBeenCalledWith('运动伪迹', '');

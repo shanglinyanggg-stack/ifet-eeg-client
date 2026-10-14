@@ -21,7 +21,7 @@ describe('settings persistence', () => {
     expect(defaultSettings.sleepMusic.maximumVolume).toBe(0.8);
     expect(defaultSettings.displayDelayMs).toBe(0);
     expect(defaultSettings.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8787');
-    expect(defaultSettings.sleepMusic.drowsinessMode).toBe('wearable-trial');
+    expect(defaultSettings.sleepMusic.drowsinessMode).toBe('personal-baseline');
     expect(defaultSettings.sleepMusic.libraryTracks).toHaveLength(5);
     expect(defaultSettings.sleepMusic.tracks).toHaveLength(0);
   });
@@ -40,7 +40,7 @@ describe('settings persistence', () => {
   test('offers preset EEG scale and time window choices with auto defaults', () => {
     expect(eegScaleOptions[0]).toEqual({ value: 'auto', label: 'auto' });
     expect(eegScaleOptions.map((option) => option.value)).toContain('100');
-    expect(eegTimeWindowOptions[0]).toEqual({ value: 'auto', label: 'auto' });
+    expect(eegTimeWindowOptions[0]).toEqual({ value: 'auto', label: '自动（10 s）' });
     expect(eegTimeWindowOptions.map((option) => option.value)).toContain('10');
     expect(displayDelayOptions[0]).toEqual({ value: '0', label: '实时' });
     expect(displayDelayOptions.map((option) => option.value)).toContain('1000');
@@ -121,8 +121,17 @@ describe('settings persistence', () => {
     expect(loaded.sleepMusic.tracks).toHaveLength(5);
     expect(loaded.sleepMusic.libraryTracks).toHaveLength(10);
     expect(loaded.sleepMusic.libraryTracks.some((track) => track.id === 'builtin-star-alpha')).toBe(true);
-    expect(loaded.eeg.bandRanges.delta).toEqual({ low: 0.5, high: 2 });
-    expect(loaded.eeg.pure.bandRanges.delta).toEqual({ low: 0.5, high: 2 });
+    expect(loaded.eeg.bandRanges.delta).toEqual({ low: 0.5, high: 4 });
+    expect(loaded.eeg.pure.bandRanges.delta).toEqual({ low: 0.5, high: 4 });
     expect(loaded.sleepMusic.serviceEndpoint).toBe('http://127.0.0.1:8787');
+  });
+
+  test('retains custom bands and supports a 60 second acquisition window',()=>{
+    saveSettings({...defaultSettings,eeg:{...defaultSettings.eeg,timeWindowSeconds:60,
+      bandRanges:{...defaultSettings.eeg.bandRanges,alpha:{low:9,high:12}}}});
+    const loaded=loadSettings();
+    expect(loaded.eeg.timeWindowSeconds).toBe(60);
+    expect(loaded.eeg.bandRanges.alpha).toEqual({low:9,high:12});
+    expect(eegTimeWindowOptions.map(option=>option.value)).toContain('60');
   });
 });

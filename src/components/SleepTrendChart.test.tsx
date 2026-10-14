@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, test } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, test,vi } from 'vitest';
+import {emptyPersonalDrowsinessSnapshot} from '../domain/personal-drowsiness';
 import type { SleepMetrics } from '../domain/sleep-metrics';
 import { SleepTrendChart } from './SleepTrendChart';
 
@@ -26,6 +27,15 @@ afterEach(() => {
 });
 
 describe('SleepTrendChart', () => {
+  test('personal index remains unavailable until an explicit alert calibration',()=>{
+    const onCalibrate=vi.fn();
+    render(<SleepTrendChart metrics={metrics} sleepProbability={.99} drowsinessMode="personal-baseline"
+      drowsinessEstimate={emptyPersonalDrowsinessSnapshot()} onCalibrate={onCalibrate}/>);
+    expect(screen.getByLabelText('困意指数未校准')).toHaveTextContent('--');
+    expect(screen.getByText('个人基线 · 非睡眠概率')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'测量20秒清醒基线'}));
+    expect(onCalibrate).toHaveBeenCalledTimes(1);
+  });
   test('uses the clearer sleepiness wording for the score', () => {
     render(<SleepTrendChart metrics={metrics} />);
 

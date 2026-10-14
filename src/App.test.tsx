@@ -40,6 +40,23 @@ afterEach(() => {
 });
 
 describe('App settings bootstrapping', () => {
+  test('retains guidance, external synchronization, calibration and recording across workspaces',async()=>{
+    render(<App/>);
+    fireEvent.click(screen.getByRole('button',{name:'助眠引导',exact:true}));
+    expect(await screen.findByLabelText('助眠控制与基线')).toBeInTheDocument();
+    expect(screen.getByLabelText('睡眠音乐引导')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'实验同步',exact:true}));
+    expect(await screen.findByText('MATLAB 刺激事件接收')).toBeInTheDocument();
+    expect(screen.getByText('启用 LSL 实时输出')).toBeInTheDocument();
+    expect(screen.getByRole('button',{name:'数据采集模式'})).toHaveAttribute('aria-pressed','true');
+    fireEvent.click(screen.getByRole('button',{name:'电压标定'}));
+    expect(await screen.findByLabelText('EEG单位标定')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'关闭设置',exact:true}));
+    fireEvent.click(screen.getByRole('button',{name:'开始记录',exact:true}));
+    expect(await screen.findByRole('button',{name:/停止记录/})).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'全部信号',exact:true}));
+    expect(screen.getByRole('button',{name:/停止记录/})).toBeInTheDocument();
+  });
   test('converts protocol u24 EEG values before raw display', () => {
     const values = extractChannelValues({
       timestamp: '2026-07-19T00:00:00.000Z',
@@ -139,9 +156,10 @@ describe('App settings bootstrapping', () => {
   test('keeps the scan workflow active through automatic connection', async () => {
     render(<App />);
 
+    fireEvent.click(screen.getByRole('button',{name:'设备连接与采样率'}));
     fireEvent.click(screen.getByRole('button', { name: '扫描' }));
 
     expect(await screen.findByText('已连接：TD10 Preview')).toBeInTheDocument();
-    expect(screen.getByText(/preview-device · 采样率已设置为 125 Hz/)).toBeInTheDocument();
+    expect(screen.getByText(/preview-device · 设备已连接：TD10 Preview · 125 Hz/)).toBeInTheDocument();
   });
 });

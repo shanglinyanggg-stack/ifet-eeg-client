@@ -27,9 +27,10 @@ async fn connect_device(
     state: State<'_, BleManagerState>,
     lsl: State<'_, LslManagerState>,
     device_id: String,
+    sample_rate_hz:Option<u32>,
 ) -> Result<(), String> {
     state
-        .connect_device(app, device_id, lsl.publisher())
+        .connect_device(app, device_id, lsl.publisher(),sample_rate_hz)
         .await
         .map_err(to_user_error)
 }

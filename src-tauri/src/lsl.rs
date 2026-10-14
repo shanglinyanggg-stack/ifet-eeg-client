@@ -258,7 +258,7 @@ impl LslSampleBatch {
                 event.packet.ppg.acc_z as i32,
             ]);
             batch.quality.push(vec![
-                if event.valid { 1 } else { 0 },
+                if event.valid&&event.observed { 1 } else { 0 },
                 event.device_sequence.map(i32::from).unwrap_or(-1),
                 eeg.flag.map(i32::from).unwrap_or(-1),
             ]);
@@ -663,6 +663,7 @@ mod tests {
             timestamp: "2026-08-07T10:00:00+08:00".to_string(),
             sample_rate_hz: 125,
             valid: false,
+            observed: false,
             device_sequence: Some(7),
             packet: DecodedPacket {
                 sequence: Some(7),
@@ -749,6 +750,7 @@ mod tests {
                 timestamp: "2026-08-07T10:00:00+08:00".to_string(),
                 sample_rate_hz: 125,
                 valid: true,
+                observed: true,
                 device_sequence: Some(9),
                 packet: DecodedPacket {
                     sequence: Some(9),

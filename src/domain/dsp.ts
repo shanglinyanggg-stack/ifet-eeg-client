@@ -3,6 +3,11 @@ import type { AutoNumber } from './settings';
 export interface TimedValue {
   timestamp: number;
   value: number;
+  valid?: boolean;
+  /** Display-copy only. Never treats a missing acquired sample as valid. */
+  interpolated?: boolean;
+  /** False for compatibility clock-recovery points not present in a BLE packet. */
+  observed?:boolean;
 }
 
 export interface BandValue {
@@ -64,11 +69,12 @@ export class RingBuffer<T> {
     return this.buffer[(start + index) % this.capacity];
   }
 
-  toArray(): T[] {
-    const out: T[] = [];
-    const start = (this.head - this.size + this.capacity) % this.capacity;
-    for (let i = 0; i < this.size; i += 1) {
-      out.push(this.buffer[(start + i) % this.capacity] as T);
+  toArray(maxItems=this.size): T[] {
+    const count=Math.min(this.size,Math.max(0,Math.floor(maxItems)));
+    const out=new Array<T>(count);
+    const start = (this.head - count + this.capacity) % this.capacity;
+    for (let i = 0; i < count; i += 1) {
+      out[i]=this.buffer[(start + i) % this.capacity] as T;
     }
     return out;
   }
@@ -82,8 +88,8 @@ export class RingBuffer<T> {
 
 export function createEegBands(): EegBandDefinition[] {
   return [
-    { key: 'delta', label: 'Delta', low: 0.5, high: 2, color: '#1d4ed8' },
-    { key: 'theta', label: 'Theta', low: 4, high: 7, color: '#7dd3fc' },
+    { key: 'delta', label: 'Delta', low: 0.5, high: 4, color: '#1d4ed8' },
+    { key: 'theta', label: 'Theta', low: 4, high: 8, color: '#7dd3fc' },
     { key: 'alpha', label: 'Alpha', low: 8, high: 13, color: '#f59e0b' },
     { key: 'beta', label: 'Beta', low: 13, high: 30, color: '#ef4444' }
   ];
@@ -103,7 +109,7 @@ export interface PureBandDefinition {
 
 export function createPureBands(): PureBandDefinition[] {
   return [
-    { key: 'delta', label: 'Delta', symbol: 'δ', low: 0.5, high: 2, color: '#1d4ed8' },
+    { key: 'delta', label: 'Delta', symbol: 'δ', low: 0.5, high: 4, color: '#1d4ed8' },
     { key: 'alpha', label: 'Alpha', symbol: 'α', low: 8, high: 13, color: '#f59e0b' },
     { key: 'beta', label: 'Beta', symbol: 'β', low: 13, high: 30, color: '#ef4444' },
     { key: 'gamma', label: 'Gamma', symbol: 'γ', low: 30, high: 45, color: '#f472b6' }
@@ -132,7 +138,7 @@ export function resolveScale(scale: AutoNumber, values: number[]): number {
     return scale;
   }
   if (values.length === 0) return 1;
-  const maxAbs = values.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
+  const maxAbs = values.reduce((max, value) => Number.isFinite(value) ? Math.max(max, Math.abs(value)) : max, 0);
   return Math.max(1, Math.ceil(maxAbs * 1.2));
 }
 
@@ -163,6 +169,9 @@ export function downsampleTimedValues(values: TimedValue[], maxPoints: number): 
     let minIndex = start;
     let maxIndex = start;
     for (let index = start + 1; index < end; index += 1) {
+      if (!Number.isFinite(values[index].value) || values[index].valid === false) {
+        minIndex=index;maxIndex=index;break;
+      }
       if (values[index].value < values[minIndex].value) minIndex = index;
       if (values[index].value > values[maxIndex].value) maxIndex = index;
     }
@@ -185,6 +194,7 @@ function pushUnique(values: TimedValue[], value: TimedValue): void {
 }
 
 export class Biquad {
+  private initialized = false;
   private x1 = 0;
   private x2 = 0;
   private y1 = 0;
@@ -241,6 +251,13 @@ export class Biquad {
   }
 
   process(input: number): number {
+    // Start at the DC steady state, not zero. A headband can have a large
+    // electrode offset; zero-state restart would manufacture a huge transient.
+    if (!this.initialized) {
+      const denominator=1+this.a1+this.a2;
+      const steady=Math.abs(denominator)>1e-14?(this.b0+this.b1+this.b2)/denominator*input:0;
+      this.x1=this.x2=input;this.y1=this.y2=steady;this.initialized=true;
+    }
     const output = this.b0 * input + this.b1 * this.x1 + this.b2 * this.x2 - this.a1 * this.y1 - this.a2 * this.y2;
     this.x2 = this.x1;
     this.x1 = input;
@@ -250,6 +267,7 @@ export class Biquad {
   }
 
   reset() {
+    this.initialized = false;
     this.x1 = 0;
     this.x2 = 0;
     this.y1 = 0;
@@ -459,10 +477,13 @@ export class StreamingFilterCache {
   private key = '';
   private chain: SampleProcessor = new FilterChain([]);
   private outputs: TimedValue[] = [];
+  private lastValidInput:number|undefined;
+  private lastValidTimestamp=Number.NEGATIVE_INFINITY;
+  private gapReset=false;
 
   update(key: string, values: TimedValue[], createChain: () => SampleProcessor): TimedValue[] {
     if (values.length === 0) {
-      this.outputs = [];
+      this.reset();
       return [];
     }
 
@@ -470,19 +491,33 @@ export class StreamingFilterCache {
       this.key = key;
       this.chain = createChain();
       this.outputs = [];
+      this.lastValidInput=undefined;this.lastValidTimestamp=Number.NEGATIVE_INFINITY;this.gapReset=false;
     }
 
     const lastTimestamp = this.outputs[this.outputs.length - 1]?.timestamp ?? Number.NEGATIVE_INFINITY;
-    for (const point of values) {
-      if (point.timestamp <= lastTimestamp) continue;
-      this.outputs.push({
-        timestamp: point.timestamp,
-        value: this.chain.process(point.value)
-      });
+    let low=0,high=values.length;
+    while(low<high){const middle=(low+high)>>>1;if(values[middle].timestamp<=lastTimestamp)low=middle+1;else high=middle;}
+    for (let index=low;index<values.length;index++) {
+      const point=values[index];
+      let value:number;
+      if(point.valid===false||point.observed===false||!Number.isFinite(point.value)) {
+        // Advance filter state through <=100ms gaps using last input, but keep
+        // the plotted sample invalid. No fabricated point enters raw records.
+        if(this.lastValidInput!==undefined&&point.timestamp-this.lastValidTimestamp<=100)
+          this.chain.process(this.lastValidInput);
+        else if(!this.gapReset){this.chain.reset();this.gapReset=true;}
+        value=Number.NaN;
+      } else {
+        if(point.timestamp-this.lastValidTimestamp>100&&!this.gapReset&&this.lastValidInput!==undefined)this.chain.reset();
+        value=this.chain.process(point.value);this.lastValidInput=point.value;this.lastValidTimestamp=point.timestamp;this.gapReset=false;
+      }
+      this.outputs.push({...point,value});
     }
 
     const firstVisibleTimestamp = values[0].timestamp;
-    const firstOutputIndex = this.outputs.findIndex((point) => point.timestamp >= firstVisibleTimestamp);
+    low=0;high=this.outputs.length;
+    while(low<high){const middle=(low+high)>>>1;if(this.outputs[middle].timestamp<firstVisibleTimestamp)low=middle+1;else high=middle;}
+    const firstOutputIndex = low;
     if (firstOutputIndex > 0) {
       this.outputs = this.outputs.slice(firstOutputIndex);
     }
@@ -494,6 +529,7 @@ export class StreamingFilterCache {
     this.key = '';
     this.chain = new FilterChain([]);
     this.outputs = [];
+    this.lastValidInput=undefined;this.lastValidTimestamp=Number.NEGATIVE_INFINITY;this.gapReset=false;
   }
 
   private shouldReset(values: TimedValue[]): boolean {

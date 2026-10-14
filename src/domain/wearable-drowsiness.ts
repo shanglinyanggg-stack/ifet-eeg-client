@@ -2,6 +2,7 @@ import { computeDrowsinessScore } from './drowsiness';
 import type { SleepMetrics } from './sleep-metrics';
 
 export type WearableDrowsinessSource =
+  | 'personal-baseline'
   | 'alert-calibration'
   | 'wearable-fusion'
   | 'spectral-only'
@@ -19,6 +20,9 @@ export interface WearableDrowsinessSnapshot {
   thetaBetaRatio: number;
   slowFastRatio: number;
   baselineThetaBetaRatio: number | null;
+  status?: string;
+  calibrationActive?: boolean;
+  reason?: string;
 }
 
 interface WearableDrowsinessInput {

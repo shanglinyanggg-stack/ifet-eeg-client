@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState,useRef } from 'react';
 import {
   Activity,
   BrainCircuit,
@@ -21,13 +21,13 @@ import {
   debugEegFilterOptions,
   debugEegScaleOptions,
   filterDebugEegWindow,
-  filterPpgDisplayWindow,
   resolveDebugScale,
   type DebugEegFilterMode,
   type DebugEegScale,
   type DebugSignalView
 } from '../domain/debug-signal';
-import { EEG_SAMPLE_RATE, type TimedValue } from '../domain/dsp';
+import { EEG_SAMPLE_RATE,FilterChain,StreamingFilterCache, type TimedValue } from '../domain/dsp';
+import {createPageDisplayProcessor,type PageFilter} from '../domain/page-filters';
 import type { MusicPlayerController } from '../domain/music-player';
 import {
   formatEnabledBlinkPairs,
@@ -35,7 +35,7 @@ import {
   type SleepDemoSignalResponse
 } from '../domain/sleep-demo-signal';
 import type { SleepSessionState } from '../domain/sleep-session';
-import type { EegChannel, SleepMusicSettings } from '../domain/settings';
+import type { EegChannel, SleepMusicSettings,AutoNumber } from '../domain/settings';
 import type { SleepStagingStepResponse } from '../domain/sleep-staging-client';
 import {
   createWearableDrowsinessSnapshot,
@@ -70,6 +70,9 @@ export interface DebugBlinkTrial {
 type PpgChannel = 'ir1' | 'red1' | 'green1' | 'ir2' | 'red2' | 'green2';
 
 interface DebugModeViewProps {
+  displayFilter?:PageFilter;
+  embedded?:boolean;
+  displayScale?:AutoNumber;
   eegBuffers: Record<EegChannel, TimedValue[]>;
   ppgBuffers: Record<PpgChannel, TimedValue[]>;
   connected: boolean;
@@ -137,6 +140,9 @@ const MARKERS = [
 ];
 
 export function DebugModeView({
+  displayFilter,
+  embedded=false,
+  displayScale,
   eegBuffers,
   ppgBuffers,
   connected,
@@ -187,6 +193,8 @@ export function DebugModeView({
   const [note, setNote] = useState('');
   const [signalView, setSignalView] = useState<DebugSignalView>('eeg');
   const [filterMode, setFilterMode] = useState<DebugEegFilterMode>('0.5-30');
+  const filters=useRef(EEG_CHANNELS.map(()=>new StreamingFilterCache()));
+  const ppgFilters=useRef(Object.fromEntries(['ir1','red1','green1','ir2','red2','green2'].map(key=>[key,new StreamingFilterCache()])) as Record<PpgChannel,StreamingFilterCache>);
   const [eegScale, setEegScale] = useState<DebugEegScale>('5000');
   const [now, setNow] = useState(Date.now());
 
@@ -197,17 +205,21 @@ export function DebugModeView({
   }, [blinkTrial?.status]);
 
   const debugEeg = useMemo(() => Object.fromEntries(
-    EEG_CHANNELS.map(({ key }) => [
+    EEG_CHANNELS.map(({ key },index) => [
       key,
-      filterDebugEegWindow(eegBuffers[key], filterMode, sampleRateHz)
+      signalView!=='eeg'?[]:displayFilter?filters.current[index].update(`${key}|${sampleRateHz}|${JSON.stringify(displayFilter)}`,eegBuffers[key],
+        ()=>createPageDisplayProcessor(displayFilter,sampleRateHz)):filterDebugEegWindow(eegBuffers[key], filterMode, sampleRateHz,60)
     ])
-  ) as Record<EegChannel, TimedValue[]>, [eegBuffers, filterMode, sampleRateHz]);
+  ) as Record<EegChannel, TimedValue[]>, [eegBuffers, filterMode, sampleRateHz,displayFilter,signalView]);
   const debugPpg = useMemo(() => Object.fromEntries(
     (Object.keys(ppgBuffers) as PpgChannel[]).map((key) => [
       key,
-      filterPpgDisplayWindow(ppgBuffers[key], sampleRateHz, 10)
+      signalView!=='ppg'?[]:ppgFilters.current[key].update(`${key}|${sampleRateHz}`,ppgBuffers[key],()=>{
+        const chain=FilterChain.butterworthBandpass({low:.35,high:8,sampleRate:sampleRateHz,order:2});
+        return chain;
+      })
     ])
-  ) as Record<PpgChannel, TimedValue[]>, [ppgBuffers, sampleRateHz]);
+  ) as Record<PpgChannel, TimedValue[]>, [ppgBuffers, sampleRateHz,signalView]);
 
   const telemetry = demoResponse?.telemetry;
   const state = demoResponse?.state;
@@ -226,7 +238,7 @@ export function DebugModeView({
 
   return (
     <div className="debug-mode" aria-label="调试模式界面">
-      <header className="debug-toolbar panel">
+      {!embedded&&<header className="debug-toolbar panel">
         <div className="debug-toolbar-title">
           <Bug size={18} />
           <span>
@@ -246,7 +258,7 @@ export function DebugModeView({
             {recordingPending ? '处理中…' : recording ? '停止记录' : '开始记录'}
           </button>
         </div>
-      </header>
+      </header>}
 
       <div className="debug-display-controls panel">
         <div className="debug-segmented" aria-label="调试信号类别">
@@ -257,17 +269,17 @@ export function DebugModeView({
             <Activity size={13} />6 路 PPG
           </button>
         </div>
-        <label>
+        {!embedded&&<label>
           <span>显示滤波</span>
-          <ThemedSelect
+        <ThemedSelect
             ariaLabel="调试 EEG 显示滤波"
             value={filterMode}
             options={debugEegFilterOptions}
             onChange={(value) => setFilterMode(value as DebugEegFilterMode)}
             disabled={signalView !== 'eeg'}
           />
-        </label>
-        <label>
+        </label>}
+        {!embedded&&<label>
           <span>EEG 量程</span>
           <ThemedSelect
             ariaLabel="调试 EEG 量程"
@@ -276,7 +288,7 @@ export function DebugModeView({
             onChange={(value) => setEegScale(value as DebugEegScale)}
             disabled={signalView !== 'eeg'}
           />
-        </label>
+        </label>}
         <div className="debug-link-summary">
           <span>{linkStatus}</span>
           <span>设备 flag <strong>{latestDeviceFlag ?? '--'}</strong></span>
@@ -289,12 +301,12 @@ export function DebugModeView({
           {signalView === 'eeg' ? EEG_CHANNELS.map((channel) => (
             <WaveformCanvas
               key={channel.key}
-              title={`${channel.key.toUpperCase()} · ${debugEegFilterOptions.find((item) => item.value === filterMode)?.label}`}
+              title={`${channel.key.toUpperCase()} · ${displayFilter?displayFilter.enabled?`${displayFilter.low}–${displayFilter.high} Hz`:'原始（未滤波）':debugEegFilterOptions.find((item) => item.value === filterMode)?.label}`}
               series={[{
                 label: channel.key.toUpperCase(),
                 color: channel.color,
                 values: debugEeg[channel.key],
-                scale: resolveDebugScale(eegScale)
+                scale: displayScale===undefined?resolveDebugScale(eegScale):typeof displayScale==='number'?displayScale:undefined
               }]}
               fill
             />

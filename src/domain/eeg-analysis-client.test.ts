@@ -1,0 +1,30 @@
+import {afterEach,expect,test,vi} from 'vitest';
+import {EegAnalysisClient} from './eeg-analysis-client';
+import {defaultSettings} from './settings';
+import {emptyRobustEegSnapshot} from './robust-eeg';
+afterEach(()=>vi.unstubAllGlobals());
+test('worker receives only a bounded 9.5s request, at most once per second',()=>{
+  const worker={onmessage:null as any,onerror:null as any,postMessage:vi.fn(),terminate:vi.fn()};
+  vi.stubGlobal('Worker',function(){});
+  const client=new EegAnalysisClient(()=>worker as unknown as Worker);
+  const values=Array.from({length:65000},(_,index)=>({timestamp:index,value:1}));
+  client.submit('eeg1',values,1000,defaultSettings.eeg);
+  expect(worker.postMessage).toHaveBeenCalledTimes(1);
+  expect(worker.postMessage.mock.calls[0][0].values.length).toBe(9501);
+  client.submit('eeg1',[...values,{timestamp:65000,value:1}],1000,defaultSettings.eeg);
+  expect(worker.postMessage).toHaveBeenCalledTimes(1);
+  client.submit('eeg1',[...values,{timestamp:66000,value:1}],1000,defaultSettings.eeg);
+  client.submit('eeg1',[...values,{timestamp:67000,value:1}],1000,defaultSettings.eeg);
+  worker.onmessage({data:{id:1,snapshot:emptyRobustEegSnapshot()}});
+  expect(worker.postMessage).toHaveBeenCalledTimes(2);
+  expect(worker.postMessage.mock.calls[1][0].id).toBe(3);
+  client.dispose();expect(worker.terminate).toHaveBeenCalled();
+});
+test('inactive lifecycle disposal can restart after React strict-effect cleanup',()=>{
+  const worker={onmessage:null as any,onerror:null as any,postMessage:vi.fn(),terminate:vi.fn()};
+  vi.stubGlobal('Worker',function(){});
+  const create=vi.fn(()=>worker as unknown as Worker),client=new EegAnalysisClient(create);
+  client.submit('eeg1',[],1000,defaultSettings.eeg);client.dispose();
+  client.submit('eeg1',[],1000,defaultSettings.eeg);
+  expect(create).toHaveBeenCalledTimes(2);client.dispose();
+});

@@ -7,6 +7,9 @@ function Get-Sha256Hex([string]$Path) {
     finally { $Hasher.Dispose(); $Stream.Dispose() }
 }
 $Root = Split-Path -Parent $PSScriptRoot
+$AppConfig = Get-Content -LiteralPath (Join-Path $Root "src-tauri\tauri.conf.json") -Raw | ConvertFrom-Json
+$ExpectedTitle = [string]$AppConfig.app.windows[0].title
+$ExpectedVersion = [string]$AppConfig.version
 $Bundle = Join-Path $Root "src-tauri\target\release\bundle"
 $Installer = Get-ChildItem -LiteralPath (Join-Path $Bundle "nsis") -Filter "*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $Installer) { throw "Windows EXE installer not found" }
@@ -33,7 +36,7 @@ try {
         Start-Sleep -Milliseconds 250
         $Process.Refresh()
         if ($Process.HasExited) { throw "Installed application exited during startup: $($Process.ExitCode)" }
-        if ($Process.MainWindowTitle -eq "iFET EEG Client MATLAB Bridge 0.4.0" -and $Process.MainWindowHandle -ne 0) { $Ready=$true; break }
+        if ($Process.MainWindowTitle -eq $ExpectedTitle -and $Process.MainWindowHandle -ne 0) { $Ready=$true; break }
     }
     if (-not $Ready) { throw "Installed application did not create its expected main window" }
     Start-Sleep -Seconds 3
@@ -41,7 +44,7 @@ try {
     if ($Process.HasExited) { throw "Installed application exited after window creation" }
     $Report = [pscustomobject]@{
         schema="ifet-windows-installer-check/v1"; installer=$Installer.Name; installExitCode=$Install.ExitCode;
-        version="0.4.0"; product="MATLAB Bridge"; installerSha256=(Get-Sha256Hex $Installer.FullName);
+        version=$ExpectedVersion; product="MATLAB Bridge"; installerSha256=(Get-Sha256Hex $Installer.FullName);
         appWindowTitle=$Process.MainWindowTitle; appStartupPassed=$true; appLocalCrt=$Libraries;
         algorithmSidecarPresent=$true; bleHardwareTested=$false; matlabPsychtoolboxTested=$false;
         physicalAudioOrOpticalTimingTested=$false; physicalTtlTested=$false

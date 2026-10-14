@@ -1,270 +1,64 @@
-import { useEffect, useMemo, useRef } from 'react';
-import {
-  FilterChain,
-  StreamingFilterCache,
-  computeShare,
-  createEegBands,
-  resolveScale,
-  EEG_SAMPLE_RATE,
-  type BandShare,
-  type EegBandDefinition,
-  type TimedValue
-} from '../domain/dsp';
-import { calculateSleepMetrics, type SleepMetrics } from '../domain/sleep-metrics';
-import { applySlowWaveGate, AdaptiveSlowWaveGate } from '../domain/adaptive-slow-wave';
-import { cleanSleepDeltaWave, type SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
-import { applyRobustMedianReference } from '../domain/eeg-reference';
-import { compensateAwakeAperiodicSlope } from '../domain/band-share-compensation';
-import { matchedFilterSleepTheta } from '../domain/theta-matched-filter';
-import { enhanceShortBetaBursts } from '../domain/beta-burst-enhancement';
+import { useEffect, useMemo, useRef,useState } from 'react';
+import { FilterChain, StreamingFilterCache, resolveScale, EEG_SAMPLE_RATE, type TimedValue } from '../domain/dsp';
+import { spectralSleepMetrics, type RobustEegSnapshot } from '../domain/robust-eeg';
+import type { SleepMetrics } from '../domain/sleep-metrics';
+import type { SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
 import type { EegChannel, EegSettings } from '../domain/settings';
-import { WaveformCanvas, type WaveformSeries } from './WaveformCanvas';
+import { useNativeBandWaveforms, useRobustEegAnalysis } from '../hooks/useRobustEegAnalysis';
+import { WaveformCanvas } from './WaveformCanvas';
 import { BandShareChart } from './BandShareChart';
 import { SleepMetricsPanel } from './SleepMetricsPanel';
 import { SleepTrendChart } from './SleepTrendChart';
-import {
-  SleepMusicPanel,
-  resolveRealtimeStage,
-  type SleepMusicPanelProps
-} from './SleepMusicPanel';
+import { SleepMusicPanel, resolveRealtimeStage, type SleepMusicPanelProps } from './SleepMusicPanel';
+import {SpectrumChart} from './SpectrumChart';
 
 interface EegModeViewProps {
-  channel: EegChannel;
-  values: TimedValue[];
-  settings: EegSettings;
-  sampleRateHz?: number;
-  onSleepMetrics?: (metrics: SleepMetrics) => void;
-  musicPanel?: Omit<SleepMusicPanelProps, 'variant' | 'metrics'>;
-  deltaArtifactContext?: SleepDeltaArtifactContext;
+  guidance?:boolean;
+  channel:EegChannel;values:TimedValue[];fullAnalysisValues?:TimedValue[];settings:EegSettings;sampleRateHz?:number;
+  onSleepMetrics?:(metrics:SleepMetrics)=>void;
+  musicPanel?:Omit<SleepMusicPanelProps,'variant'|'metrics'>;
+  deltaArtifactContext?:SleepDeltaArtifactContext;
 }
-
-const BAND_DEFINITIONS = createEegBands();
-
-interface AnalysisWaveformSeries extends WaveformSeries {
-  analysisValues?: TimedValue[];
-}
-
-export function EegModeView({
-  channel,
-  values,
-  settings,
-  sampleRateHz = EEG_SAMPLE_RATE,
-  onSleepMetrics,
-  musicPanel,
-  deltaArtifactContext
-}: EegModeViewProps) {
-  const stagingResponse = musicPanel?.serviceStatus?.lastResponse ?? null;
-  const realtimeStage = resolveRealtimeStage(
-    musicPanel?.serviceStatus?.phase,
-    stagingResponse,
-    musicPanel?.session
-  );
-  const analysisValues = useMemo(
-    () => applyRobustMedianReference(values, deltaArtifactContext?.eegChannels),
-    [deltaArtifactContext?.eegChannels, values]
-  );
-  const bandSeries = useBandFilters(
-    BAND_DEFINITIONS,
-    channel,
-    analysisValues,
-    settings,
-    sampleRateHz,
-    realtimeStage,
-    deltaArtifactContext
-  );
-  const spindleValues = useSpindleFilter(channel, analysisValues, settings, sampleRateHz);
-  const rawValues = useRawWaveformFilter(channel, values, settings, sampleRateHz);
-  const rawScale = resolveScale(settings.scale, rawValues.map((item) => item.value));
-  const localShareValues = computeShare(compensateAwakeAperiodicSlope(
-    bandSeries.map((band, index) => {
-      const definition = BAND_DEFINITIONS[index];
-      const range = settings.bandRanges[definition.key] ?? definition;
-      return {
-        label: band.label as BandShare['label'],
-        value: averageAbs(band.analysisValues ?? band.values),
-        lowHz: range.low,
-        highHz: range.high
-      };
-    }),
-    realtimeStage
-  ));
-  const experimentalShares = musicPanel?.demoSignalStatus?.lastResponse?.telemetry.band_shares;
-  const shareTelemetry = musicPanel?.demoSignalStatus?.lastResponse?.telemetry;
-  const shareValues = experimentalShares && Object.values(experimentalShares).every(Number.isFinite)
-    ? BAND_DEFINITIONS.map((definition) => ({
-        label: definition.label,
-        value: Math.max(0, experimentalShares[definition.key]),
-        percent: Math.max(0, experimentalShares[definition.key]) * 100
-      }))
-    : localShareValues;
-  const bandColors = Object.fromEntries(bandSeries.map((band) => [band.label, band.color]));
-  const sleepMetrics = useMemo(() => calculateSleepMetrics({
-    rawValues: analysisValues,
-    bands: bandSeries.map((band) => ({
-      label: band.label as BandShare['label'],
-      values: band.analysisValues ?? band.values
-    })),
-    spindleValues,
-    sampleRate: sampleRateHz
-  }), [analysisValues, bandSeries, sampleRateHz, spindleValues]);
-
-  useEffect(() => {
-    onSleepMetrics?.(sleepMetrics);
-  }, [onSleepMetrics, sleepMetrics]);
-
-  return (
-    <div className="eeg-layout">
-      <WaveformCanvas title={`${channel.toUpperCase()} 原始波形`} series={[{ label: channel.toUpperCase(), color: 'var(--wave-raw)', values: rawValues, scale: rawScale }]} fill />
-      <div className="eeg-overview-grid">
-        <BandShareChart
-          shares={shareValues}
-          colors={bandColors}
-          mode={shareTelemetry?.band_share_mode}
-          visualState={shareTelemetry?.band_visual_state}
-          visualConfidence={shareTelemetry?.band_visual_confidence}
-        />
-        <SleepTrendChart
-          metrics={sleepMetrics}
-          sleepProbability={stagingResponse?.decision_valid ? stagingResponse.selected_sleep_probability : null}
-          realtimeStage={realtimeStage}
-          drowsinessMode={musicPanel?.settings.drowsinessMode}
-          drowsinessEstimate={musicPanel?.drowsinessEstimate}
-        />
-      </div>
-      <div className="eeg-band-stack" role="group" aria-label="频带分离">
-        {bandSeries.map((band, index) => (
-          <WaveformCanvas
-            key={band.label}
-            title={`${band.label} 频带`}
-            sideLabel={{
-              text: band.label,
-              color: band.color,
-              sub: bandRangeText(BAND_DEFINITIONS[index], settings)
-            }}
-            series={[band]}
-          />
-        ))}
-      </div>
-      <div className="eeg-insight-stack">
-        {musicPanel && <SleepMusicPanel {...musicPanel} metrics={sleepMetrics} variant="compact" />}
-        <SleepMetricsPanel metrics={sleepMetrics} />
-      </div>
+export function EegModeView({guidance=false,channel,values,fullAnalysisValues,settings,sampleRateHz=EEG_SAMPLE_RATE,
+  onSleepMetrics,musicPanel,deltaArtifactContext}:EegModeViewProps) {
+  const analysis=useRobustEegAnalysis(channel,fullAnalysisValues??values,sampleRateHz,settings,deltaArtifactContext);
+  const [bandLayout,setBandLayout]=useState<'grid'|'stack'>('grid');
+  const bandSeries=useNativeBandWaveforms(channel,values,sampleRateHz,settings,analysis.artifactIntervals);
+  const rawFilter=useRef(new StreamingFilterCache());
+  const rawValues=useMemo(()=>{
+    if(!settings.bandpassEnabled){rawFilter.current.reset();return values;}
+    return rawFilter.current.update(`${channel}|${settings.bandpassLow}|${settings.bandpassHigh}|${settings.notch}|${sampleRateHz}`,values,
+      ()=>FilterChain.butterworthBandpass({low:settings.bandpassLow,high:settings.bandpassHigh,sampleRate:sampleRateHz,order:2,notch:settings.notch}));
+  },[channel,sampleRateHz,settings.bandpassEnabled,settings.bandpassHigh,settings.bandpassLow,settings.notch,values]);
+  const metrics=useMemo(()=>spectralSleepMetrics(analysis),[analysis]);
+  const staging=musicPanel?.serviceStatus?.lastResponse;
+  const realtimeStage=resolveRealtimeStage(musicPanel?.serviceStatus?.phase,staging??null,musicPanel?.session);
+  useEffect(()=>onSleepMetrics?.(metrics),[metrics,onSleepMetrics]);
+  return <div className={`analysis-workspace ${guidance?'guidance-workspace':''}`}>
+    <section className="analysis-waveforms" aria-label="脑电波形工作区">
+      <div className="section-heading"><div><small>{guidance?'GUIDED REST / EEG':'LIVE EEG / FREQUENCY BANDS'}</small>
+        <h2>{guidance?'助眠过程信号':'时域与频带分离'}</h2></div><span>{channel.toUpperCase()} · {sampleRateHz} Hz</span>
+        <button className="text-tool" onClick={()=>setBandLayout(value=>value==='grid'?'stack':'grid')}>{bandLayout==='grid'?'纵向展开':'双列显示'}</button></div>
+    <WaveformCanvas title={`${channel.toUpperCase()} ${settings.bandpassEnabled?`显示滤波 ${settings.bandpassLow}–${settings.bandpassHigh} Hz`:'原始波形（未滤波）'}`} series={[{label:channel.toUpperCase(),color:'var(--wave-raw)',
+      values:rawValues,scale:resolveScale(settings.scale,rawValues.map(point=>point.value))}]} fill/>
+    <div className="eeg-band-stack" data-layout={bandLayout} role="group" aria-label="频带分离">
+      {bandSeries.map(band=><WaveformCanvas key={band.label} title={`${band.label} 频带`}
+        sideLabel={{text:band.label,color:band.color,sub:band.range}} series={[band]}/>)}
     </div>
-  );
+    </section>
+    <aside className="analysis-inspector" aria-label={guidance?'助眠控制与基线':'频谱与状态'}>
+      {guidance&&musicPanel&&<SleepMusicPanel {...musicPanel} metrics={metrics} variant="full"/>}
+      <BandShareChart shares={analysis.displayShares??analysis.shares} colors={Object.fromEntries(bandSeries.map(band=>[band.label,band.color]))}
+        mode={analysis.displayShares?'untrusted_preview':'welch_relative_power'} qualityLabel={analysisQualityLabel(analysis)}/>
+      <section className="panel analysis-spectrum-panel"><div className="panel-header"><h2>实时功率谱</h2><span>{channel.toUpperCase()}</span></div>
+        <SpectrumChart values={fullAnalysisValues??values} sampleRateHz={sampleRateHz} channelLabel={channel.toUpperCase()} analysis={analysis}/></section>
+      <SleepTrendChart metrics={metrics} sleepProbability={staging?.decision_valid?staging.selected_sleep_probability:null}
+        realtimeStage={realtimeStage} drowsinessMode={musicPanel?.settings.drowsinessMode}
+        drowsinessEstimate={musicPanel?.drowsinessEstimate} onCalibrate={musicPanel?.onDrowsinessCalibration}/>
+      <details className="panel secondary-metrics"><summary>频谱睡眠线索（非诊断）</summary><SleepMetricsPanel metrics={metrics}/></details>
+    </aside>
+  </div>;
 }
-
-// 频带数量固定为 4，在顶层用定长 ref 数组维护每个频带的滤波链状态。
-// 仅在通道/频带范围/陷波变化时重建链，跨渲染保持状态，消除每帧重建带来的启动瞬态。
-function useBandFilters(
-  definitions: EegBandDefinition[],
-  channel: EegChannel,
-  values: TimedValue[],
-  settings: EegSettings,
-  sampleRateHz: number,
-  realtimeStage: string,
-  artifactContext?: SleepDeltaArtifactContext
-): AnalysisWaveformSeries[] {
-  const filters = useRef<StreamingFilterCache[]>([]);
-  const slowWaveGate = useRef(new AdaptiveSlowWaveGate());
-  if (filters.current.length !== definitions.length) {
-    filters.current = definitions.map(() => new StreamingFilterCache());
-  }
-
-  return useMemo(() => definitions.map((definition, index) => {
-    const range = settings.bandRanges[definition.key] ?? { low: definition.low, high: definition.high };
-    const key = `${channel}|${definition.key}|${range.low}|${range.high}|${settings.notch}|${sampleRateHz}`;
-    const cache = filters.current[index];
-    const filtered = cache.update(key, values, () =>
-      // Kaiser 窗 FIR：阻带 ~-61dB，相邻频带（如 δ/θ 的 4Hz）几乎不互相渗漏
-      FilterChain.firBandpass({
-        low: range.low,
-        high: range.high,
-        sampleRate: sampleRateHz,
-        notch: settings.notch
-      })
-    );
-    const deltaCleaned = definition.key === 'delta'
-      ? cleanSleepDeltaWave(filtered, values, sampleRateHz, artifactContext)
-      : filtered;
-    const displayValues = definition.key === 'delta'
-      ? applySlowWaveGate(deltaCleaned, slowWaveGate.current.update(deltaCleaned, {
-        stage: realtimeStage,
-        quiet: !artifactContext?.blinkArtifactActive,
-        streamKey: `${channel}|${range.low}|${range.high}|${sampleRateHz}`,
-        sampleRateHz
-      }).weight)
-      : definition.key === 'beta'
-        ? enhanceShortBetaBursts(filtered, sampleRateHz)
-        : filtered;
-    const analysisValues = definition.key === 'theta'
-      ? matchedFilterSleepTheta(filtered, values, sampleRateHz, artifactContext, {
-        lowHz: range.low,
-        highHz: range.high
-      }).values
-      : definition.key === 'beta'
-        ? filtered
-        : displayValues;
-    return {
-      label: definition.label,
-      color: definition.color,
-      values: displayValues,
-      analysisValues
-    };
-  }), [artifactContext, channel, definitions, realtimeStage, sampleRateHz, settings.bandRanges, settings.notch, values]);
-}
-
-function useSpindleFilter(
-  channel: EegChannel,
-  values: TimedValue[],
-  settings: EegSettings,
-  sampleRateHz: number
-): TimedValue[] {
-  const filter = useRef(new StreamingFilterCache());
-  return useMemo(() => {
-    const key = `${channel}|sigma|11|16|${settings.notch}|${sampleRateHz}`;
-    return filter.current.update(key, values, () =>
-      FilterChain.firBandpass({
-        low: 11,
-        high: 16,
-        sampleRate: sampleRateHz,
-        notch: settings.notch
-      })
-    );
-  }, [channel, sampleRateHz, settings.notch, values]);
-}
-
-// 原始波形的「EEG 带通」显示滤波：仅在设置开启时生效，与频带分离一样走增量缓存
-function useRawWaveformFilter(
-  channel: EegChannel,
-  values: TimedValue[],
-  settings: EegSettings,
-  sampleRateHz: number
-): TimedValue[] {
-  const filter = useRef(new StreamingFilterCache());
-  return useMemo(() => {
-    const enabled = settings.bandpassEnabled && settings.bandpassHigh > settings.bandpassLow;
-    if (!enabled) {
-      filter.current.reset();
-      return values;
-    }
-    const key = `${channel}|raw|${settings.bandpassLow}-${settings.bandpassHigh}|${sampleRateHz}`;
-    return filter.current.update(key, values, () =>
-      FilterChain.butterworthBandpass({
-        low: settings.bandpassLow,
-        high: settings.bandpassHigh,
-        sampleRate: sampleRateHz,
-        order: 2
-      })
-    );
-  }, [channel, sampleRateHz, settings.bandpassEnabled, settings.bandpassLow, settings.bandpassHigh, values]);
-}
-
-function averageAbs(values: TimedValue[]): number {
-  if (values.length === 0) return 0;
-  return values.reduce((sum, item) => sum + Math.abs(item.value), 0) / values.length;
-}
-
-function bandRangeText(definition: EegBandDefinition, settings: EegSettings): string {
-  const range = settings.bandRanges[definition.key] ?? { low: definition.low, high: definition.high };
-  return `${range.low}-${range.high} Hz`;
+export function analysisQualityLabel(analysis:RobustEegSnapshot):string {
+  return `${analysis.reason} · 控制有效${Math.round(analysis.cleanFraction*100)}%${analysis.held&&!analysis.displayShares?' · 保持上次有效占比':''}`;
 }

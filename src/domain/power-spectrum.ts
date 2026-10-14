@@ -12,6 +12,8 @@ export interface PowerSpectrumPoint {
 }
 
 export interface PowerSpectrumSnapshot {
+  windowStartMs?:number;
+  windowEndMs?:number;
   points: PowerSpectrumPoint[];
   peakFrequencyHz: number | null;
   resolutionHz: number;
@@ -83,6 +85,8 @@ export function computeRelativePowerSpectrum(
   );
 
   return {
+    windowStartMs:source[0].timestamp,
+    windowEndMs:source[source.length-1].timestamp,
     points,
     peakFrequencyHz: peak?.frequencyHz ?? null,
     resolutionHz,
@@ -100,7 +104,7 @@ function largestPowerOfTwoAtMost(value: number): number {
   return result;
 }
 
-function fftInPlace(real: Float64Array, imaginary: Float64Array): void {
+export function fftInPlace(real: Float64Array, imaginary: Float64Array): void {
   const size = real.length;
   for (let source = 1, target = 0; source < size; source += 1) {
     let bit = size >> 1;

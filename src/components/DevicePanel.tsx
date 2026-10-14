@@ -21,8 +21,11 @@ import {
 import type { BleSampleRate } from '../domain/settings';
 import { formatRecordingDuration } from '../domain/recording-time';
 import { ThemedSelect } from './ThemedSelect';
+import type {BleDiagnostics} from '../domain/ble-diagnostics';
 
 interface DevicePanelProps {
+  showRecordingAction?:boolean;
+  diagnostics?:BleDiagnostics|null;
   devices: DeviceInfo[];
   connected: boolean;
   scanning: boolean;
@@ -50,6 +53,8 @@ interface DevicePanelProps {
 }
 
 export function DevicePanel({
+  showRecordingAction=true,
+  diagnostics,
   devices,
   connected,
   scanning,
@@ -93,6 +98,17 @@ export function DevicePanel({
 
   return (
     <section className="device-strip" aria-label="设备控制">
+      {connected&&diagnostics&&<details className="ble-diagnostics"><summary>接收链路诊断</summary>
+        {diagnostics.linkRequestStatus&&<p>{diagnostics.linkRequestStatus}</p>}
+        {diagnostics.connectionIntervalMs!=null&&<p>系统上报实际连接周期 {diagnostics.connectionIntervalMs.toFixed(2)} ms · 外围延迟 {diagnostics.peripheralLatency??'—'} 个连接事件（不是毫秒）</p>}
+        <p>{(diagnostics.windowSeconds??1).toFixed(1)}秒滑动窗 · 包内原始样本 {diagnostics.observedSampleRateHz.toFixed(1)} Hz · 时基样本 {diagnostics.logicalSampleRateHz.toFixed(1)} Hz · 通知 {diagnostics.notificationRateHz.toFixed(1)} 次/秒</p>
+        {diagnostics.receivedSlotRateHz!=null&&<p>结构槽位 {diagnostics.receivedSlotRateHz.toFixed(1)} /秒 · 已解析且非四通道全零 {diagnostics.usableEegSampleRateHz?.toFixed(1)??'—'} /秒 · 四通道全零 {diagnostics.zeroAdcSlots??0} 槽位 · 相邻完全重复 {diagnostics.identicalAdjacentAdcSlots??0} 对 · 可疑零尾帧 {diagnostics.suspiciousNotifications??0}。重复值只提示，不自动删样；非零也不代表生理信号有效。</p>}
+        {diagnostics.rtcRaw!=null&&<p>设备RTC原始计数 {diagnostics.rtcRaw}（单位未确认，不用于推算采样率）。</p>}
+        {diagnostics.transmitIntervalMs===0?<p>TD新协议：仅发送72采样率命令，没有发送0x93。每包点数由有效载荷解析，不假定通知间隔。</p>:diagnostics.transmitIntervalMs!=null&&<p>打包请求 {diagnostics.transmitIntervalMs} ms（93 {diagnostics.transmitIntervalMs.toString(16).padStart(2,'0').toUpperCase()}） · 预计 {diagnostics.expectedSamplesPerNotification} 点/包 · {diagnostics.packingConfirmed?'当前帧长符合请求':'尚未从帧长确认'}；不是设备ACK或ADC时钟验证。</p>}
+        <p>每包 {diagnostics.samplesPerNotification} 个原始样本 · 接收队列 {diagnostics.bufferedNotifications}/2048 · 处理等待 {diagnostics.processingDelayMs} ms（本秒峰值 {diagnostics.peakProcessingDelayMs} ms） · 无法解析 {diagnostics.rejectedNotifications} 包</p>
+        <p>已停用旧协议的自动扩包。槽位数量不等于有效ADC样本数；在真机验证前不能声明采样率已达标。</p>
+        {diagnostics.observedSampleRateHz<diagnostics.requestedSampleRateHz*.98&&<p>实收尚未达到设置值，问题未解决。记录只保存实收槽位，不软件补点；显示插值不能补回真实数据。请勿使用不完整数据推断频带或睡眠。</p>}
+      </details>}
       <div className="status-block" data-state={stateValue}>
         <div className={`status-dot ${connected ? 'online' : ''} ${scanning ? 'scanning' : ''}`} />
         <div>
@@ -103,7 +119,7 @@ export function DevicePanel({
         </div>
       </div>
       <div className="device-group">
-        <button
+      <button
           className={`icon-button ${scanning ? 'danger' : ''}`}
           type="button"
           onClick={onScan}
@@ -186,7 +202,7 @@ export function DevicePanel({
           <span>{sampleRatePending ? '设置中' : '设置采样率'}</span>
         </button>
       </div>
-      <div className="device-group">
+      {showRecordingAction&&<div className="device-group">
         <button
           className={`icon-button ${recording ? 'danger recording-active' : 'primary'}`}
           type="button"
@@ -203,7 +219,7 @@ export function DevicePanel({
           </span>
         )}
         {recordPath && <span className="record-path" title={recordPath}>{recordPath}</span>}
-      </div>
+      </div>}
     </section>
   );
 }

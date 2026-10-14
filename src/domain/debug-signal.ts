@@ -1,4 +1,4 @@
-import { EEG_SAMPLE_RATE, FilterChain, type TimedValue } from './dsp';
+import { EEG_SAMPLE_RATE, FilterChain,StreamingFilterCache, type TimedValue } from './dsp';
 
 export type DebugEegFilterMode = 'raw' | '0.5-30' | '8-13' | '0.7-15';
 export type DebugSignalView = 'eeg' | 'ppg';
@@ -23,11 +23,12 @@ export const debugEegScaleOptions: Array<{ value: DebugEegScale; label: string }
 export function filterDebugEegWindow(
   values: TimedValue[],
   mode: DebugEegFilterMode,
-  sampleRate = EEG_SAMPLE_RATE
+  sampleRate = EEG_SAMPLE_RATE,
+  windowSeconds = 10
 ): TimedValue[] {
-  const window = values.slice(-sampleRate * 10);
+  const window = values.slice(-sampleRate * windowSeconds);
   if (window.length === 0) return [];
-  const center = median(window.map((point) => point.value));
+  const center = median(window.filter(point=>point.valid!==false&&Number.isFinite(point.value)).map((point) => point.value));
   const centered = window.map((point) => ({ ...point, value: point.value - center }));
   if (mode === 'raw' || centered.length < 32) return centered;
 
@@ -37,7 +38,7 @@ export function filterDebugEegWindow(
       ? [8, 13, 4] as const
       : [0.7, 15, 2] as const;
   const chain = FilterChain.butterworthBandpass({ low, high, sampleRate, order });
-  return centered.map((point) => ({ ...point, value: chain.process(point.value) }));
+  return new StreamingFilterCache().update('debug',centered,()=>chain);
 }
 
 /**
@@ -54,7 +55,7 @@ export function filterPpgDisplayWindow(
     ? values.slice(-Math.max(1, Math.round(sampleRate * windowSeconds)))
     : values;
   if (window.length === 0) return [];
-  const center = median(window.map((point) => point.value));
+  const center = median(window.filter(point=>point.valid!==false&&Number.isFinite(point.value)).map((point) => point.value));
   const centered = window.map((point) => ({ ...point, value: point.value - center }));
   if (centered.length < 32) return centered;
   const chain = FilterChain.butterworthBandpass({
@@ -63,7 +64,7 @@ export function filterPpgDisplayWindow(
     sampleRate,
     order: 2
   });
-  return centered.map((point) => ({ ...point, value: chain.process(point.value) }));
+  return new StreamingFilterCache().update('ppg',centered,()=>chain);
 }
 
 export function resolveDebugScale(scale: DebugEegScale): number | undefined {

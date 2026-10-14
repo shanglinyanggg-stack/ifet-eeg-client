@@ -18,6 +18,33 @@ pub struct StatusEvent {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BleDiagnosticsEvent {
+    pub link_request_status: String,
+    pub connection_interval_ms: Option<f64>,
+    pub peripheral_latency: Option<u16>,
+    pub received_slot_rate_hz: f64,
+    pub usable_eeg_sample_rate_hz: f64,
+    pub zero_adc_slots: usize,
+    pub identical_adjacent_adc_slots: usize,
+    pub suspicious_notifications: usize,
+    pub rtc_raw: Option<u32>,
+    pub window_seconds: f64,
+    pub transmit_interval_ms: u32,
+    pub expected_samples_per_notification: usize,
+    pub packing_confirmed: bool,
+    pub notification_rate_hz: f64,
+    pub observed_sample_rate_hz: f64,
+    pub logical_sample_rate_hz: f64,
+    pub requested_sample_rate_hz: u32,
+    pub samples_per_notification: usize,
+    pub buffered_notifications: usize,
+    pub processing_delay_ms: i64,
+    pub peak_processing_delay_ms: i64,
+    pub rejected_notifications: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BatteryEvent {
     pub timestamp: String,
     pub sequence: u8,
@@ -67,6 +94,7 @@ pub struct SampleEvent {
     pub timestamp: String,
     pub sample_rate_hz: u32,
     pub valid: bool,
+    pub observed: bool,
     pub device_sequence: Option<u8>,
     pub packet: DecodedPacket,
 }

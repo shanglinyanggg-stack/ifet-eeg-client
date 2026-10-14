@@ -28,6 +28,7 @@ export interface SampleEvent {
   timestamp: string;
   sampleRateHz?: number;
   valid?: boolean;
+  observed?:boolean;
   deviceSequence?: number | null;
   packet: DecodedPacket;
 }

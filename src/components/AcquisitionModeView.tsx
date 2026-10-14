@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState,type ReactNode } from 'react';
 import {
   Activity,
   CircleStop,
@@ -11,28 +11,34 @@ import {
 import {
   debugEegFilterOptions,
   debugEegScaleOptions,
-  filterDebugEegWindow,
   resolveDebugScale,
   type DebugEegFilterMode,
   type DebugEegScale
 } from '../domain/debug-signal';
 import {
-  createEegBands,
   FilterChain,
   StreamingFilterCache,
   type TimedValue
 } from '../domain/dsp';
 import { formatRecordingDuration } from '../domain/recording-time';
 import type { LinkQualitySnapshot } from '../domain/link-quality';
-import type { EegChannel, EegSettings } from '../domain/settings';
-import { enhanceShortBetaBursts } from '../domain/beta-burst-enhancement';
+import { eegTimeWindowOptions, type AutoNumber, type EegChannel, type EegSettings } from '../domain/settings';
+import type { SleepDeltaArtifactContext } from '../domain/delta-artifact-filter';
+import { useNativeBandWaveforms, useRobustEegAnalysis } from '../hooks/useRobustEegAnalysis';
+import { BandShareChart } from './BandShareChart';
 import type { DebugBlinkTrial, DebugMarkerRecord } from './DebugModeView';
 import { SpectrumChart } from './SpectrumChart';
 import { ThemedSelect } from './ThemedSelect';
 import { WaveformCanvas } from './WaveformCanvas';
+import {createPageDisplayProcessor,type PageFilter} from '../domain/page-filters';
 
 interface AcquisitionModeViewProps {
+  displayFilter?:PageFilter;
+  embedded?:boolean;
+  externalTools?:ReactNode;
   eegBuffers: Record<EegChannel, TimedValue[]>;
+  analysisBuffers?: Record<EegChannel, TimedValue[]>;
+  artifactContext?: SleepDeltaArtifactContext;
   eegSettings: EegSettings;
   connected: boolean;
   deviceName: string;
@@ -55,6 +61,7 @@ interface AcquisitionModeViewProps {
   participantId: string;
   onParticipantIdChange: (value: string) => void;
   onSelectedChannelChange: (channel: EegChannel) => void;
+  onTimeWindowChange?: (seconds: AutoNumber) => void;
   onToggleRecording: () => void;
   onAddMarker: (label: string, note: string) => void;
   onStartAlignment: () => void;
@@ -90,10 +97,13 @@ const ACQUISITION_MARKERS = [
   '困倦 KSS≥7'
 ];
 
-const BANDS = createEegBands();
-
 export function AcquisitionModeView({
+  displayFilter,
+  embedded=false,
+  externalTools,
   eegBuffers,
+  analysisBuffers,
+  artifactContext,
   eegSettings,
   connected,
   deviceName,
@@ -116,16 +126,21 @@ export function AcquisitionModeView({
   participantId,
   onParticipantIdChange,
   onSelectedChannelChange,
+  onTimeWindowChange,
   onToggleRecording,
   onAddMarker,
   onStartAlignment
 }: AcquisitionModeViewProps) {
   const [note, setNote] = useState('');
-  const [filterMode, setFilterMode] = useState<DebugEegFilterMode>('0.5-30');
+  const [localFilterMode, setFilterMode] = useState<DebugEegFilterMode>('0.5-30');
+  const filterMode=embedded?eegSettings.displayFilterMode??'0.5-30':localFilterMode;
   const [eegScale, setEegScale] = useState<DebugEegScale>('5000');
   const [analysisView, setAnalysisView] = useState<AcquisitionAnalysisView>('spectrum');
+  const [inspectorTab,setInspectorTab]=useState<'analysis'|'markers'|'external'>(externalTools?'external':'analysis');
+  const hasExternalTools=!!externalTools;
+  useEffect(()=>setInspectorTab(tab=>hasExternalTools?'external':tab==='external'?'analysis':tab),[hasExternalTools]);
   const [now, setNow] = useState(Date.now());
-  const bandFilters = useRef(BANDS.map(() => new StreamingFilterCache()));
+  const displayFilters = useRef(EEG_CHANNELS.map(() => new StreamingFilterCache()));
 
   useEffect(() => {
     if (blinkTrial?.status !== 'active') return;
@@ -134,35 +149,23 @@ export function AcquisitionModeView({
   }, [blinkTrial?.status]);
 
   const displayedEeg = useMemo(() => Object.fromEntries(
-    EEG_CHANNELS.map(({ key }) => [
+    EEG_CHANNELS.map(({ key },index) => [
       key,
-      filterDebugEegWindow(eegBuffers[key], filterMode, sampleRateHz)
+      displayFilters.current[index].update(`${key}|${JSON.stringify(displayFilter??filterMode)}|${sampleRateHz}`,eegBuffers[key],()=>{
+        if(displayFilter)return createPageDisplayProcessor(displayFilter,sampleRateHz);
+        const [low,high,order]=filterMode==='8-13'?[8,13,4] as const:filterMode==='0.7-15'?[0.7,15,2] as const:[0.5,30,4] as const;
+        const chain=filterMode==='raw'?null:FilterChain.butterworthBandpass({low,high,order,sampleRate:sampleRateHz});
+        let offset:number|null=null;
+        return {process(value:number){offset??=value;return chain?chain.process(value-offset):value-offset;},reset(){chain?.reset();offset=null;}};
+      })
     ])
-  ) as Record<EegChannel, TimedValue[]>, [eegBuffers, filterMode, sampleRateHz]);
+  ) as Record<EegChannel, TimedValue[]>, [eegBuffers, filterMode, sampleRateHz,displayFilter]);
 
   const selectedValues = eegBuffers[eegSettings.selectedChannel];
-  const bandSeries = useMemo(() => {
-    if (analysisView !== 'bands') return [];
-    return BANDS.map((band, index) => {
-      const range = eegSettings.bandRanges[band.key] ?? { low: band.low, high: band.high };
-      const values = bandFilters.current[index].update(
-        `acquisition|${eegSettings.selectedChannel}|${band.key}|${range.low}|${range.high}|${eegSettings.notch}|${sampleRateHz}`,
-        selectedValues,
-        () => FilterChain.firBandpass({
-          low: range.low,
-          high: range.high,
-          sampleRate: sampleRateHz,
-          notch: eegSettings.notch
-        })
-      );
-      return {
-        label: band.label,
-        color: band.color,
-        values: band.key === 'beta' ? enhanceShortBetaBursts(values, sampleRateHz) : values,
-        range: `${range.low}-${range.high} Hz${band.key === 'beta' ? ' · short-burst enhanced' : ''}`
-      };
-    });
-  }, [analysisView, eegSettings.bandRanges, eegSettings.notch, eegSettings.selectedChannel, sampleRateHz, selectedValues]);
+  const analysis=useRobustEegAnalysis(`acquisition|${eegSettings.selectedChannel}`,
+    analysisBuffers?.[eegSettings.selectedChannel]??selectedValues,sampleRateHz,eegSettings,artifactContext,inspectorTab==='analysis');
+  const bandSeries=useNativeBandWaveforms(`acquisition|${eegSettings.selectedChannel}`,
+    inspectorTab==='analysis'&&analysisView==='bands'?selectedValues:[],sampleRateHz,eegSettings,analysis.artifactIntervals);
 
   const lossRate = linkQuality?.ready
     ? linkQuality.lossRatePercent / 100
@@ -173,7 +176,8 @@ export function AcquisitionModeView({
 
   return (
     <div className="acquisition-mode" aria-label="数据采集模式界面">
-      <header className="debug-toolbar panel acquisition-toolbar">
+      {embedded&&<span className="sr-only">音乐、基线、分期和眨眼控制均已停用</span>}
+      {!embedded&&<header className="debug-toolbar panel acquisition-toolbar">
         <div className="debug-toolbar-title">
           <Activity size={18} />
           <span>
@@ -198,9 +202,9 @@ export function AcquisitionModeView({
             {recordingPending ? '处理中…' : recording ? `停止记录 ${formatRecordingDuration(recordingElapsedSeconds)}` : '开始记录'}
           </button>
         </div>
-      </header>
+      </header>}
 
-      <div className="debug-display-controls panel acquisition-controls">
+      {!embedded&&<div className="debug-display-controls panel acquisition-controls">
         <label>
           <span>四通道显示滤波</span>
           <ThemedSelect
@@ -210,7 +214,7 @@ export function AcquisitionModeView({
             onChange={(value) => setFilterMode(value as DebugEegFilterMode)}
           />
         </label>
-        <label>
+        {!embedded&&<label>
           <span>EEG 量程</span>
           <ThemedSelect
             ariaLabel="采集 EEG 量程"
@@ -218,8 +222,13 @@ export function AcquisitionModeView({
             options={debugEegScaleOptions}
             onChange={(value) => setEegScale(value as DebugEegScale)}
           />
-        </label>
-        <label>
+        </label>}
+        {!embedded&&<label>
+          <span>显示时间窗</span>
+          <ThemedSelect ariaLabel="采集显示时间窗" value={String(eegSettings.timeWindowSeconds)} options={eegTimeWindowOptions}
+            onChange={value=>onTimeWindowChange?.(value==='auto'?'auto':Number(value))}/>
+        </label>}
+        {!embedded&&<label>
           <span>分析通道</span>
           <ThemedSelect
             ariaLabel="采集分析通道"
@@ -227,8 +236,8 @@ export function AcquisitionModeView({
             options={EEG_CHANNEL_OPTIONS}
             onChange={(value) => onSelectedChannelChange(value as EegChannel)}
           />
-        </label>
-        <label>
+        </label>}
+        {!embedded&&<label>
           <span>分析显示</span>
           <ThemedSelect
             ariaLabel="采集分析显示"
@@ -236,25 +245,25 @@ export function AcquisitionModeView({
             options={ACQUISITION_ANALYSIS_OPTIONS}
             onChange={(value) => setAnalysisView(value as AcquisitionAnalysisView)}
           />
-        </label>
+        </label>}
         <div className="debug-link-summary">
           <span>{linkStatus}</span>
-          <span>绘图处理 <strong>{sampleRateHz} Hz</strong></span>
-          <span>算法链路 <strong>已关闭</strong></span>
+          <span>信号时基 <strong>{sampleRateHz} Hz</strong> · 屏幕按像素保峰绘制</span>
+          <span>睡眠/音乐控制 <strong>已关闭</strong></span>
         </div>
-      </div>
+      </div>}
 
       <div className="debug-body acquisition-body">
         <section className="debug-waveforms acquisition-eeg-waveforms" data-view="eeg" aria-label="四通道原始 EEG">
           {EEG_CHANNELS.map(({ key, color }) => (
             <WaveformCanvas
               key={key}
-              title={`${key.toUpperCase()} · ${debugEegFilterOptions.find((item) => item.value === filterMode)?.label}`}
+              title={`${key.toUpperCase()} · ${displayFilter?displayFilter.enabled?`显示 ${displayFilter.low}–${displayFilter.high} Hz`:'原始（未滤波）':debugEegFilterOptions.find((item) => item.value === filterMode)?.label}`}
               series={[{
                 label: key.toUpperCase(),
                 color,
                 values: displayedEeg[key],
-                scale: resolveDebugScale(eegScale)
+                scale: embedded?typeof eegSettings.scale==='number'?eegSettings.scale:undefined:resolveDebugScale(eegScale)
               }]}
               fill
             />
@@ -262,13 +271,23 @@ export function AcquisitionModeView({
         </section>
 
         <aside className="debug-inspector acquisition-inspector" aria-label="采集分析与事件标记">
-          <section className="debug-section panel acquisition-band-section acquisition-analysis-section">
+          {embedded&&<nav className="inspector-tabs" role="tablist" aria-label="采集工具">
+            <button role="tab" aria-selected={inspectorTab==='analysis'} onClick={()=>setInspectorTab('analysis')}>信号分析</button>
+            <button role="tab" aria-selected={inspectorTab==='markers'} onClick={()=>setInspectorTab('markers')}>事件标记</button>
+            {externalTools&&<button role="tab" aria-selected={inspectorTab==='external'} onClick={()=>setInspectorTab('external')}>外部接入</button>}
+          </nav>}
+          {externalTools&&<section className="external-tools" hidden={embedded&&inspectorTab!=='external'}>{externalTools}</section>}
+          <section className="debug-section panel acquisition-band-section acquisition-analysis-section" hidden={embedded&&inspectorTab!=='analysis'}>
+            {embedded&&<div className="inspector-controls"><ThemedSelect ariaLabel="采集分析通道" value={eegSettings.selectedChannel} options={EEG_CHANNEL_OPTIONS}
+              onChange={value=>onSelectedChannelChange(value as EegChannel)}/>
+              <ThemedSelect ariaLabel="采集分析显示" value={analysisView} options={ACQUISITION_ANALYSIS_OPTIONS}
+              onChange={value=>setAnalysisView(value as AcquisitionAnalysisView)}/></div>}
             <header>
               <span>{analysisView === 'spectrum' ? <Activity size={14} /> : <Waves size={14} />}</span>
               <strong>
                 {eegSettings.selectedChannel.toUpperCase()} · {analysisView === 'spectrum'
                   ? '实时频谱'
-                  : '四频带 · 独立 FIR 带通'}
+                  : '四频带 · 因果 Butterworth 带通'}
               </strong>
             </header>
             <div className={`debug-section-body ${analysisView === 'spectrum' ? 'acquisition-spectrum-body' : 'acquisition-band-stack'}`}>
@@ -277,6 +296,7 @@ export function AcquisitionModeView({
                   values={selectedValues}
                   sampleRateHz={sampleRateHz}
                   channelLabel={eegSettings.selectedChannel.toUpperCase()}
+                  analysis={analysis}
                 />
               ) : bandSeries.map((band) => (
                 <div className="acquisition-band-chart" key={band.label}>
@@ -289,9 +309,11 @@ export function AcquisitionModeView({
                 </div>
               ))}
             </div>
+            <BandShareChart shares={analysis.displayShares??analysis.shares} colors={{Delta:'#1d4ed8',Theta:'#7dd3fc',Alpha:'#f59e0b',Beta:'#ef4444'}}
+              mode={analysis.displayShares?'untrusted_preview':'welch_relative_power'} qualityLabel={`${analysis.reason} · 控制有效${Math.round(analysis.cleanFraction*100)}%${analysis.held&&!analysis.displayShares?' · 保持上次有效占比':''}`}/>
           </section>
 
-          <section className="debug-section panel acquisition-marker-panel" aria-label="事件标记栏">
+          <section className="debug-section panel acquisition-marker-panel" aria-label="事件标记栏" hidden={embedded&&inspectorTab!=='markers'}>
             <header><span><Flag size={14} /></span><strong>事件标记</strong></header>
             <div className="debug-section-body acquisition-marker-body">
               <label className="debug-participant-id">

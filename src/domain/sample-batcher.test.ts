@@ -6,6 +6,13 @@ afterEach(() => {
 });
 
 describe('SampleBatcher', () => {
+  test('clears old-rate queued samples without sending them to display',()=>{
+    vi.useFakeTimers();
+    const onFlush=vi.fn();const batcher=new SampleBatcher<number>({intervalMs:100,onFlush});
+    batcher.pushMany([1,2]);batcher.clear();batcher.push(3);vi.advanceTimersByTime(100);
+    expect(onFlush).toHaveBeenCalledTimes(1);
+    expect(onFlush).toHaveBeenCalledWith([3]);
+  });
   test('coalesces high frequency events into one timed flush', () => {
     vi.useFakeTimers();
     const batches: string[][] = [];

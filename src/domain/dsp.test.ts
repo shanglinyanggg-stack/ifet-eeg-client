@@ -75,8 +75,8 @@ describe('frontend dsp helpers', () => {
 
   test('creates four EEG bands with sleep EEG default ranges', () => {
     expect(createEegBands().map((band) => [band.label, band.low, band.high])).toEqual([
-      ['Delta', 0.5, 2],
-      ['Theta', 4, 7],
+      ['Delta', 0.5, 4],
+      ['Theta', 4, 8],
       ['Alpha', 8, 13],
       ['Beta', 13, 30]
     ]);
@@ -115,6 +115,17 @@ describe('frontend dsp helpers', () => {
 
     expect(second).toEqual(first);
     expect(extended.slice(0, first.length)).toEqual(first);
+  });
+
+  test('keeps invalid sample gaps visible and resets filter state', () => {
+    const cache=new StreamingFilterCache();
+    const output=cache.update('gap',[{timestamp:0,value:2},{timestamp:8,value:500,valid:false},{timestamp:16,value:3}],
+      ()=>({process:(value:number)=>value,reset:()=>undefined}));
+    expect(Number.isNaN(output[1].value)).toBe(true);
+    expect(output[1].valid).toBe(false);
+    expect(resolveScale('auto',output.map(point=>point.value))).toBe(4);
+    const compressed=downsampleTimedValues(Array.from({length:100},(_,i)=>({timestamp:i,value:i===50?NaN:1,valid:i!==50})),20);
+    expect(compressed.some(point=>Number.isNaN(point.value))).toBe(true);
   });
 });
 
