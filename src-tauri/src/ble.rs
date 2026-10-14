@@ -59,6 +59,7 @@ impl Default for BleManagerState {
 #[derive(Default)]
 struct BleRuntime {
     adapter: Option<Adapter>,
+    adapter_init_error: Option<String>,
     known_ids: BTreeMap<String,PeripheralId>,
     peripheral: Option<Peripheral>,
     write_char: Option<Characteristic>,
@@ -738,14 +739,25 @@ impl BleManagerState {
     }
 
     async fn ensure_adapter(&self) -> Result<Adapter> {
-        if let Some(adapter) = self.inner.lock().await.adapter.clone() {
+        let (cached, init_error) = { let inner = self.inner.lock().await; (inner.adapter.clone(), inner.adapter_init_error.clone()) };
+        if let Some(adapter) = cached {
             return Ok(adapter);
         }
+        if let Some(error) = init_error { return Err(anyhow!(error)); }
 
         let manager = Manager::new().await?;
-        let adapter = manager
-            .adapters()
-            .await?
+        let adapters = match tokio::time::timeout(Duration::from_secs(10), manager.adapters()).await {
+            Ok(result) => result?,
+            Err(_) => {
+                // First-use macOS authorization can leave the library waiting
+                // for its first state callback. Latch this failure so automatic
+                // retries do not create a new native thread every second.
+                let message = "蓝牙初始化超时。请在系统蓝牙隐私权限中允许此版本，然后关闭并重新打开上位机".to_string();
+                self.inner.lock().await.adapter_init_error = Some(message.clone());
+                return Err(anyhow!(message));
+            }
+        };
+        let adapter = adapters
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("未找到蓝牙适配器"))?;
@@ -1128,6 +1140,16 @@ mod tests {
         assert!(!worker.is_finished());
         drop(guard);
         assert_eq!(worker.await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn initialization_timeout_is_latched_without_starting_more_native_threads() {
+        let state = BleManagerState::default();
+        state.inner.lock().await.adapter_init_error = Some("已锁定初始化失败，请授权后重启".into());
+        for _ in 0..3 {
+            let error = state.ensure_adapter().await.unwrap_err();
+            assert!(error.to_string().contains("请授权后重启"));
+        }
     }
 
     #[test]

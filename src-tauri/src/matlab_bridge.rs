@@ -326,7 +326,10 @@ fn align_journal(recording:&std::path::Path,journal:&std::path::Path,output:&std
         if previous.as_ref().is_some_and(|x|time<x.0){backward_jumps+=1;}
         while position<events.len() && events[position]["event_time_unix_s"].as_f64().unwrap()<=time{
             let event=&events[position];let wanted=event["event_time_unix_s"].as_f64().unwrap();
-            let nearest=match &previous{Some(prior) if (prior.0-wanted).abs()<(time-wanted).abs()=>prior,_=>&current};
+            // At an exact midpoint choose the earlier saved sample, matching
+            // the independent Python reference and avoiding Windows QPC ties
+            // being finalized one row later than the exported reference.
+            let nearest=match &previous{Some(prior) if (prior.0-wanted).abs()<=(time-wanted).abs()=>prior,_=>&current};
             let error=(nearest.0-wanted)*1000.0;
             let status=if previous.is_none() && wanted<time{"before_recording"}
                 else if error.abs()>20.0{"gap_or_host_clock_reanchor"}
@@ -521,6 +524,25 @@ mod tests {
         let text=std::fs::read_to_string(output).unwrap();
         assert!(text.lines().nth(1).unwrap().contains(",\"2\",\"3\","));
         assert!(text.contains("within_sample_interval"));
+    }
+
+    #[test] fn midpoint_chooses_the_earlier_sample_like_independent_reference() {
+        let (mut e,dir)=engine();e.session=Some("session".into());
+        let origin=e.now().floor()-1.0;
+        let mut start=event(&e,1,"start");start.source_time=origin+0.5;
+        let now=e.now();e.event(start,now).unwrap();
+        let raw=dir.join("eeg.csv");let mut file=File::create(&raw).unwrap();
+        writeln!(file,"time,sampleRateHz,valid").unwrap();
+        for offset in [0.0,1.0] {
+            let time=chrono::DateTime::<chrono::Utc>::from_timestamp((origin+offset) as i64,0).unwrap();
+            writeln!(file,"{},1000,true",time.to_rfc3339_opts(chrono::SecondsFormat::Micros,true)).unwrap();
+        }
+        drop(file);let output=dir.join("aligned.csv");align_journal(&raw,&dir.join("events.jsonl"),&output).unwrap();
+        let text=std::fs::read_to_string(output).unwrap();
+        // Large synthetic gap deliberately exercises an exact binary midpoint;
+        // it is not described as a valid physiological 1kHz test recording.
+        assert!(text.lines().nth(1).unwrap().contains(",\"1\",\"2\","));
+        assert!(text.contains("gap_or_host_clock_reanchor"));
     }
 
     #[test] fn final_marker_uses_eeg_timezone_and_final_row_and_preserves_manual_markers() {

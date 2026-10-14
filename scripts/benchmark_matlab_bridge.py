@@ -88,7 +88,9 @@ def run(binary, output, port):
         native_positions = {row["event_id"]:row["eeg_data_row_1based"] for row in csv.DictReader(source)}
     with (output/"probe_stimulus_aligned.csv").open(encoding="utf-8-sig", newline="") as source:
         reference_positions = {row["event_id"]:row["eeg_data_row_1based"] for row in csv.DictReader(source)}
-    assert len(native_positions) == 600 and native_positions == reference_positions, "Native and independent reference EEG positions differ"
+    mismatches = [{"event_id": key, "native": value, "reference": reference_positions.get(key)}
+                  for key, value in native_positions.items() if value != reference_positions.get(key)]
+    assert len(native_positions) == 600 and not mismatches, f"Native and independent reference EEG positions differ: {mismatches[:8]}"
     with (output/"probe_eeg_markers.csv").open(encoding="utf-8-sig", newline="") as source:
         marker_rows = list(csv.DictReader(source))
     final_marker_positions = {row["matlabEventId"]: row["sampleCount"] for row in marker_rows}
